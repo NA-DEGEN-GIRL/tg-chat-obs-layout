@@ -1,130 +1,189 @@
 # CLAUDE.md
 
-이 파일은 Claude Code가 이 저장소에서 작업할 때 참고하는 프로젝트 컨텍스트이다.
+이 파일은 Claude Code 가 이 저장소에서 작업할 때 참고하는 컨텍스트다.
+사용자 가이드는 [README.md](./README.md) 를 볼 것.
 
-## 프로젝트 개요
+---
 
-텔레그램 그룹 채팅을 OBS 방송 화면에 **투명 배경 오버레이**로 띄우는 Python 프로그램.
-호스트 음성을 STT로 텍스트화해서 봇이 그룹에 대신 포스팅하는 기능도 포함.
+## 한 줄 요약
 
-윈도우 환경 전제. 주요 설정은 `.env` 로 한다.
+텔레그램 그룹 채팅을 **투명 배경 브라우저 오버레이**로 OBS에 띄우는 윈도우 프로그램. 봇 커맨드로 권한 토글 + 마이크 STT → 봇이 대신 포스팅 기능까지 포함.
+
+---
 
 ## 아키텍처
 
 ```
-┌─────────────────┐   polling    ┌──────────────┐
-│ Telegram Group  │─────────────▶│   main.py    │
-│  (chat_id)      │              │  FastAPI +   │
-└─────────────────┘              │   telebot    │
-         ▲                       └──────┬───────┘
-         │ bot.send_message             │
-         │                              │ WebSocket push
-  ┌──────┴───────┐              ┌──────▼───────┐
-  │  STT (mic)   │──transcript─▶│  Browser src │
-  │  OpenAI RT   │              │  (OBS)       │
-  └──────────────┘              └──────────────┘
+┌──────────────┐    polling     ┌────────────────────┐
+│ Telegram API │◀──────────────▶│ telebot (thread)   │
+└──────────────┘                │ - on_text          │
+                                │ - on_photo         │
+                                │ - cmd_stream_on/off│
+                                │ - cmd_tts_on/off   │
+                                └─────────┬──────────┘
+                                          │ run_coroutine_threadsafe
+                                          ▼
+ ┌─────────────────┐  WebSocket  ┌────────────────────┐
+ │ Browser (OBS)   │◀────────────│ FastAPI (main loop)│
+ │ static/app.js   │             │ - /ws push         │
+ │                 │             │ - /static /photos  │
+ │                 │             │ - /config          │
+ └─────────────────┘             └─────────┬──────────┘
+                                           │
+                                           │ asyncio
+                                           ▼
+                                ┌────────────────────┐
+                                │ stt.STTManager     │
+                                │ - OpenAI backend   │
+                                │ - Gemini backend   │
+                                │ - mic capture(sd)  │
+                                └────────────────────┘
 ```
 
-- **텔레그램 입력**: `pyTelegramBotAPI` long-polling (별도 데몬 스레드)
-- **웹서버**: FastAPI + uvicorn, `127.0.0.1:9292` 로컬 바인드
-- **오버레이 렌더링**: `static/` 내 정적 HTML/CSS/JS, WebSocket으로 실시간 푸시
-- **STT**: `stt/` 모듈. OpenAI Realtime (transcription intent) 또는 Gemini Live. WebSocket 클라이언트 + `sounddevice` 마이크 캡처
-- **색상 영속화**: 유저별 색상은 `data/user_colors.json` 에 영구 저장 (user_id → hex color)
+- **main thread**: uvicorn asyncio 루프 (FastAPI, WebSocket, STT 코디네이션)
+- **daemon thread**: telebot `infinity_polling` (동기 HTTP polling)
+- **portaudio thread**: sounddevice 콜백 (tts_on 동안만) — `loop.call_soon_threadsafe` 로 asyncio 큐에 PCM 바이트 푸시
 
-## 파일 구조
+---
+
+## 파일 역할
 
 ```
-main.py                # 오케스트레이션: Telegram + FastAPI + WebSocket + STT
-test_stt.py            # STT 단독 테스트 (텔레그램/오버레이 없이 CMD 출력만)
-requirements.txt       # 의존성
-.env.example           # 설정 템플릿 (실제 .env 는 커밋 금지)
-.gitignore
-CLAUDE.md              # 이 파일
-README.md              # 사용자 가이드
+main.py                오케스트레이션 (Telegram + FastAPI + STT + state)
+test_stt.py            STT 단독 검증 (텔레그램/오버레이 없이 CMD 출력)
 
-stt/
-  __init__.py
-  manager.py           # 마이크 캡처 + 백엔드 라이프사이클 관리
-  openai_backend.py    # OpenAI Realtime transcription WebSocket 클라이언트
-  gemini_backend.py    # Gemini Live API WebSocket 클라이언트 (실험적)
+stt/manager.py         마이크 캡처 + 백엔드 라이프사이클
+stt/openai_backend.py  OpenAI Realtime `?intent=transcription` WS 클라이언트
+stt/gemini_backend.py  Gemini Live BidiGenerateContent WS 클라이언트 (실험적)
 
-static/
-  index.html           # 오버레이 HTML (투명 body)
-  style.css            # 말풍선 스타일, 페이드 애니메이션
-  app.js               # WebSocket 클라이언트 + 메시지 렌더링
+static/index.html      `{{CB}}` 플레이스홀더 — 서버 시작 시각으로 치환돼 캐시 버스터로 사용
+static/style.css       메시지 카드 스타일 (rgba 검정 카드 + blur + 페이드)
+static/app.js          WebSocket 클라이언트, payload type 분기 (text/photo)
 
-data/
-  user_colors.json     # 유저별 배정된 색상 (.gitignore)
+data/user_colors.json  user_id → hex 색상 영구 매핑
+data/state.json        tts_on 지속 상태
+data/photos/           받은 사진 캐시 (최신 MAX_PHOTOS=10)
 ```
 
-## 봇 명령어
+---
 
-모두 **OWNER_ID 본인**이 **대상 CHAT_ID** 에서 보낼 때만 동작. 그 외엔 조용히 무시.
+## 봇 커맨드 (모두 owner + CHAT_ID 게이트)
 
-| 명령 | 설명 |
-|---|---|
-| `/stream_on` | 그룹에 **텍스트 + 사진**만 허용. 스티커·GIF·영상·음성·파일·폴 차단. `use_independent_chat_permissions=True` 로 granular 권한 적용 |
-| `/stream_off` | 모든 비관리자 음소거. 호스트(관리자) 본인은 영향 없음 |
-| `/tts_on` | STT 활성화. 마이크 → OpenAI Realtime → 봇이 그룹에 대신 포스팅 + 오버레이에 broadcast |
-| `/tts_off` | STT 비활성화, 마이크 해제 |
-
-## 설정 (`.env`)
-
-| 변수 | 용도 | 기본값 |
+| 커맨드 | 동작 | 주의 |
 |---|---|---|
-| `BOT_TOKEN` | BotFather 발급 봇 토큰 | (필수) |
-| `CHAT_ID` | 대상 그룹 ID (슈퍼그룹은 `-100...`) | (필수) |
-| `OWNER_ID` | 봇 명령 실행 허용할 유저 ID | (필수) |
-| `WEB_HOST` | 오버레이 서버 바인드 주소 | `127.0.0.1` |
-| `WEB_PORT` | 오버레이 서버 포트 | `9292` |
-| `FADE_AFTER_SEC` | 메시지 N초 후 페이드아웃. `-1` = 안 사라짐 | `30` |
-| `STT_PROVIDER` | `openai` or `gemini` | `openai` |
-| `OPENAI_API_KEY` | STT용 | — |
-| `GEMINI_API_KEY` | STT용 | — |
-| `STT_MODEL_OPENAI` | OpenAI 트랜스크립션 모델 | `gpt-4o-mini-transcribe` |
-| `STT_MODEL_GEMINI` | Gemini Live 모델 | `gemini-3.1-flash-live-preview` |
-| `STT_LANGUAGE` | ISO 639-1 언어 코드 | `ko` |
-| `STT_INPUT_DEVICE` | 마이크 지정 (이름 일부 or 인덱스). 비우면 OS 기본 | 빈값 |
+| `/stream_on` | 텍스트+사진만 허용하도록 `setChatPermissions` 호출 | **`use_independent_chat_permissions=True` 필수** (아래 gotcha 참고) |
+| `/stream_off` | 전부 음소거 (관리자는 영향 없음) | 동일 |
+| `/tts_on` | STTManager 시작 + `state.json` 에 `tts_on=true` | 실패 시 답장만 하고 state 건드리지 않음 |
+| `/tts_off` | STTManager 종료 + `state.json` 에 `tts_on=false` | |
+
+권한 체크 함수: `_is_owner_in_target_chat(message)`
+- `message.chat.id == CHAT_ID`
+- `message.from_user.id == OWNER_ID`
+둘 다 통과해야만 실행, 아니면 조용히 무시 (답장 X).
+
+---
+
+## Gotcha 모음 (코드에서 잘 안 보이는 것들)
+
+### 1. Telegram `setChatPermissions` 자동 권한 상승
+`use_independent_chat_permissions=True` 없이 호출하면:
+- `can_add_web_page_previews=True` 하나만으로도 `can_send_messages`, `can_send_audios`, `can_send_documents`, `can_send_photos`, `can_send_videos`, `can_send_video_notes`, `can_send_voice_notes` 전부 자동 True 처리
+- `can_send_polls=True` → `can_send_messages` 자동 True
+
+반드시 `True` 로 호출해야 granular 필드가 정확히 적용됨.
+
+### 2. 봇은 자기 메시지 못 받음
+`bot.send_message(CHAT_ID, text)` 는 getUpdates 로 돌아오지 않음. 따라서:
+- STT 결과를 텔레그램에 포스팅하는 것 + 오버레이에 broadcast 하는 것 → **둘 다 별도로** 해야 함
+- `stt_on_text` 에서 `asyncio.gather(broadcast, send_message)` 로 동시 실행
+
+### 3. 409 Conflict — 토큰 중복 사용
+같은 `BOT_TOKEN` 으로 두 프로세스가 동시에 `getUpdates` 치면 `409 Conflict`. `main.py` 시작 시 `bot.remove_webhook()` 호출해서 webhook 충돌은 방지했지만, **다른 python 인스턴스가 살아있으면 답 없음**. 사용자가 "에러나서 죽었다"고 할 때 실제론 돌고 있는 경우 많음 → `Get-Process python` 확인.
+
+### 4. Group Privacy Mode
+BotFather 기본 설정으론 봇이 그룹에서 **명령어와 mention만** 받음. Privacy Mode 꺼야(`/mybots` → Bot Settings → Group Privacy → Turn off) 일반 메시지 수신. 끈 뒤 **그룹에서 봇 뺐다 다시 초대** 해야 반영.
+
+### 5. python-dotenv 인라인 주석
+`KEY=value # comment` 같은 줄 주석을 python-dotenv 는 처리하지 않음. `value # comment` 전체가 값으로 들어감. `main.py` / `test_stt.py` 에서 값 받은 뒤 `#` 이후 잘라내는 방어 코드 있지만, **`.env.example` 은 주석을 별도 줄에** 두기.
+
+### 6. OBS CEF 공격적 캐싱
+OBS 브라우저 소스는 JS/CSS 를 공격적으로 캐시함. 속성 창의 "새로 고침" 버튼은 페이지만 리로드, JS 캐시는 그대로 씀. 해결:
+- `static/index.html` 의 `{{CB}}` 플레이스홀더를 서버 시작 타임스탬프로 치환 (main.py의 `CACHE_BUSTER`) → `app.js?v=1700000000` 식으로 URL 바뀜 → 자동 갱신
+- 처음 배포 시에만 수동으로 "현재 페이지의 캐시 새로 고침" 필요
+
+### 7. `gpt-realtime-1.5` 의 함정
+"realtime" 붙었지만 **voice-to-voice 에이전트 모델**. 순수 STT 용도론 과금 낭비.
+- 올바른 STT 모델: `gpt-4o-mini-transcribe` (transcription-only)
+- 엔드포인트: `wss://api.openai.com/v1/realtime?intent=transcription`
+- 기본값을 `gpt-4o-mini-transcribe` 로 둬야 함
+
+### 8. `webp/gif` 업로드 무시
+`on_photo` 는 `content_types=["photo"]` 만 처리. 애니메이션 GIF 는 `animation`, 스티커는 `sticker`. `/stream_on` 이 이것들 차단 중이라 그룹에 애초에 안 들어오지만, 나중에 허용하면 별도 핸들러 필요.
+
+### 9. STT 세션 15분 제한 (Gemini)
+Gemini Live API 오디오 전용 세션은 15분 제한. 현재 코드는 재연결 로직 없음 — 15분 지나면 말 끊김. 필요 시 `turnComplete` 직후 재연결 루프 추가. (OpenAI 는 60분 + stateless 이라 영향 적음)
+
+---
+
+## 환경변수 (`.env`)
+
+| 이름 | 용도 | 기본값 |
+|---|---|---|
+| `BOT_TOKEN` | BotFather 토큰 | (필수) |
+| `CHAT_ID` | 대상 그룹 ID (-100…) | (필수) |
+| `OWNER_ID` | 커맨드 허용 유저 ID | (필수) |
+| `WEB_HOST` | 서버 바인드 주소 | `127.0.0.1` |
+| `WEB_PORT` | 서버 포트 | `9292` |
+| `FADE_AFTER_SEC` | 메시지 페이드아웃 초, `-1`=안 사라짐 | `30` |
+| `STT_PROVIDER` | `openai` / `gemini` | `openai` |
+| `OPENAI_API_KEY` | STT 용 | — |
+| `GEMINI_API_KEY` | STT 용 | — |
+| `STT_MODEL_OPENAI` | | `gpt-4o-mini-transcribe` |
+| `STT_MODEL_GEMINI` | | `gemini-3.1-flash-live-preview` |
+| `STT_LANGUAGE` | ISO 639-1 | `ko` |
+| `STT_INPUT_DEVICE` | 마이크 (이름 일부 or 인덱스) | (비어있으면 OS 기본) |
+
+---
 
 ## 실행
 
 ```bash
-# 가상환경 + 의존성 (uv 사용)
-uv venv
-uv pip install -r requirements.txt
-
-# 설정
-cp .env.example .env
-# .env 편집
-
-# 실행
+uv venv && uv pip install -r requirements.txt
+cp .env.example .env && 편집
 uv run python main.py
 ```
 
-## 알려진 이슈 / 주의사항
+**STT 단독 테스트:**
+```bash
+uv run python test_stt.py --provider openai --debug
+```
 
-- **봇 프라이버시 모드**: 그룹 메시지를 읽으려면 BotFather에서 `/mybots → 봇 → Bot Settings → Group Privacy → Turn off`. 봇 관리자 승격도 가능
-- **관리자 권한 "Restrict Members"** 켜야 `/stream_on`·`/stream_off` 가 권한 변경 가능
-- **텔레그램 `setChatPermissions` implicit elevation**: `use_independent_chat_permissions=True` 없으면 `can_add_web_page_previews=True` 하나만으로도 모든 media 권한이 자동 상승됨. 반드시 이 플래그 켜서 호출
-- **봇은 자기 메시지 수신 못 함**: `bot.send_message(CHAT_ID, text)` 한 건 `getUpdates` 로 돌아오지 않으므로, STT 결과는 오버레이 WebSocket으로 **직접 broadcast** 해야 함 (텔레그램 왕복 기대 X)
-- **포트 충돌**: 같은 토큰으로 두 번 띄우면 텔레그램이 `409 Conflict: terminated by other getUpdates`. 죽은 줄 알고 또 띄우지 말고 `tasklist`/`Get-Process python` 으로 확인. `main.py` 는 시작 시 `remove_webhook()` 호출해서 webhook 충돌은 방지함
-- **`.env` 인라인 주석**: python-dotenv 는 unquoted 값 뒤의 `#` 을 주석으로 처리하지 않음. 값만 넣고 주석은 별도 줄에. 코드 쪽 `_clean()` 에서 방어는 함
-- **Gemini Live**: 무료 티어에선 Live API 접근 제한 있음 (유료 결제 필요). OpenAI 먼저 검증 권장
-- **가벼운 `gpt-realtime-1.5`**: voice-to-voice 에이전트 모델이라 STT만 쓰려면 과금 낭비. Realtime API의 `?intent=transcription` 엔드포인트 + `gpt-4o-mini-transcribe` 조합이 성능·비용 균형 최적
+**문법 체크:**
+```bash
+.venv/Scripts/python.exe -c "import ast; [ast.parse(open(p).read()) for p in ['main.py','test_stt.py']]"
+```
 
-## 테스트
-
-- **STT 단독 검증**:
-  ```bash
-  uv run python test_stt.py --provider openai --debug
-  ```
-  `--debug` 는 `STT_DEBUG=1` 설정 → 모든 WebSocket 수신 이벤트 raw 로깅
-
-- **syntax 확인**:
-  ```bash
-  .venv/Scripts/python.exe -c "import ast; [ast.parse(open(p).read()) for p in ['main.py','test_stt.py']]"
-  ```
+---
 
 ## Git
 
-저장소는 **로컬만** — 현재 원격 push 대상 없음. `.gitignore` 는 `.env`, `.venv/`, `data/`, `.claude/` 를 제외함.
+로컬 전용 — 원격 push 대상 없음. `.gitignore` 가 `.env`, `.venv/`, `data/`, `.claude/`, `__pycache__/` 제외.
+
+커밋 스타일: 짧은 제목 (첫줄) + 빈 줄 + 상세. 예:
+```
+Add photo support to overlay
+
+- on_photo handler downloads largest Telegram photo variant
+- data/photos/ cache with MAX_PHOTOS=10 retention
+- StaticFiles mount at /photos
+- Frontend renders <img> for payload type=photo
+```
+
+---
+
+## 참고 링크
+
+- [pyTelegramBotAPI 4.x docs](https://pytba.readthedocs.io/)
+- [Telegram Bot API - setChatPermissions](https://core.telegram.org/bots/api#setchatpermissions)
+- [OpenAI Realtime API (transcription intent)](https://developers.openai.com/api/docs/guides/realtime)
+- [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api)

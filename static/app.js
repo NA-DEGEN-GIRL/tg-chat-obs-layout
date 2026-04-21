@@ -11,20 +11,32 @@
   } catch (_) {}
 
   function append(data) {
-    if (!data || typeof data.text !== "string") return;
+    if (!data) return;
+    const type = data.type || "text";
     const el = document.createElement("div");
-    el.className = "msg";
+    el.className = "msg" + (type === "photo" ? " msg-photo" : "");
 
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = data.name || "Unknown";
     if (data.color) name.style.color = data.color;
+    el.appendChild(name);
 
-    const text = document.createElement("span");
-    text.className = "text";
-    text.textContent = data.text;
+    if (type === "photo") {
+      if (!data.url) return;
+      const img = document.createElement("img");
+      img.src = data.url;
+      img.alt = "";
+      img.decoding = "async";
+      el.appendChild(img);
+    } else {
+      if (typeof data.text !== "string") return;
+      const text = document.createElement("span");
+      text.className = "text";
+      text.textContent = data.text;
+      el.appendChild(text);
+    }
 
-    el.append(name, text);
     chat.appendChild(el);
 
     while (chat.children.length > MAX_MESSAGES) {

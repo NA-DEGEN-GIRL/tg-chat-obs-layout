@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import telebot
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from telebot.types import ChatPermissions
 
@@ -48,6 +49,9 @@ BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 COLORS_FILE = DATA_DIR / "user_colors.json"
+STATE_FILE = DATA_DIR / "state.json"
+PHOTOS_DIR = DATA_DIR / "photos"
+MAX_PHOTOS = 10
 
 # 어두운 반투명 배경에서 가독성 좋은 색만 추려낸 팔레트
 USER_COLOR_PALETTE = [
@@ -128,6 +132,47 @@ def color_for(user_id: int) -> str:
         return _user_colors[key]
 
 
+def load_state() -> dict:
+    try:
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[WARN] state.json 로드 실패: {e}", flush=True)
+    return {}
+
+
+def save_state(state: dict) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[WARN] state.json 저장 실패: {e}", flush=True)
+
+
+def update_state(**kwargs) -> None:
+    s = load_state()
+    s.update(kwargs)
+    save_state(s)
+
+
+def cleanup_photos() -> None:
+    try:
+        if not PHOTOS_DIR.exists():
+            return
+        files = [p for p in PHOTOS_DIR.iterdir() if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[MAX_PHOTOS:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[WARN] photo cleanup failed: {e}", flush=True)
+
+
 def display_name(user) -> str:
     if user is None:
         return "Unknown"
@@ -194,7 +239,7 @@ async def stt_on_text(text: str) -> None:
     print(f"[STT] {bot_display_name}: {text}", flush=True)
 
     color = color_for(bot_user_id or 0)
-    overlay = broadcast({"name": bot_display_name, "text": text, "color": color})
+    overlay = broadcast({"type": "text", "name": bot_display_name, "text": text, "color": color})
     send_tg = asyncio.to_thread(bot.send_message, CHAT_ID, text)
     results = await asyncio.gather(overlay, send_tg, return_exceptions=True)
     for r in results:
@@ -213,10 +258,8 @@ def cmd_tts_on(message):
     try:
         ok = fut.result(timeout=15)
         if ok:
-            bot.reply_to(
-                message,
-                f"TTS 시작 (드라이런): {STT_PROVIDER} 백엔드로 CMD에 출력 중",
-            )
+            update_state(tts_on=True)
+            bot.reply_to(message, f"TTS 시작: {STT_PROVIDER} 백엔드로 마이크 수신 중")
         else:
             bot.reply_to(message, "이미 실행 중이거나 시작 실패 — 콘솔 로그 확인")
     except Exception as e:
@@ -233,6 +276,7 @@ def cmd_tts_off(message):
     fut = asyncio.run_coroutine_threadsafe(stt_manager.stop(), main_loop)
     try:
         ok = fut.result(timeout=10)
+        update_state(tts_on=False)
         bot.reply_to(message, "TTS 종료" if ok else "이미 중지 상태")
     except Exception as e:
         bot.reply_to(message, f"중지 실패: {e}")
@@ -240,7 +284,7 @@ def cmd_tts_off(message):
 
 
 @bot.message_handler(
-    func=lambda m: m.chat.id == CHAT_ID and not (m.text or "").startswith("/"),
+    func=lambda m: m.chat.id == CHAT_ID,
     content_types=["text"],
 )
 def on_text(message):
@@ -250,7 +294,42 @@ def on_text(message):
     print(f"{name}: {text}", flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
-            broadcast({"name": name, "text": text, "color": color}),
+            broadcast({"type": "text", "name": name, "text": text, "color": color}),
+            main_loop,
+        )
+
+
+@bot.message_handler(
+    func=lambda m: m.chat.id == CHAT_ID,
+    content_types=["photo"],
+)
+def on_photo(message):
+    if not message.photo:
+        return
+    chosen = max(
+        message.photo,
+        key=lambda s: (getattr(s, "width", 0) or 0) * (getattr(s, "height", 0) or 0),
+    )
+    file_unique_id = chosen.file_unique_id
+    try:
+        PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+        target = PHOTOS_DIR / f"{file_unique_id}.jpg"
+        if not target.exists():
+            info = bot.get_file(chosen.file_id)
+            data = bot.download_file(info.file_path)
+            target.write_bytes(data)
+        cleanup_photos()
+    except Exception as e:
+        print(f"[WARN] photo download failed: {e}", flush=True)
+        return
+
+    name = display_name(message.from_user)
+    color = color_for(message.from_user.id) if message.from_user else USER_COLOR_PALETTE[0]
+    url = f"/photos/{file_unique_id}.jpg"
+    print(f"{name}: [photo] {url}", flush=True)
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            broadcast({"type": "photo", "name": name, "url": url, "color": color}),
             main_loop,
         )
 
@@ -295,6 +374,18 @@ async def lifespan(app: FastAPI):
         on_text=stt_on_text,
     )
 
+    state = load_state()
+    if state.get("tts_on"):
+        print("[INFO] 이전 세션 상태 복구: tts_on 자동 재시작", flush=True)
+        try:
+            ok = await stt_manager.start()
+            if not ok:
+                print("[WARN] tts_on 자동 재시작 실패 — 상태 초기화", flush=True)
+                update_state(tts_on=False)
+        except Exception as e:
+            print(f"[WARN] tts_on 자동 재시작 예외: {e}", flush=True)
+            update_state(tts_on=False)
+
     yield
 
     try:
@@ -308,13 +399,24 @@ async def lifespan(app: FastAPI):
         pass
 
 
+PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+
+CACHE_BUSTER = str(int(time.time()))
+_INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
+    "{{CB}}", CACHE_BUSTER
+)
+
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return HTMLResponse(
+        _INDEX_HTML,
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 @app.get("/config")
