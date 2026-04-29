@@ -1,438 +1,402 @@
 # tg-chat-obs-layout
 
-**텔레그램 그룹 채팅을 OBS 방송 화면에 띄우는 프로그램** (윈도우용)
+Telegram 그룹 채팅과 비디오챗 참가자를 OBS 방송 화면에 올리는 Windows 중심 오버레이 도구입니다.
 
+두 개의 브라우저 소스를 따로 씁니다.
+
+- `9292`: 일반 Telegram 채팅/STT 오버레이
+- `9393`: Telegram 비디오챗 참가자 캐릭터 오버레이
+
+비디오챗 오버레이는 Three.js로 만든 모닥불 장면입니다. 참가자가 비디오챗에 들어오면 캐릭터가 나타나고, 채팅 또는 STT 메시지가 들어오면 해당 캐릭터 위에 말풍선이 뜹니다. 비디오챗에 없는 사람이 채팅하면 오른쪽 채팅 내역에는 보이지만 캐릭터 말풍선에는 붙지 않습니다.
+
+## 주요 기능
+
+- Telegram 그룹 채팅을 OBS에 말풍선 형태로 표시
+- Telegram 사진 메시지를 오버레이에 표시
+- `/stream_on`, `/stream_off`, `/text_on`으로 방송 중 채팅 권한 제어
+- `/tts_on`, `/tts_off`로 마이크 음성을 STT 변환 후 Telegram/오버레이에 출력
+- 공지 채널 댓글창/thread를 별도 오버레이 소스로 지정하는 `/here_on`, `/here_off`
+- Telegram 비디오챗 참가자 목록을 Telethon으로 조회
+- 비디오챗 참가자를 Three.js 캐릭터로 표시
+- 참가자 프로필 사진, 닉네임, 레벨 배지 표시
+- 방장 crown + `Lv. 99` 표시
+- 비디오챗 입장/퇴장 애니메이션과 이벤트 메시지
+- 오른쪽 채팅 내역 패널, 제목 텍스트, 카메라 각도/줌/위치 조절
+- OBS 배치 확인용 mock/preview 모드
+
+## 작동 구조
+
+```text
+Telegram group chat
+        |
+        v
+main.py  ->  http://127.0.0.1:9292/  ->  OBS Browser Source
+        |
+        +---- WebSocket text/photo/STT events
+                         |
+                         v
+videochat_overlay.py  ->  http://127.0.0.1:9393/  ->  OBS Browser Source
+        ^
+        |
+Telethon user session -> Telegram videochat participants
 ```
-  텔레그램 그룹 채팅        →         OBS 방송 화면
-  "안녕하세요~"                        [투명 배경에 말풍선으로 뜸]
-```
 
-## 할 수 있는 것
+일반 채팅 오버레이만 쓸 때는 `main.py`만 실행하면 됩니다.
+비디오챗 캐릭터 오버레이까지 쓰려면 `main.py`와 `videochat_overlay.py`를 함께 실행합니다.
 
-1. **채팅 오버레이** — 텔레그램 그룹의 채팅이 OBS에 말풍선으로 실시간 표시 (트위치·유튜브 채팅창처럼)
-2. **사진 표시** — 그룹에 올린 사진도 오버레이에 보임
-3. **방송 모드 전환** — 명령어 한 번으로 시청자 채팅 허용/차단
-4. **음성 → 채팅** — 마이크에 말하면 AI가 자동으로 받아써서 봇이 대신 그룹에 채팅 (오버레이에도 같이 표시)
+## 준비물
 
----
+- Windows PC
+- Python 3.10 이상
+- OBS Studio
+- Telegram 계정
+- Telegram BotFather로 만든 bot token
+- STT를 쓸 경우 OpenAI 또는 Gemini API key
+- 비디오챗 오버레이를 쓸 경우 Telegram API ID/API hash
 
-# 🛠 처음부터 설치 — 따라만 하세요
+## 설치
 
-## 0단계. 이게 뭘 할지 먼저 이해하기
+Python 버전 확인:
 
-```
-[호스트 PC]                              [시청자]
-  ┌─────────────────┐
-  │ 이 프로그램(Py) │ ←── 텔레그램 그룹 채팅 받아옴
-  │  + OBS 브라우저 │
-  │    소스         │
-  └────────┬────────┘
-           │ 방송
-           ▼
-        [YouTube / Twitch / ...]
-```
-
-호스트는 자기 PC에 이 프로그램을 돌리고, OBS에 "브라우저 소스" 라는 걸로 이 프로그램이 만드는 화면을 띄웁니다.
-시청자는 그냥 방송만 봄 — 오버레이가 방송 화면 위에 합성돼서 나옴.
-
----
-
-## 1단계. 필요한 것들
-
-이 5개 전부 준비돼야 합니다:
-
-| 항목 | 필요한 이유 |
-|---|---|
-| Windows PC | 이 프로그램이 윈도우 전용 |
-| Python 3.10+ | 프로그램이 파이썬으로 돌아감 |
-| OBS Studio | 방송용 프로그램 (무료) |
-| 텔레그램 계정 | 채팅을 가져올 곳 |
-| OpenAI API 키 | 음성→텍스트 변환 (STT 안 쓰면 생략 가능) |
-
-### Python 설치 확인
-
-CMD(명령 프롬프트) 열고:
-```
+```cmd
 python --version
 ```
 
-`Python 3.10` 이상 숫자가 뜨면 OK. 아니면:
-1. [python.org/downloads](https://www.python.org/downloads/) 에서 다운
-2. **설치할 때 "Add Python to PATH" 체크박스 반드시 체크**
+`uv` 설치:
 
-### uv 설치 (파이썬 패키지 관리 도구)
-
-PowerShell 열고 (우클릭 → "관리자 권한으로 실행" 추천):
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-설치 후 **새 터미널 다시 열고** 확인:
-```
-uv --version
-```
-버전 숫자 뜨면 성공.
+프로젝트 받기:
 
----
-
-## 2단계. 프로젝트 받기 + 설치
-
-CMD 에서:
 ```cmd
-cd D:\어디든\설치할곳
-```
-
-프로젝트 폴더 복사해서 넣거나, git 쓰면:
-```
-git clone <저장소_주소> tg-chat-obs-layout
+git clone <repo-url> tg-chat-obs-layout
 cd tg-chat-obs-layout
 ```
 
-설치:
+의존성 설치:
+
 ```cmd
 uv venv
 uv pip install -r requirements.txt
 ```
 
-`.venv` 폴더가 생기면 완료.
+## Telegram Bot 설정
 
----
+1. Telegram에서 [@BotFather](https://t.me/BotFather)를 엽니다.
+2. `/newbot`으로 bot을 만듭니다.
+3. 발급된 bot token을 `.env`의 `BOT_TOKEN`에 넣습니다.
+4. BotFather에서 `Group Privacy`를 `Turn off`로 바꿉니다.
+5. bot을 방송용 그룹에 초대합니다.
+6. `/stream_on`, `/stream_off`를 쓸 경우 bot을 그룹 관리자로 만들고 `Restrict members` 권한을 켭니다.
 
-## 3단계. 텔레그램 봇 만들기 (한 번만 하면 됨)
+필요한 값:
 
-### 3-1. 봇 만들기
+- `CHAT_ID`: 방송용 Telegram 그룹 ID
+- `OWNER_ID`: 명령어를 실행할 본인 Telegram user ID
 
-1. 텔레그램에서 **[@BotFather](https://t.me/BotFather)** 검색 → 대화 시작
-2. `/newbot` 입력
-3. 봇 이름 대답 (예: `내방송채팅봇`)
-4. 봇 사용자명 대답 (예: `my_stream_chat_bot`) — 반드시 `_bot` 으로 끝나야 함
-5. **봇 토큰**이 나옴 (길고 이상한 문자열: `1234567890:AAH...`). 메모장에 복사해둘 것
-6. 매우 중요한 설정 한 가지 — BotFather 한테:
-   - `/mybots` → 방금 만든 봇 선택
-   - `Bot Settings` → `Group Privacy` → `Turn off` 누르기
-   - 이거 **안 하면 봇이 그룹 메시지를 못 읽어서 오버레이에 아무것도 안 뜸**
+## 환경 설정
 
-### 3-2. 그룹 만들기 + 봇 초대
+템플릿 복사:
 
-1. 텔레그램에서 **새 그룹 만들기** (또는 기존 그룹 사용)
-2. 그룹이 일반 그룹이면 **슈퍼그룹으로 전환** (그룹 설정 → 유형 → 채널/슈퍼그룹)
-3. 그룹에 방금 만든 봇 추가
-4. 그룹 설정 → **관리자** → 관리자 추가 → 봇 선택 → **"멤버 제한(Restrict members)" 권한 반드시 켜기**
-
-### 3-3. 필요한 숫자 알아내기
-
-이 프로그램은 두 가지 숫자가 필요합니다:
-- **CHAT_ID**: 우리 방송할 그룹의 ID
-- **OWNER_ID**: 내 텔레그램 계정 ID
-
-알아내는 방법:
-1. 텔레그램에서 **[@userinfobot](https://t.me/userinfobot)** 검색
-2. 이 봇을 그룹에 잠깐 초대 → 그룹에 아무 글 쓰기 → 봇이 그룹 ID 답해줌 (예: `-1001234567890`) = **CHAT_ID**
-3. 이 봇하고 1:1로 `/start` → 봇이 내 ID 알려줌 (예: `123456789`) = **OWNER_ID**
-4. 확인 끝나면 그룹에서 userinfobot 빼도 됨
-
----
-
-## 4단계. OpenAI API 키 (STT 쓸 때만)
-
-음성으로 채팅 치는 기능(`/tts_on`) 안 쓸 거면 **건너뛰어도 됨**.
-
-1. [platform.openai.com](https://platform.openai.com/api-keys) 로그인
-2. **Create new secret key** 버튼 → 생성된 키 복사 (한 번만 보임!)
-3. [Billing 페이지](https://platform.openai.com/account/billing/overview) 에서 **결제수단 등록 + 크레딧 $5 정도 충전**
-   - 음성 인식 요금: 1분당 약 $0.003 (1시간 방송 = $0.18)
-   - $5 넣으면 수십 시간 씀
-
----
-
-## 5단계. 설정 파일 (.env) 만들기
-
-프로젝트 폴더에서:
 ```cmd
 copy .env.example .env
 ```
 
-`.env` 파일을 메모장으로 열고 아래 값들 **전부 채우기**:
+`.env`에는 실제 값을 넣습니다. `.env`는 절대 공개하거나 커밋하지 않습니다.
+
+최소 설정:
 
 ```bash
-# 필수
-BOT_TOKEN=여기에_3단계에서_받은_봇_토큰_붙여넣기
-CHAT_ID=여기에_3-3에서_알아낸_그룹ID
-OWNER_ID=여기에_3-3에서_알아낸_내ID
+BOT_TOKEN=
+CHAT_ID=
+OWNER_ID=
 
-# 오버레이 (바꿀 필요 없음)
 WEB_HOST=127.0.0.1
 WEB_PORT=9292
 FADE_AFTER_SEC=30
-
-# STT (음성→채팅, 안 쓰면 비워둬도 됨)
-STT_PROVIDER=openai
-OPENAI_API_KEY=여기에_4단계에서_받은_키
-STT_MODEL_OPENAI=gpt-4o-mini-transcribe
-STT_LANGUAGE=ko
-STT_INPUT_DEVICE=
+CHAT_FONT_SIZE=22
 ```
 
-**절대 하지 말 것:**
-- 값 뒤에 같은 줄에 `#주석` 붙이지 말기. (`CHAT_ID=-1003... # 내 그룹` 처럼 쓰면 `# 내 그룹`이 값에 섞여 들어감)
-- `.env` 파일 아무한테도 공유하지 말기 (토큰·API 키 = 비밀번호와 같음)
-
-### 비디오챗 캐릭터 오버레이 설정
-
-비디오챗 참가자 캐릭터 오버레이를 쓰려면 아래 값도 `.env`에 채웁니다.
+STT 설정:
 
 ```bash
+STT_PROVIDER=openai
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+STT_MODEL_OPENAI=gpt-4o-mini-transcribe
+STT_MODEL_GEMINI=gemini-3.1-flash-live-preview
+STT_LANGUAGE=ko
+STT_INPUT_DEVICE=
+STT_SEND_AS=bot
+STT_AI_LABEL=0
+STT_AI_LABEL_TEXT=aiSTT
+STT_SEND_AS_USER_FALLBACK_BOT=1
+```
+
+`STT_SEND_AS=user`를 쓰면 bot이 아니라 Telegram 사용자 계정으로 STT 메시지를 보냅니다. 이 경우 아래 Telethon 설정이 필요합니다.
+
+비디오챗/Telethon 설정:
+
+```bash
+TD_API_ID=
+TD_API_HASH=
+TD_PHONE=
+TD_VIDEOCHAT_LINK=
+
 VIDEOCHAT_WEB_HOST=127.0.0.1
 VIDEOCHAT_WEB_PORT=9393
 VIDEOCHAT_CHAT_WS_URL=ws://127.0.0.1:9292/ws
 
-# 방장 표시. 가능하면 user id를 권장합니다.
 VIDEOCHAT_HOST_USER_ID=
 VIDEOCHAT_HOST_USERNAME=
 VIDEOCHAT_HOST_NAME=Host
 VIDEOCHAT_HOST_AVATAR_FILE=
-
-# 레벨을 저장할 채팅방. 비워두거나 0이면 메인 채팅만 사용합니다.
 VIDEOCHAT_LEVEL_CHAT_ID=0
 
-# 방송마다 링크가 바뀌면 실행 인자로 넘겨도 됩니다.
-TD_VIDEOCHAT_LINK=
+VIDEOCHAT_WATCH_ENABLED=1
+VIDEOCHAT_WATCH_INTERVAL=2
+VIDEOCHAT_DOWNLOAD_PHOTOS=1
+VIDEOCHAT_DEBUG_SPEECH=0
 ```
 
-방장 왕관과 `Lv. 99`가 안 보이면 `VIDEOCHAT_HOST_USER_ID` 또는 `VIDEOCHAT_HOST_USERNAME`이 실제 Telegram 계정과 일치하는지 먼저 확인하세요. `VIDEOCHAT_HOST_NAME`으로도 fallback 판정하지만, 같은 이름 사용자가 있을 수 있어 ID/username이 더 안전합니다.
+`TD_API_ID`와 `TD_API_HASH`는 <https://my.telegram.org/apps>에서 발급합니다.
 
-### 마이크 고르기 (`STT_INPUT_DEVICE`)
+방장 crown과 `Lv. 99`가 안 뜨면 `VIDEOCHAT_HOST_USER_ID` 또는 `VIDEOCHAT_HOST_USERNAME`을 실제 계정과 맞춰야 합니다. `VIDEOCHAT_HOST_NAME`도 fallback으로 쓰지만, 이름은 중복될 수 있으므로 ID/username이 더 안전합니다.
 
-비우면 OS 기본 마이크 사용. 특정 마이크 쓰려면 이름 일부만 쓰면 됨:
-```bash
-STT_INPUT_DEVICE=RODE         # 로데 마이크 쓸 때
-STT_INPUT_DEVICE=Blue Yeti    # Yeti 마이크 쓸 때
-STT_INPUT_DEVICE=NVIDIA       # NVIDIA Broadcast 거쳐서
-```
+`TD_VIDEOCHAT_LINK`는 방송마다 바뀔 수 있으므로 실행할 때 `--link`로 넘겨도 됩니다.
 
-**내 PC에 어떤 마이크 있는지 확인:**
-```cmd
-uv run python -c "import sounddevice as sd; [print(i, d['name']) for i, d in enumerate(sd.query_devices()) if d['max_input_channels']>0]"
-```
+## 실행
 
----
+일반 채팅/STT 오버레이:
 
-## 6단계. 실행
-
-CMD 에서:
 ```cmd
 uv run python main.py
 ```
 
-정상이면 이런 게 뜸:
-```
-[INFO] Overlay: http://127.0.0.1:9292/  (OBS Browser Source)
-[INFO] Bot @내봇이름 listening chat -100... ...
-```
+브라우저에서 확인:
 
-**검증 시간:** 텔레그램 그룹에 아무 채팅 치기. CMD에 찍혀야 정상:
-```
-내이름: 안녕하세요
+```text
+http://127.0.0.1:9292/
 ```
 
-**찍히지 않으면** → 3-1번 6의 "Group Privacy Turn off" 다시 확인.
+비디오챗 캐릭터 오버레이:
 
----
+```cmd
+uv run python videochat_overlay.py --link "https://t.me/+INVITE_HASH"
+```
 
-## 7단계. OBS에 연결
+또는 `.env`에 `TD_VIDEOCHAT_LINK`를 넣고:
 
-1. OBS 열기
-2. "소스" 패널 → 아래 `+` 버튼 → **브라우저** 선택
-3. "새로 만들기" → 이름 자유 (예: `Telegram Chat`) → 확인
-4. 설정 창에서:
-   - **URL**: `http://127.0.0.1:9292/` 붙여넣기
-   - **너비**: 500 (취향대로)
-   - **높이**: 900 (취향대로)
-   - **"OBS가 소스를 표시하지 않을 때 종료"**: **체크 해제** ← 중요! 안 끄면 장면 바꿀 때마다 연결 끊김
-5. 확인
-6. 방송 캔버스에서 마우스로 위치·크기 조정
+```cmd
+uv run python videochat_overlay.py
+```
 
-**배경은 투명하게 자동 적용**됩니다. OBS 화면에는 말풍선만 보이고 배경은 방송 화면이 비침.
+브라우저에서 확인:
 
----
+```text
+http://127.0.0.1:9393/
+```
 
-# 📖 사용법
+Telethon을 처음 실행하면 콘솔에서 로그인 코드 또는 2FA 비밀번호를 물어볼 수 있습니다. 로그인 세션은 `data/telethon/`에 저장되며 공개하면 안 됩니다.
 
-## 그룹에 있을 때 쓸 수 있는 봇 명령어
+## OBS 구성
 
-**본인(`.env` 의 `OWNER_ID`)만 실행 가능.** 다른 사람이 쳐봐야 봇이 무시함.
+OBS에 Browser Source를 두 개 추가하는 구성을 권장합니다.
 
-| 명령어 | 효과 |
+채팅 오버레이:
+
+- URL: `http://127.0.0.1:9292/`
+- Width/Height: 방송 레이아웃에 맞게 설정
+- 배경: 투명
+
+비디오챗 캐릭터 오버레이:
+
+- URL: `http://127.0.0.1:9393/`
+- Width/Height: 보통 전체 화면 크기
+- 채팅창과 캐릭터 씬을 분리하고 싶으면 위치를 따로 조정
+
+OBS Browser Source 옵션에서 “소스가 표시되지 않을 때 종료”는 끄는 편이 안전합니다. 장면 전환 때 WebSocket이 끊기는 것을 줄일 수 있습니다.
+
+## 9393 오버레이 조작
+
+카메라:
+
+- `Q` / `E`: 좌우 회전
+- `W` / `S`: 카메라 각도 조절
+- 마우스 휠: 확대/축소
+- 가운데 휠 드래그: 화면 기준 위치 이동
+
+화면 UI:
+
+- 제목 영역: 방송 주제 표시. 직접 편집, 이동, 크기 조절 가능
+- 오른쪽 채팅 패널: 참가자/미참여자 채팅을 함께 표시
+- 채팅 패널의 `M`: 패널 이동
+- 채팅 패널의 `-` / `+`: 글자 크기 조절
+- `fade`: 메시지 사라짐 시간. `-1`이면 사라지지 않음
+- `hide`: 채팅 패널 숨김
+- `A-` / `A+`: 캐릭터 네임카드 전체 크기
+- `B-` / `B+`: 캐릭터 말풍선 전체 크기
+- `E-` / `E+`: 입장/퇴장 이벤트 메시지 크기
+- `in` / `out`: 입장/퇴장 효과 선택
+- `msg`: 입장/퇴장 메시지 스타일 선택
+
+설정은 브라우저 localStorage에 저장됩니다. OBS Browser Source를 삭제하거나 브라우저 데이터를 지우면 초기화될 수 있습니다.
+
+## Preview 모드
+
+Telegram 없이 OBS 배치를 맞출 때 쓸 수 있습니다.
+
+말풍선 preview:
+
+```text
+http://127.0.0.1:9393/?debug_speech=1
+```
+
+50명 참가자 preview:
+
+```text
+http://127.0.0.1:9393/?mock_participants=50&debug_speech=1
+```
+
+입장/퇴장 preview:
+
+```text
+http://127.0.0.1:9393/?mock_participants=10&debug_speech=1&debug_lifecycle=1
+```
+
+Preview 모드는 방송 전 레이아웃, 말풍선 크기, 카메라 각도, 채팅 패널 위치를 맞추기 위한 기능입니다.
+
+## Telegram 명령어
+
+명령어는 기본적으로 `OWNER_ID`가 실행해야 합니다.
+
+| 명령어 | 설명 |
 |---|---|
-| `/stream_on` | 시청자들이 텍스트+사진만 보낼 수 있게 함. 스티커/GIF/영상/음성/파일 차단 |
-| `/text_on` | 텍스트만 허용 (사진도 차단). 방송 안 할 때 일반 대화용 |
-| `/stream_off` | 호스트(나) 빼고 전부 음소거. 방송 중 소란 방지 |
-| `/tts_on` | 마이크 켜서 말하는 내용 → 자동으로 봇이 친 곳에 채팅 (메인 그룹 또는 활성 댓글창) |
-| `/tts_off` | 마이크 끔 (양쪽 모두 무조건 off) |
-| `/here_on` | (공지채널 댓글창 등) 다른 채팅방의 댓글창에서 사용. 그 댓글창의 글도 오버레이에 같이 흘림 |
-| `/here_off` | 활성 댓글창 해제 |
+| `/stream_on` | 텍스트와 사진만 허용하고 sticker, GIF, 영상, 파일 등을 제한 |
+| `/text_on` | 텍스트만 허용 |
+| `/stream_off` | 호스트/관리자 외 전송 제한 |
+| `/tts_on` | 현재 위치를 STT 출력 목적지로 추가하고 마이크 인식 시작 |
+| `/tts_off` | 모든 STT 출력 목적지를 비우고 STT 종료 |
+| `/here_on` | 현재 thread/comment chat을 오버레이 소스로 활성화 |
+| `/here_off` | 활성 thread/comment chat 해제 |
 
-> 참고: 시청자가 `/lol`, `/ㅋㅋㅋ`, `/슬픔` 같이 슬래시 붙여서 장난식으로 쳐도 일반 채팅처럼 오버레이에 표시됩니다. 위 실제 관리 명령어만 봇이 먼저 가로채서 처리하고, 그 외 슬래시 메시지는 전부 통과.
+## 데이터 저장 위치
 
-### 공지채널 댓글창 모드 (`/here_on`)
+로컬 실행 중 생성되는 파일:
 
-방송을 공지채널에서 띄울 때, 시청자들이 메인 그룹 대신 **공지채널 특정 글의 댓글로 소통**하는 경우 사용:
+- `data/user_colors.json`: 사용자별 채팅 색상
+- `data/state.json`: `/tts_on` 상태
+- `data/photos/`: Telegram 사진 메시지 캐시
+- `data/telethon/`: Telethon 사용자 로그인 세션
+- `data/telethon/profile_photos/`: 비디오챗 참가자 프로필 사진 캐시
+- `data/videochat_levels.json`: 비디오챗 레벨/프로필 기록
 
-1. 공지채널의 **연결된 토론 그룹(linked discussion group)** 에 봇 초대 + Privacy Mode OFF 확인
-2. 시청자가 댓글로 모이는 그 글의 댓글창에 본인이 `/here_on` 입력
-3. 봇이 "이 댓글창 오버레이 활성화" 답장 → 그 댓글창의 새 댓글들도 오버레이에 같이 뜸 (메인 그룹은 계속 표시됨)
-4. 거기서 `/tts_on` 치면 → STT 결과가 그 댓글창에 댓글로 포스팅됨
-5. 메인 그룹에서도 `/tts_on` 했으면 양쪽 모두에 STT 결과 들어감 (각자 토글 가능)
-6. `/tts_off` → 양쪽 모두 STT 종료
-7. `/here_off` → 댓글창 모드 해제
+`data/`는 개인정보와 세션을 포함할 수 있으므로 커밋하지 않습니다.
 
-**제약**:
-- 활성 댓글창은 한 번에 **하나만**. 새로 `/here_on` 치면 이전 것 자동 해제
-- 댓글창 모드는 **저장 안 됨** (단발성). 봇 재시작하면 메인만 복구되고 댓글창은 다시 `/here_on` 필요
+## 공개 저장소 보안 체크
 
-## 방송하는 날 표준 플로우
+공개 전 확인:
 
-```
-방송 시작 30분 전 ─── 이 프로그램 실행 (uv run python main.py)
-                  ─── OBS 켜고 브라우저 소스 표시 확인
+- `.env`가 커밋되지 않았는지
+- `data/`, `logs/`, `chrome-debug-profile/`, `debug_videochat*.png`가 커밋되지 않았는지
+- 실제 bot token, API key, phone, invite hash, chat id, username이 문서에 남지 않았는지
+- Telethon 세션 파일이 올라가지 않았는지
+- 프로필 사진/채팅 사진 캐시가 올라가지 않았는지
+- STT debug 로그를 공유하지 않았는지
 
-방송 시작 ────────── 그룹에 /stream_off → 일반 시청자 채팅 차단
-                  ─── 그룹에 /tts_on → 내 목소리가 채팅으로 변환
-                  ─── 말하면서 방송
+## 문제 해결
 
-방송 중 ─────────── 시청자들은 텔레그램 그룹에서 타이핑 대신
-                     (호스트가 허용한 경우) 가끔 /stream_on 으로 열어주거나
-                     그냥 반응만 받는 식
+### 채팅이 안 보임
 
-방송 끝 ─────────── /tts_off
-                  ─── /stream_on (시청자들도 다시 편하게 채팅)
-                  ─── 프로그램 Ctrl+C 로 종료
-```
+- BotFather에서 Group Privacy가 꺼져 있는지 확인
+- bot을 그룹에서 제거 후 다시 초대
+- `.env`의 `CHAT_ID`가 맞는지 확인
 
-## 오버레이 스타일 바꾸기
+### `409 Conflict: terminated by other getUpdates`
 
-폰트 크기, 색깔, 위치 등 바꾸려면 `static/style.css` 파일 수정. 수정 후 OBS에서:
-- 소스 우클릭 → **"현재 페이지의 캐시 새로 고침"** (그냥 "새로 고침" 아님!)
-- 또는 `main.py` 재시작하면 자동으로 반영됨 (캐시 버스터 자동)
+같은 bot token으로 프로그램이 두 번 실행 중입니다.
 
-자주 바꿀 만한 값:
-
-```css
-/* static/style.css */
-.msg {
-  font-size: 22px;                          /* 글자 크기 */
-  background: rgba(15, 18, 24, 0.62);       /* 말풍선 투명도 (0=투명, 1=꽉 찬 검정) */
-}
-#chat {
-  left: 16px;                               /* 왼쪽 여백 */
-  bottom: 16px;                             /* 아래쪽 여백 */
-}
-```
-
-사진 최대 크기:
-```css
-.msg-photo img {
-  max-width: 360px;                         /* 사진 최대 너비 */
-  max-height: 360px;                        /* 사진 최대 높이 */
-}
-```
-
-메시지 몇 초 뒤 사라지게 할지는 `.env` 의 `FADE_AFTER_SEC`:
-- `30` → 30초 후 사라짐
-- `-1` → 안 사라짐
-- `10` → 10초 후 사라짐
-
----
-
-# 🔧 문제 해결
-
-## "BOT_TOKEN 이 비어 있습니다" 오류
-→ `.env` 파일 없거나 값 안 채움. `.env.example` 복사해서 채우기.
-
-## 오버레이는 뜨는데 채팅이 안 보임
-→ BotFather 에서 **Group Privacy 가 아직 Turn on 상태**.
-1. `/mybots` → 봇 → Bot Settings → Group Privacy → **Turn off**
-2. 그룹에서 봇을 **한 번 빼고 다시 초대** (설정 반영을 위해)
-
-## `409 Conflict: terminated by other getUpdates` 오류
-→ 같은 봇 토큰으로 프로그램이 두 번 돌고 있음. 확인:
 ```powershell
 Get-Process python | Stop-Process -Force
 ```
-(PowerShell에서 실행) 전부 종료 후 다시 시작.
 
-## `/stream_on` 했는데 "권한 변경 실패" 답장
-→ 봇이 그룹 관리자가 아니거나, 관리자인데 **"멤버 제한" 권한이 꺼져 있음**.
-- 그룹 설정 → 관리자 → 봇 선택 → 권한 확인 → **멤버 제한 켜기**
+그 후 다시 실행합니다.
 
-## 포트 9292 이미 사용 중
-→ `.env` 의 `WEB_PORT` 를 다른 숫자(예: `9300`)로 변경.
-- OBS 브라우저 소스 URL도 `http://127.0.0.1:9300/` 으로 같이 바꾸기.
+### `/stream_on` 권한 변경 실패
 
-## `/tts_on` 답장은 오는데 말해도 반응 없음
-- 마이크가 OS 기본이 아닌 엉뚱한 거일 수 있음 → `.env` 의 `STT_INPUT_DEVICE` 정확히 지정
-- API 키 크레딧 바닥났을 수 있음 → platform.openai.com 빌링 확인
-- 상세 디버깅:
-  ```cmd
-  uv run python main.py
-  ```
+bot이 그룹 관리자가 아니거나 `Restrict members` 권한이 없습니다. 그룹 관리자 설정에서 권한을 켭니다.
 
-## 사진이 오버레이에 안 뜸
-1. 일반 브라우저로 `http://127.0.0.1:9292/photos/아까그파일이름.jpg` 접속 → 사진 뜨면 백엔드는 OK
-2. OBS 소스 **우클릭 → "현재 페이지의 캐시 새로 고침"**
-3. 그래도 안 되면: 브라우저 소스 삭제하고 같은 URL로 다시 추가
+### 포트가 이미 사용 중
 
-## 오버레이가 갑자기 텅 빔
-→ 서버(Python) 가 죽었거나, WebSocket 연결 끊김.
-- CMD 창 확인 (에러 메시지 있는지)
-- 필요하면 재시작
+`.env`에서 포트를 바꿉니다.
 
----
-
-# 💡 팁
-
-- **방송 중에도 `main.py` 는 그대로 두세요** — 중간에 끄면 오버레이 사라짐
-- **스타일은 방송 전에 미리 조정** — 방송 중에 바꾸면 시청자가 레이아웃 바뀌는 게 보임
-- **오픈AI 크레딧 모니터링** — platform.openai.com 에서 사용량 주기적으로 확인
-- **`/tts_on` 상태는 저장됨** — 프로그램 꺼도 다음 실행 시 자동 복구 (`data/state.json`)
-- **유저 색깔도 저장됨** — 같은 사람은 매번 같은 색 (`data/user_colors.json`)
-
----
-
-# 공개 저장소 보안 체크
-
-이 저장소를 공개하기 전에 아래 항목을 확인하세요.
-
-- `.env`, `data/`, `logs/`, `chrome-debug-profile/`, `debug_videochat*.png`가 커밋되지 않아야 합니다.
-- `data/telethon/`에는 사용자 계정 세션이 저장됩니다. 절대 공유하지 마세요.
-- `data/telethon/profile_photos/`와 `data/photos/`에는 참가자/채팅 사진이 저장될 수 있습니다. 공개하지 마세요.
-- `.env.example`에는 실제 토큰, 실제 채팅 ID, 실제 초대 링크, 실제 username을 넣지 마세요.
-- STT debug 로그는 API 응답/인식 텍스트를 많이 출력할 수 있으니 공유 전 확인하세요.
-
-# 🗂 파일 구조 (참고)
-
+```bash
+WEB_PORT=9300
+VIDEOCHAT_WEB_PORT=9394
 ```
+
+OBS URL도 같은 포트로 바꿔야 합니다.
+
+### 비디오챗 참가자가 안 뜸
+
+- `videochat_overlay.py --link ...`에 넘긴 링크가 현재 active videochat/live stream인지 확인
+- `TD_API_ID`, `TD_API_HASH`, `TD_PHONE`이 맞는지 확인
+- 첫 실행 로그인 절차가 완료됐는지 확인
+- 계정 권한이나 초대 링크 접근 권한이 부족하면 참가자 목록이 비어 있을 수 있음
+
+### 방장 왕관/Lv.99가 안 뜸
+
+`.env`에 아래 중 하나를 정확히 넣습니다.
+
+```bash
+VIDEOCHAT_HOST_USER_ID=
+VIDEOCHAT_HOST_USERNAME=
+```
+
+ID가 가장 안정적이고, username이 그 다음입니다.
+
+### STT가 반응하지 않음
+
+- API key와 billing 상태 확인
+- `STT_INPUT_DEVICE`가 실제 마이크와 맞는지 확인
+- 콘솔 로그 확인
+
+마이크 목록 확인:
+
+```cmd
+uv run python -c "import sounddevice as sd; [print(i, d['name']) for i, d in enumerate(sd.query_devices()) if d['max_input_channels']>0]"
+```
+
+## 파일 구조
+
+```text
 tg-chat-obs-layout/
-├── main.py              ← 메인 프로그램
-├── .env                 ← 내 설정 (절대 공유 금지)
-├── .env.example         ← 설정 템플릿
-├── requirements.txt     ← 파이썬 라이브러리 목록
-├── static/              ← 오버레이 웹페이지
+├── main.py
+├── videochat_overlay.py
+├── .env.example
+├── requirements.txt
+├── static/
 │   ├── index.html
-│   ├── style.css        ← 스타일 수정 위치
-│   └── app.js
-├── static_videochat/    ← 비디오챗 캐릭터 오버레이 웹페이지
-├── videochat_overlay.py ← 비디오챗 캐릭터 오버레이 서버
-├── docs/                ← 디자인 시안과 패치 계획
-│   └── PATCH_PLAN.md
-├── stt/                 ← 음성 인식 모듈
+│   ├── app.js
+│   └── style.css
+├── static_videochat/
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
+├── stt/
 │   ├── manager.py
 │   ├── openai_backend.py
 │   └── gemini_backend.py
-└── data/                ← 런타임 데이터 (자동 생성)
-    ├── user_colors.json ← 유저별 색상
-    ├── state.json       ← tts_on 상태
-    └── photos/          ← 받은 사진 캐시 (최신 10개만)
+├── docs/
+│   ├── PATCH_PLAN.md
+│   ├── identity_badge_variants.svg
+│   ├── level_color_tiers.json
+│   ├── level_color_tiers_preview.svg
+│   └── videochat_camera_ws.md
+└── data/
+    └── 자동 생성, 커밋 금지
 ```
 
-개발자용 기술 세부정보는 [codex.md](./codex.md), 앞으로의 패치 메모는 [docs/PATCH_PLAN.md](./docs/PATCH_PLAN.md) 참고.
+개발자용 작업 맥락은 [codex.md](./codex.md), 앞으로의 패치 메모는 [docs/PATCH_PLAN.md](./docs/PATCH_PLAN.md)를 참고하세요.
