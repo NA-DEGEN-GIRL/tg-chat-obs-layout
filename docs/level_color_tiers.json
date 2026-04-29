@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "max_level": 99,
+  "default_host_level": 99,
+  "tiers": [
+    {
+      "id": "seed",
+      "label": "Seed",
+      "min": 1,
+      "max": 9,
+      "color": "#b7c6d8",
+      "glow": "rgba(183,198,216,0.22)"
+    },
+    {
+      "id": "sprout",
+      "label": "Sprout",
+      "min": 10,
+      "max": 19,
+      "color": "#78d98e",
+      "glow": "rgba(120,217,142,0.28)"
+    },
+    {
+      "id": "aqua",
+      "label": "Aqua",
+      "min": 20,
+      "max": 34,
+      "color": "#60d4ff",
+      "glow": "rgba(96,212,255,0.32)"
+    },
+    {
+      "id": "violet",
+      "label": "Violet",
+      "min": 35,
+      "max": 49,
+      "color": "#b08cff",
+      "glow": "rgba(176,140,255,0.34)"
+    },
+    {
+      "id": "gold",
+      "label": "Gold",
+      "min": 50,
+      "max": 69,
+      "color": "#ffd86a",
+      "glow": "rgba(255,216,106,0.36)"
+    },
+    {
+      "id": "crimson",
+      "label": "Crimson",
+      "min": 70,
+      "max": 89,
+      "color": "#ff7a74",
+      "glow": "rgba(255,122,116,0.40)"
+    },
+    {
+      "id": "mythic",
+      "label": "Mythic",
+      "min": 90,
+      "max": 99,
+      "color": "#ff4b5f",
+      "glow": "rgba(255,75,95,0.58)"
+    }
+  ]
+}

@@ -53,5 +53,12 @@ Thumbs.db
 # ─── Claude Code ───
 .claude/
 
+# Local overlay debug captures
+debug_videochat*.png
+chrome-debug-profile*/
+
+# Local TDLib binaries
+vendor/tdlib/*.dll
+
 # ─── OS ───
 desktop.ini

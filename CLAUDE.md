@@ -50,7 +50,6 @@
 
 ```
 main.py                오케스트레이션 (Telegram + FastAPI + STT + state)
-test_stt.py            STT 단독 검증 (텔레그램/오버레이 없이 CMD 출력)
 
 stt/manager.py         마이크 캡처 + 백엔드 라이프사이클
 stt/openai_backend.py  OpenAI Realtime `?intent=transcription` WS 클라이언트
@@ -71,15 +70,21 @@ data/photos/           받은 사진 캐시 (최신 MAX_PHOTOS=10)
 
 | 커맨드 | 동작 | 주의 |
 |---|---|---|
-| `/stream_on` | 텍스트+사진만 허용하도록 `setChatPermissions` 호출 | **`use_independent_chat_permissions=True` 필수** (아래 gotcha 참고) |
+| `/stream_on` | 텍스트+사진만 허용하도록 `setChatPermissions` 호출 | OWNER+CHAT_ID 게이트. **`use_independent_chat_permissions=True` 필수** |
+| `/text_on` | 텍스트만 허용 (사진 포함 모든 미디어 차단) | 동일 |
 | `/stream_off` | 전부 음소거 (관리자는 영향 없음) | 동일 |
-| `/tts_on` | STTManager 시작 + `state.json` 에 `tts_on=true` | 실패 시 답장만 하고 state 건드리지 않음 |
-| `/tts_off` | STTManager 종료 + `state.json` 에 `tts_on=false` | |
+| `/tts_on` | 친 위치에 따라 `tts_destinations` 에 메인 또는 활성 thread 추가, STTManager 미가동이면 시작 | OWNER 만, 메인 또는 활성 thread 안에서만. 메인 추가 시 `state.json` 에 `tts_on=true` |
+| `/tts_off` | `tts_destinations` 전부 비우고 STTManager 종료 | 어디서든 양쪽 다 off (사양) |
+| `/here_on` | `active_thread = (chat_id, thread_id)` 등록 | OWNER 만, `message_thread_id` 있는 메시지에서만. 이전 thread 의 TTS 목적지 자동 정리 |
+| `/here_off` | `active_thread=None`, thread TTS 목적지 정리. 메인 TTS 도 없으면 STT 도 종료 | OWNER 만 |
 
-권한 체크 함수: `_is_owner_in_target_chat(message)`
-- `message.chat.id == CHAT_ID`
-- `message.from_user.id == OWNER_ID`
-둘 다 통과해야만 실행, 아니면 조용히 무시 (답장 X).
+권한 체크 함수들:
+- `_is_owner_in_target_chat(message)` — OWNER + CHAT_ID 둘 다 매치. `/stream_*`, `/text_on` 에 사용
+- `_is_owner(message)` — OWNER 만 체크 (chat 무관). `/tts_*`, `/here_*` 에 사용
+- `_is_main_chat`, `_matches_active_thread`, `_is_overlay_source` — 메시지 소스 판정용
+- 모든 게이트 실패는 **조용히 무시** (답장 X)
+
+`tts_destinations` 자료형: `list[dict]` — 각 항목 `{"chat_id": int, "thread_id": int | None}`. STT 결과는 모든 목적지에 동시 송출 (`asyncio.gather`). thread 메시지는 `bot.send_message(..., message_thread_id=N)` 로 전송.
 
 ---
 
@@ -104,7 +109,7 @@ data/photos/           받은 사진 캐시 (최신 MAX_PHOTOS=10)
 BotFather 기본 설정으론 봇이 그룹에서 **명령어와 mention만** 받음. Privacy Mode 꺼야(`/mybots` → Bot Settings → Group Privacy → Turn off) 일반 메시지 수신. 끈 뒤 **그룹에서 봇 뺐다 다시 초대** 해야 반영.
 
 ### 5. python-dotenv 인라인 주석
-`KEY=value # comment` 같은 줄 주석을 python-dotenv 는 처리하지 않음. `value # comment` 전체가 값으로 들어감. `main.py` / `test_stt.py` 에서 값 받은 뒤 `#` 이후 잘라내는 방어 코드 있지만, **`.env.example` 은 주석을 별도 줄에** 두기.
+`KEY=value # comment` 같은 줄 주석을 python-dotenv 는 처리하지 않음. `value # comment` 전체가 값으로 들어감. `main.py` 에서 값 받은 뒤 `#` 이후 잘라내는 방어 코드 있지만, **`.env.example` 은 주석을 별도 줄에** 두기.
 
 ### 6. OBS CEF 공격적 캐싱
 OBS 브라우저 소스는 JS/CSS 를 공격적으로 캐시함. 속성 창의 "새로 고침" 버튼은 페이지만 리로드, JS 캐시는 그대로 씀. 해결:
@@ -155,12 +160,11 @@ uv run python main.py
 
 **STT 단독 테스트:**
 ```bash
-uv run python test_stt.py --provider openai --debug
 ```
 
 **문법 체크:**
 ```bash
-.venv/Scripts/python.exe -c "import ast; [ast.parse(open(p).read()) for p in ['main.py','test_stt.py']]"
+.venv/Scripts/python.exe -c "import ast; [ast.parse(open(p).read()) for p in ['main.py']]"
 ```
 
 ---

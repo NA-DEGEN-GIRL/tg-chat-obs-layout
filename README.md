@@ -177,6 +177,30 @@ STT_INPUT_DEVICE=
 - 값 뒤에 같은 줄에 `#주석` 붙이지 말기. (`CHAT_ID=-1003... # 내 그룹` 처럼 쓰면 `# 내 그룹`이 값에 섞여 들어감)
 - `.env` 파일 아무한테도 공유하지 말기 (토큰·API 키 = 비밀번호와 같음)
 
+### 비디오챗 캐릭터 오버레이 설정
+
+비디오챗 참가자 캐릭터 오버레이를 쓰려면 아래 값도 `.env`에 채웁니다.
+
+```bash
+VIDEOCHAT_WEB_HOST=127.0.0.1
+VIDEOCHAT_WEB_PORT=9393
+VIDEOCHAT_CHAT_WS_URL=ws://127.0.0.1:9292/ws
+
+# 방장 표시. 가능하면 user id를 권장합니다.
+VIDEOCHAT_HOST_USER_ID=
+VIDEOCHAT_HOST_USERNAME=
+VIDEOCHAT_HOST_NAME=Host
+VIDEOCHAT_HOST_AVATAR_FILE=
+
+# 레벨을 저장할 채팅방. 비워두거나 0이면 메인 채팅만 사용합니다.
+VIDEOCHAT_LEVEL_CHAT_ID=0
+
+# 방송마다 링크가 바뀌면 실행 인자로 넘겨도 됩니다.
+TD_VIDEOCHAT_LINK=
+```
+
+방장 왕관과 `Lv. 99`가 안 보이면 `VIDEOCHAT_HOST_USER_ID` 또는 `VIDEOCHAT_HOST_USERNAME`이 실제 Telegram 계정과 일치하는지 먼저 확인하세요. `VIDEOCHAT_HOST_NAME`으로도 fallback 판정하지만, 같은 이름 사용자가 있을 수 있어 ID/username이 더 안전합니다.
+
 ### 마이크 고르기 (`STT_INPUT_DEVICE`)
 
 비우면 OS 기본 마이크 사용. 특정 마이크 쓰려면 이름 일부만 쓰면 됨:
@@ -241,11 +265,30 @@ uv run python main.py
 | 명령어 | 효과 |
 |---|---|
 | `/stream_on` | 시청자들이 텍스트+사진만 보낼 수 있게 함. 스티커/GIF/영상/음성/파일 차단 |
+| `/text_on` | 텍스트만 허용 (사진도 차단). 방송 안 할 때 일반 대화용 |
 | `/stream_off` | 호스트(나) 빼고 전부 음소거. 방송 중 소란 방지 |
-| `/tts_on` | 내 마이크 켜서 말하는 내용 → 자동으로 봇이 그룹에 채팅 |
-| `/tts_off` | 마이크 끔 |
+| `/tts_on` | 마이크 켜서 말하는 내용 → 자동으로 봇이 친 곳에 채팅 (메인 그룹 또는 활성 댓글창) |
+| `/tts_off` | 마이크 끔 (양쪽 모두 무조건 off) |
+| `/here_on` | (공지채널 댓글창 등) 다른 채팅방의 댓글창에서 사용. 그 댓글창의 글도 오버레이에 같이 흘림 |
+| `/here_off` | 활성 댓글창 해제 |
 
-> 참고: 시청자가 `/lol`, `/ㅋㅋㅋ`, `/슬픔` 같이 슬래시 붙여서 장난식으로 쳐도 일반 채팅처럼 오버레이에 표시됩니다. 위 네 개 실제 관리 명령어만 봇이 먼저 가로채서 처리하고, 그 외 슬래시 메시지는 전부 통과.
+> 참고: 시청자가 `/lol`, `/ㅋㅋㅋ`, `/슬픔` 같이 슬래시 붙여서 장난식으로 쳐도 일반 채팅처럼 오버레이에 표시됩니다. 위 실제 관리 명령어만 봇이 먼저 가로채서 처리하고, 그 외 슬래시 메시지는 전부 통과.
+
+### 공지채널 댓글창 모드 (`/here_on`)
+
+방송을 공지채널에서 띄울 때, 시청자들이 메인 그룹 대신 **공지채널 특정 글의 댓글로 소통**하는 경우 사용:
+
+1. 공지채널의 **연결된 토론 그룹(linked discussion group)** 에 봇 초대 + Privacy Mode OFF 확인
+2. 시청자가 댓글로 모이는 그 글의 댓글창에 본인이 `/here_on` 입력
+3. 봇이 "이 댓글창 오버레이 활성화" 답장 → 그 댓글창의 새 댓글들도 오버레이에 같이 뜸 (메인 그룹은 계속 표시됨)
+4. 거기서 `/tts_on` 치면 → STT 결과가 그 댓글창에 댓글로 포스팅됨
+5. 메인 그룹에서도 `/tts_on` 했으면 양쪽 모두에 STT 결과 들어감 (각자 토글 가능)
+6. `/tts_off` → 양쪽 모두 STT 종료
+7. `/here_off` → 댓글창 모드 해제
+
+**제약**:
+- 활성 댓글창은 한 번에 **하나만**. 새로 `/here_on` 치면 이전 것 자동 해제
+- 댓글창 모드는 **저장 안 됨** (단발성). 봇 재시작하면 메인만 복구되고 댓글창은 다시 `/here_on` 필요
 
 ## 방송하는 날 표준 플로우
 
@@ -331,7 +374,7 @@ Get-Process python | Stop-Process -Force
 - API 키 크레딧 바닥났을 수 있음 → platform.openai.com 빌링 확인
 - 상세 디버깅:
   ```cmd
-  uv run python test_stt.py --provider openai --debug
+  uv run python main.py
   ```
 
 ## 사진이 오버레이에 안 뜸
@@ -356,12 +399,21 @@ Get-Process python | Stop-Process -Force
 
 ---
 
+# 공개 저장소 보안 체크
+
+이 저장소를 공개하기 전에 아래 항목을 확인하세요.
+
+- `.env`, `data/`, `logs/`, `chrome-debug-profile/`, `debug_videochat*.png`가 커밋되지 않아야 합니다.
+- `data/telethon/`에는 사용자 계정 세션이 저장됩니다. 절대 공유하지 마세요.
+- `data/telethon/profile_photos/`와 `data/photos/`에는 참가자/채팅 사진이 저장될 수 있습니다. 공개하지 마세요.
+- `.env.example`에는 실제 토큰, 실제 채팅 ID, 실제 초대 링크, 실제 username을 넣지 마세요.
+- STT debug 로그는 API 응답/인식 텍스트를 많이 출력할 수 있으니 공유 전 확인하세요.
+
 # 🗂 파일 구조 (참고)
 
 ```
 tg-chat-obs-layout/
 ├── main.py              ← 메인 프로그램
-├── test_stt.py          ← STT 단독 테스트 도구
 ├── .env                 ← 내 설정 (절대 공유 금지)
 ├── .env.example         ← 설정 템플릿
 ├── requirements.txt     ← 파이썬 라이브러리 목록
@@ -369,6 +421,10 @@ tg-chat-obs-layout/
 │   ├── index.html
 │   ├── style.css        ← 스타일 수정 위치
 │   └── app.js
+├── static_videochat/    ← 비디오챗 캐릭터 오버레이 웹페이지
+├── videochat_overlay.py ← 비디오챗 캐릭터 오버레이 서버
+├── docs/                ← 디자인 시안과 패치 계획
+│   └── PATCH_PLAN.md
 ├── stt/                 ← 음성 인식 모듈
 │   ├── manager.py
 │   ├── openai_backend.py
@@ -379,4 +435,4 @@ tg-chat-obs-layout/
     └── photos/          ← 받은 사진 캐시 (최신 10개만)
 ```
 
-개발자용 기술 세부정보는 [CLAUDE.md](./CLAUDE.md) 참고.
+개발자용 기술 세부정보는 [codex.md](./codex.md), 앞으로의 패치 메모는 [docs/PATCH_PLAN.md](./docs/PATCH_PLAN.md) 참고.

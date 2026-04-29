@@ -8,6 +8,12 @@
     if (typeof cfg.fade_after_sec === "number") {
       fadeAfterSec = cfg.fade_after_sec;
     }
+    if (typeof cfg.chat_font_size === "number" && cfg.chat_font_size > 0) {
+      document.documentElement.style.setProperty(
+        "--msg-font-size",
+        cfg.chat_font_size + "px"
+      );
+    }
   } catch (_) {}
 
   function append(data) {
@@ -35,6 +41,12 @@
       text.className = "text";
       text.textContent = data.text;
       el.appendChild(text);
+      if (data.stt_label) {
+        const label = document.createElement("span");
+        label.className = "stt-label";
+        label.textContent = " " + data.stt_label;
+        el.appendChild(label);
+      }
     }
 
     chat.appendChild(el);

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Videochat Campfire Overlay</title>
+  <link rel="stylesheet" href="/static/style.css?v={{CB}}">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="topic-title" title="더블클릭해서 제목 편집"></div>
+  <textarea id="topic-editor" aria-label="방송 제목"></textarea>
+  <div id="topic-resize" title="제목 크기 조절"></div>
+  <div id="topic-controls">
+    <button id="topic-move" type="button" title="제목 이동">M</button>
+    <button id="topic-edit" type="button" title="제목 편집">T</button>
+  </div>
+  <div id="participants"></div>
+  <div id="toast-handle" title="entry/exit message position">event</div>
+  <div id="event-toasts"></div>
+  <div id="avatar-controls">
+    <button id="avatar-size-down" type="button" title="캐릭터 위 이름표 전체 축소">A-</button>
+    <button id="avatar-size-up" type="button" title="캐릭터 위 이름표 전체 확대">A+</button>
+    <button id="bubble-size-down" type="button" title="말풍선 전체 축소">B-</button>
+    <button id="bubble-size-up" type="button" title="말풍선 전체 확대">B+</button>
+    <button id="toast-size-down" type="button" title="entry/exit message smaller">E-</button>
+    <button id="toast-size-up" type="button" title="entry/exit message larger">E+</button>
+    <label class="effect-control" title="entry/exit message style">
+      <span>msg</span>
+      <select id="toast-style">
+        <option value="ember">ember</option>
+        <option value="glass">glass</option>
+        <option value="label">label</option>
+        <option value="signal">signal</option>
+      </select>
+    </label>
+    <label class="effect-control message-template" title="entry message template, use {name}">
+      <span>enter</span>
+      <input id="entry-message-template" type="text" value="{name} 등장">
+    </label>
+    <label class="effect-control message-template" title="exit message template, use {name}">
+      <span>leave</span>
+      <input id="exit-message-template" type="text" value="{name} 안녕 다음에 또봐요">
+    </label>
+    <label class="effect-control" title="entry effect">
+      <span>in</span>
+      <select id="entry-effect">
+        <option value="drop">drop</option>
+        <option value="walk">walk</option>
+        <option value="fade">fade</option>
+        <option value="none">none</option>
+      </select>
+    </label>
+    <label class="effect-control" title="exit effect">
+      <span>out</span>
+      <select id="exit-effect">
+        <option value="ascend">ascend</option>
+        <option value="fade">fade</option>
+        <option value="none">none</option>
+      </select>
+    </label>
+    <label class="effect-control" title="debug lifecycle seconds">
+      <span>cycle</span>
+      <input id="lifecycle-sec" type="number" min="1" max="60" step="0.5" value="6.5">
+    </label>
+  </div>
+  <div id="chat-panel">
+    <div id="chat-controls">
+      <button id="chat-drag" type="button" title="채팅창 이동">M</button>
+      <button id="chat-font-down" type="button" title="글자 작게">-</button>
+      <button id="chat-font-up" type="button" title="글자 크게">+</button>
+      <label id="chat-fade-control" title="사라지는 시간(초), -1이면 안 사라짐">
+        <span>fade</span>
+        <input id="chat-fade" type="number" step="1" value="-1">
+      </label>
+      <button id="chat-toggle" type="button" title="채팅창 보이기/숨기기">◉</button>
+    </div>
+    <div id="chat-log"></div>
+    <div id="chat-resize" title="채팅창 크기 조절"></div>
+  </div>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="/static/app.js?v={{CB}}"></script>
+</body>
+</html>
