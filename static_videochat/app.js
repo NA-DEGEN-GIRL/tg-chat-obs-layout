@@ -47,6 +47,7 @@
       { type: "text", text: "오늘은 시장 분위기랑 주요 뉴스 흐름을 같이 보면서 천천히 이야기해보려고 합니다." },
       { type: "text", text: "이 문장은 일부러 길게 넣은 테스트입니다. 말풍선과 오른쪽 채팅 내역에서 줄바꿈이 자연스럽게 되는지 확인합니다." },
       { type: "photo" },
+      { type: "sticker" },
       { type: "text", text: "사진 메시지 다음에도 일반 대사가 계속 잘 쌓이는지 확인하는 중입니다." },
     ],
     cfg: {
@@ -1406,9 +1407,10 @@
   function showSpeech(data) {
     if (!data) return;
     const type = data.type || "text";
-    if (type !== "text" && type !== "photo") return;
+    const isMedia = type === "photo" || type === "sticker";
+    if (type !== "text" && !isMedia) return;
     if (type === "text" && typeof data.text !== "string") return;
-    if (type === "photo" && !data.url) return;
+    if (isMedia && !data.url) return;
     const key = speakerKey(data);
     addChatLine(data, !!key);
     const el = key ? state.elements.get(key) : null;
@@ -1416,13 +1418,10 @@
     if (el) {
       const bubble = el.querySelector(".bubble");
       bubble.replaceChildren();
-      bubble.classList.toggle("photo", type === "photo");
-      if (type === "photo") {
-        const img = document.createElement("img");
-        img.src = data.url;
-        img.alt = "";
-        img.decoding = "async";
-        bubble.appendChild(img);
+      bubble.classList.toggle("photo", isMedia);
+      bubble.classList.toggle("sticker", type === "sticker");
+      if (isMedia) {
+        bubble.appendChild(createMediaElement(data));
         if (typeof data.text === "string" && data.text.trim()) {
           const caption = document.createElement("span");
           caption.className = "photo-caption";
@@ -1441,14 +1440,31 @@
       el._speechTimer = setTimeout(() => {
         el.classList.remove("speaking");
         bubble.classList.remove("photo");
+        bubble.classList.remove("sticker");
       }, 5200);
     }
+  }
+
+  function createMediaElement(data) {
+    const media = document.createElement(data.media_type === "video" ? "video" : "img");
+    media.src = data.url;
+    if (media.tagName === "VIDEO") {
+      media.autoplay = true;
+      media.loop = true;
+      media.muted = true;
+      media.playsInline = true;
+    } else {
+      media.alt = "";
+      media.decoding = "async";
+    }
+    return media;
   }
 
   function addChatLine(data, isParticipant) {
     if (!chatLog) return;
     const name = String(data.name || data.username || "미참여");
     const type = data.type || "text";
+    const isMedia = type === "photo" || type === "sticker";
     const participantKey = speakerKey(data);
     const participant = participantKey ? state.participants.get(participantKey) : null;
     const isHost = !!(participant?.is_host || data.is_host);
@@ -1458,7 +1474,7 @@
       : (isHost ? 99 : (Number.isFinite(explicitLevel) ? explicitLevel : 1));
     const tier = Number.isFinite(levelValue) ? levelTier(levelValue, isHost) : null;
     const item = document.createElement("div");
-    item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${type === "photo" ? " photo" : ""}`;
+    item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
     item.style.setProperty("--speaker-color", speechColor(data, participantKey));
     if (tier) {
       item.style.setProperty("--level-color", tier.color);
@@ -1483,12 +1499,8 @@
       header.append(level);
     }
     item.append(header);
-    if (type === "photo") {
-      const img = document.createElement("img");
-      img.src = data.url;
-      img.alt = "";
-      img.decoding = "async";
-      item.appendChild(img);
+    if (isMedia) {
+      item.appendChild(createMediaElement(data));
       if (typeof data.text === "string" && data.text.trim()) {
         const msg = document.createElement("span");
         msg.className = "chat-text photo-caption";
@@ -1522,13 +1534,13 @@
   }
 
   function debugPayload(base, debug) {
-    if (debug.type === "photo") {
+    if (debug.type === "photo" || debug.type === "sticker") {
       const urls = Array.isArray(state.cfg.mock_avatar_urls) ? state.cfg.mock_avatar_urls : [];
       return {
-        type: "photo",
+        type: debug.type,
         ...base,
         url: urls.length ? urls[(hashString(base.name || base.username || "photo") + 1) % urls.length] : fallbackPhotoUrl(),
-        text: "사진 캡션 테스트입니다.",
+        text: debug.type === "sticker" ? "✨" : "사진 캡션 테스트입니다.",
       };
     }
     return { type: "text", ...base, text: debug.text };

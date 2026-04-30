@@ -231,13 +231,14 @@ body.send-panel-visible #chat {
   font-weight: 650;
 }
 
-.msg-photo {
+.msg-media {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.msg-photo img {
+.msg-media img,
+.msg-media video {
   display: block;
   max-width: 360px;
   max-height: 360px;
@@ -248,7 +249,13 @@ body.send-panel-visible #chat {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.msg-photo .photo-caption {
+.msg-sticker img,
+.msg-sticker video {
+  max-width: 220px;
+  max-height: 220px;
+}
+
+.msg-media .photo-caption {
   max-width: 360px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -648,7 +648,8 @@ body::before {
   color: rgba(255,255,255,0.92);
 }
 
-.chat-line.photo img {
+.chat-line.photo img,
+.chat-line.photo video {
   display: block;
   max-width: 260px;
   max-height: 180px;
@@ -657,6 +658,12 @@ body::before {
   border-radius: 10px;
   object-fit: contain;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.chat-line.sticker img,
+.chat-line.sticker video {
+  max-width: 150px;
+  max-height: 150px;
 }
 
 .chat-line.photo .photo-caption {
@@ -731,7 +738,8 @@ body::before {
   padding: calc(7px * var(--bubble-ui-scale, 1));
 }
 
-.avatar .bubble.photo img {
+.avatar .bubble.photo img,
+.avatar .bubble.photo video {
   display: block;
   max-width: calc(170px * var(--bubble-ui-scale, 1));
   max-height: calc(112px * var(--bubble-ui-scale, 1));
@@ -740,6 +748,12 @@ body::before {
   border-radius: 10px;
   object-fit: contain;
   box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.avatar .bubble.sticker img,
+.avatar .bubble.sticker video {
+  max-width: calc(118px * var(--bubble-ui-scale, 1));
+  max-height: calc(118px * var(--bubble-ui-scale, 1));
 }
 
 .avatar .bubble.photo .photo-caption {

@@ -90,7 +90,9 @@ COLORS_FILE = DATA_DIR / "user_colors.json"
 STATE_FILE = DATA_DIR / "state.json"
 VIDEOCHAT_LEVELS_FILE = DATA_DIR / "videochat_levels.json"
 PHOTOS_DIR = DATA_DIR / "photos"
+STICKERS_DIR = DATA_DIR / "stickers"
 MAX_PHOTOS = 10
+MAX_STICKERS = 30
 
 # 어두운 반투명 배경에서 가독성 좋은 색만 추려낸 팔레트
 USER_COLOR_PALETTE = [
@@ -414,19 +416,27 @@ def update_state(**kwargs) -> None:
     save_state(s)
 
 
-def cleanup_photos() -> None:
+def cleanup_media_dir(directory: Path, max_files: int, label: str) -> None:
     try:
-        if not PHOTOS_DIR.exists():
+        if not directory.exists():
             return
-        files = [p for p in PHOTOS_DIR.iterdir() if p.is_file()]
+        files = [p for p in directory.iterdir() if p.is_file()]
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in files[MAX_PHOTOS:]:
+        for old in files[max_files:]:
             try:
                 old.unlink()
             except Exception:
                 pass
     except Exception as e:
-        print(f"[WARN] photo cleanup failed: {e}", flush=True)
+        print(f"[WARN] {label} cleanup failed: {e}", flush=True)
+
+
+def cleanup_photos() -> None:
+    cleanup_media_dir(PHOTOS_DIR, MAX_PHOTOS, "photo")
+
+
+def cleanup_stickers() -> None:
+    cleanup_media_dir(STICKERS_DIR, MAX_STICKERS, "sticker")
 
 
 def display_name(user) -> str:
@@ -767,6 +777,13 @@ def normalize_photo_name(name: str, mime: str) -> str:
         return clean[:120]
     stem = clean.rsplit(".", 1)[0] if "." in clean else clean
     return f"{stem[:100] or 'image'}{ext}"
+
+
+def telegram_file_suffix(file_path: str, fallback: str) -> str:
+    suffix = Path(str(file_path or "")).suffix.lower()
+    if suffix and len(suffix) <= 12:
+        return suffix
+    return fallback
 
 
 def decode_send_photo(value) -> dict | None:
@@ -1131,6 +1148,88 @@ def on_photo(message):
         )
 
 
+def sticker_thumb(message_sticker):
+    return (
+        getattr(message_sticker, "thumbnail", None)
+        or getattr(message_sticker, "thumb", None)
+    )
+
+
+def download_sticker_display(message_sticker) -> tuple[Path, str] | None:
+    STICKERS_DIR.mkdir(parents=True, exist_ok=True)
+    unique_id = getattr(message_sticker, "file_unique_id", None) or hashlib.sha256(
+        str(getattr(message_sticker, "file_id", "")).encode("utf-8")
+    ).hexdigest()[:24]
+    info = bot.get_file(message_sticker.file_id)
+    file_path = getattr(info, "file_path", "") or ""
+    suffix = telegram_file_suffix(
+        file_path,
+        ".webm" if getattr(message_sticker, "is_video", False) else ".webp",
+    )
+    is_tgs = suffix == ".tgs" or getattr(message_sticker, "is_animated", False)
+    if is_tgs and not getattr(message_sticker, "is_video", False):
+        thumb = sticker_thumb(message_sticker)
+        if thumb is None:
+            return None
+        thumb_info = bot.get_file(thumb.file_id)
+        thumb_suffix = telegram_file_suffix(getattr(thumb_info, "file_path", ""), ".jpg")
+        target = STICKERS_DIR / f"{unique_id}_thumb{thumb_suffix}"
+        if not target.exists():
+            target.write_bytes(bot.download_file(thumb_info.file_path))
+        return target, "image"
+
+    target = STICKERS_DIR / f"{unique_id}{suffix}"
+    if not target.exists():
+        target.write_bytes(bot.download_file(file_path))
+    media_type = "video" if suffix == ".webm" or getattr(message_sticker, "is_video", False) else "image"
+    return target, media_type
+
+
+@bot.message_handler(
+    func=lambda m: _is_overlay_source(m),
+    content_types=["sticker"],
+)
+def on_sticker(message):
+    sticker = getattr(message, "sticker", None)
+    if sticker is None:
+        return
+    try:
+        downloaded = download_sticker_display(sticker)
+        cleanup_stickers()
+    except Exception as e:
+        print(f"[WARN] sticker download failed: {e}", flush=True)
+        return
+    if downloaded is None:
+        print("[WARN] animated sticker has no displayable thumbnail", flush=True)
+        return
+
+    target, media_type = downloaded
+    profile = enrich_profile_level(message_profile(message))
+    name = profile["name"]
+    identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
+    url = f"/stickers/{target.name}"
+    emoji = str(getattr(sticker, "emoji", None) or "").strip()
+    print(f"{name}: [sticker] {url}" + (f" {emoji}" if emoji else ""), flush=True)
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            broadcast({
+                "type": "sticker",
+                "name": name,
+                "url": url,
+                "media_type": media_type,
+                "text": emoji,
+                "color": color,
+                "speaker_id": profile["speaker_id"],
+                "username": profile["username"],
+                "is_host": profile["is_host"],
+                "level": profile["level"],
+                "level_label": profile["level_label"],
+            }),
+            main_loop,
+        )
+
+
 def run_bot() -> None:
     try:
         bot.remove_webhook()
@@ -1212,8 +1311,11 @@ _INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
 )
 
 app = FastAPI(lifespan=lifespan)
+PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+STICKERS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
 
 
 @app.get("/", response_class=HTMLResponse)

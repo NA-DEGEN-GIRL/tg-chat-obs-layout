@@ -142,6 +142,18 @@
     setPhoto(file);
   });
 
+  sendPanel?.addEventListener("paste", (ev) => {
+    const file = Array.from(ev.clipboardData?.items || [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .find((f) => f && f.type.startsWith("image/"));
+    if (!file) return;
+    setPhoto(file);
+    if (!ev.clipboardData?.getData("text/plain")) {
+      ev.preventDefault();
+    }
+  });
+
   sendPanel?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!userSendEnabled || !sendText || !sendButton) return;
@@ -173,8 +185,9 @@
   function append(data) {
     if (!data) return;
     const type = data.type || "text";
+    const isMedia = type === "photo" || type === "sticker";
     const el = document.createElement("div");
-    el.className = "msg" + (type === "photo" ? " msg-photo" : "");
+    el.className = "msg" + (isMedia ? ` msg-media msg-${type}` : "");
 
     const name = document.createElement("span");
     name.className = "name";
@@ -182,13 +195,20 @@
     if (data.color) name.style.color = data.color;
     el.appendChild(name);
 
-    if (type === "photo") {
+    if (isMedia) {
       if (!data.url) return;
-      const img = document.createElement("img");
-      img.src = data.url;
-      img.alt = "";
-      img.decoding = "async";
-      el.appendChild(img);
+      const media = document.createElement(data.media_type === "video" ? "video" : "img");
+      media.src = data.url;
+      if (media.tagName === "VIDEO") {
+        media.autoplay = true;
+        media.loop = true;
+        media.muted = true;
+        media.playsInline = true;
+      } else {
+        media.alt = "";
+        media.decoding = "async";
+      }
+      el.appendChild(media);
       if (typeof data.text === "string" && data.text.trim()) {
         const text = document.createElement("span");
         text.className = "text photo-caption";
