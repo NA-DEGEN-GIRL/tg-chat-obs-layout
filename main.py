@@ -603,18 +603,53 @@ def should_skip_overlay_duplicate(profile: dict, kind: str, marker: str) -> bool
         return True
 
 
+def emit_text_overlay(message, text: str | None = None) -> None:
+    if main_loop is None:
+        return
+    profile = enrich_profile_level(message_profile(message))
+    name = profile["name"]
+    identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    body = str(text if text is not None else getattr(message, "text", "") or "")
+    if not body:
+        return
+    color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
+    asyncio.run_coroutine_threadsafe(
+        broadcast({
+            "type": "text",
+            "name": name,
+            "text": body,
+            "message": message_ref_payload(message),
+            "reply": reply_summary_payload(message),
+            "color": color,
+            "speaker_id": profile["speaker_id"],
+            "username": profile["username"],
+            "is_host": profile["is_host"],
+            "level": profile["level"],
+            "level_label": profile["level_label"],
+        }),
+        main_loop,
+    )
+
+
+def reply_to_with_overlay(message, text: str):
+    sent = bot.reply_to(message, text)
+    emit_text_overlay(sent, text)
+    return sent
+
+
 @bot.message_handler(commands=["stream_on"])
 def cmd_stream_on(message):
     if not _is_owner_in_target_chat(message):
         return
+    emit_text_overlay(message)
     try:
         bot.set_chat_permissions(
             CHAT_ID, PERMS_STREAM_ON, use_independent_chat_permissions=True
         )
-        bot.reply_to(message, "방송 시작: 텍스트/사진만 전송 가능")
+        reply_to_with_overlay(message, "방송 시작: 텍스트/사진만 전송 가능")
         print("[INFO] stream_on: permissions opened", flush=True)
     except Exception as e:
-        bot.reply_to(message, f"권한 변경 실패: {e}")
+        reply_to_with_overlay(message, f"권한 변경 실패: {e}")
         print(f"[ERROR] stream_on failed: {e}", flush=True)
 
 
@@ -622,14 +657,15 @@ def cmd_stream_on(message):
 def cmd_stream_off(message):
     if not _is_owner_in_target_chat(message):
         return
+    emit_text_overlay(message)
     try:
         bot.set_chat_permissions(
             CHAT_ID, PERMS_STREAM_OFF, use_independent_chat_permissions=True
         )
-        bot.reply_to(message, "방송 종료: 호스트 외 메시지 전송 제한")
+        reply_to_with_overlay(message, "방송 종료: 호스트 외 메시지 전송 제한")
         print("[INFO] stream_off: permissions locked", flush=True)
     except Exception as e:
-        bot.reply_to(message, f"권한 변경 실패: {e}")
+        reply_to_with_overlay(message, f"권한 변경 실패: {e}")
         print(f"[ERROR] stream_off failed: {e}", flush=True)
 
 
@@ -637,14 +673,15 @@ def cmd_stream_off(message):
 def cmd_text_on(message):
     if not _is_owner_in_target_chat(message):
         return
+    emit_text_overlay(message)
     try:
         bot.set_chat_permissions(
             CHAT_ID, PERMS_TEXT_ON, use_independent_chat_permissions=True
         )
-        bot.reply_to(message, "텍스트 전용 모드: 사진·미디어 차단, 텍스트만 허용")
+        reply_to_with_overlay(message, "텍스트 전용 모드: 사진·미디어 차단, 텍스트만 허용")
         print("[INFO] text_on: text-only permissions applied", flush=True)
     except Exception as e:
-        bot.reply_to(message, f"권한 변경 실패: {e}")
+        reply_to_with_overlay(message, f"권한 변경 실패: {e}")
         print(f"[ERROR] text_on failed: {e}", flush=True)
 
 
@@ -1068,8 +1105,9 @@ async def stt_on_text(text: str) -> None:
 def cmd_tts_on(message):
     if not _is_owner(message):
         return
+    emit_text_overlay(message)
     if stt_manager is None or main_loop is None:
-        bot.reply_to(message, "STT 매니저 초기화 전")
+        reply_to_with_overlay(message, "STT 매니저 초기화 전")
         return
 
     if _is_main_chat(message):
@@ -1092,19 +1130,19 @@ def cmd_tts_on(message):
             if not ok:
                 if dest in tts_destinations:
                     tts_destinations.remove(dest)
-                bot.reply_to(message, "STT 시작 실패 — 콘솔 로그 확인")
+                reply_to_with_overlay(message, "STT 시작 실패 - 콘솔 로그 확인")
                 return
         except Exception as e:
             if dest in tts_destinations:
                 tts_destinations.remove(dest)
-            bot.reply_to(message, f"시작 실패: {e}")
+            reply_to_with_overlay(message, f"시작 실패: {e}")
             print(f"[ERROR] tts_on: {e}", flush=True)
             return
 
     if dest["thread_id"] is None:
         update_state(tts_on=True)
 
-    bot.reply_to(message, f"TTS 시작: {scope} 출력 활성")
+    reply_to_with_overlay(message, f"TTS 시작: {scope} 출력 활성")
     print(f"[INFO] tts_on dest={dest}", flush=True)
 
 
@@ -1114,6 +1152,7 @@ def cmd_tts_off(message):
         return
     if not (_is_main_chat(message) or _matches_active_thread(message)):
         return
+    emit_text_overlay(message)
     if stt_manager is None or main_loop is None:
         return
 
@@ -1127,7 +1166,7 @@ def cmd_tts_off(message):
         except Exception as e:
             print(f"[ERROR] tts_off stop: {e}", flush=True)
 
-    bot.reply_to(message, "TTS 종료 (양쪽 모두 off)")
+    reply_to_with_overlay(message, "TTS 종료 (양쪽 모두 off)")
     print("[INFO] tts_off", flush=True)
 
 
@@ -1135,12 +1174,13 @@ def cmd_tts_off(message):
 def cmd_here_on(message):
     if not _is_owner(message):
         return
+    emit_text_overlay(message)
     thread_id = getattr(message, "message_thread_id", None)
     if thread_id is None:
-        bot.reply_to(message, "댓글창(thread) 안에서만 사용 가능합니다")
+        reply_to_with_overlay(message, "댓글창(thread) 안에서만 사용 가능합니다")
         return
     if _is_main_chat(message):
-        bot.reply_to(message, "메인 그룹은 이미 표시 중 — here_on 불필요")
+        reply_to_with_overlay(message, "메인 그룹은 이미 표시 중 - here_on 불필요")
         return
 
     global active_thread
@@ -1151,7 +1191,7 @@ def cmd_here_on(message):
         _clear_thread_tts_destinations()
 
     active_thread = new_thread
-    bot.reply_to(
+    reply_to_with_overlay(
         message,
         f"이 댓글창 오버레이 활성화 (chat_id={message.chat.id}, thread={thread_id})",
     )
@@ -1162,9 +1202,10 @@ def cmd_here_on(message):
 def cmd_here_off(message):
     if not _is_owner(message):
         return
+    emit_text_overlay(message)
     global active_thread
     if active_thread is None:
-        bot.reply_to(message, "활성화된 댓글창 없음")
+        reply_to_with_overlay(message, "활성화된 댓글창 없음")
         return
 
     _clear_thread_tts_destinations()
@@ -1185,7 +1226,7 @@ def cmd_here_off(message):
 
     cleared = active_thread
     active_thread = None
-    bot.reply_to(message, f"댓글창 해제 (이전: {cleared})")
+    reply_to_with_overlay(message, f"댓글창 해제 (이전: {cleared})")
     print(f"[INFO] here_off (cleared {cleared})", flush=True)
 
 

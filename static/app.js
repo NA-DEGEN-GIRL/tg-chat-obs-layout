@@ -581,7 +581,7 @@
 
     if (shouldStickToBottom) {
       requestAnimationFrame(() => {
-        chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+        chat.scrollTo({ top: chat.scrollHeight, behavior: "auto" });
       });
     }
 

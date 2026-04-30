@@ -1961,7 +1961,7 @@
     requestAnimationFrame(() => item.classList.add("show"));
     if (shouldStickToBottom) {
       requestAnimationFrame(() => {
-        chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "smooth" });
+        chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "auto" });
       });
     }
     const fadeSec = state.chatSettings ? state.chatSettings.fadeSec : -1;
