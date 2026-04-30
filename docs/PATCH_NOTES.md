@@ -7,6 +7,7 @@
 - Fixed LIVE badge detection to use the participant's active `video` stream instead of the broader `video_joined` flag.
 - Documented that future video preview panels must exclude the host/current account's own outgoing stream by default.
 - Added the first 9393 videochat preview UI: non-host LIVE/SCREEN participants appear in a draggable/resizable preview rail, and each item can open a larger draggable/resizable viewer shell.
+- Removed duplicate name/status metadata from the 9393 preview rail items; the thumbnail card itself now carries the participant name and LIVE/SCREEN state.
 - Mock participants now include sample camera/screen-share states so the broadcast badge can be tested without a live Telegram videochat.
 - Updated the Electron 9393 wrapper to keep rendering when the window is backgrounded or covered by another fullscreen app. It now disables Chromium background throttling/occlusion behavior and starts a `prevent-app-suspension` power-save blocker by default.
 - Added `--allow-throttle` to the Electron wrapper for reverting to normal Chromium background throttling when desired.

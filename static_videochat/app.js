@@ -1359,16 +1359,7 @@
         const thumb = document.createElement("div");
         thumb.className = "stream-preview-thumb";
         fillStreamSurface(thumb, p, false);
-        const meta = document.createElement("div");
-        meta.className = "stream-preview-meta";
-        const name = document.createElement("div");
-        name.className = "stream-preview-name";
-        name.textContent = p.name || p.username || "Unknown";
-        const tag = document.createElement("div");
-        tag.className = "stream-preview-tag";
-        tag.textContent = streamPreviewLabel(p);
-        meta.append(name, tag);
-        item.append(thumb, meta);
+        item.append(thumb);
         item.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
