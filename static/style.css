@@ -25,15 +25,15 @@ html, body {
 }
 
 body.send-panel-visible #chat {
-  bottom: 104px;
-  max-height: calc(100vh - 104px);
+  bottom: 132px;
+  max-height: calc(100vh - 132px);
 }
 
 #send-panel {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  width: min(360px, calc(100vw - 32px));
+  width: min(520px, calc(100vw - 32px));
   display: flex;
   gap: 8px;
   align-items: stretch;
@@ -51,8 +51,51 @@ body.send-panel-visible #chat {
   display: none;
 }
 
-#send-text {
+#send-panel.drag-over {
+  border-color: rgba(255, 209, 102, 0.82);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.36),
+    0 0 0 2px rgba(255, 209, 102, 0.16);
+}
+
+#send-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.send-target {
+  min-width: 50px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(245, 247, 251, 0.62);
+  font: 850 11px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.send-target.active {
+  border-color: rgba(255, 209, 102, 0.74);
+  background: rgba(255, 209, 102, 0.18);
+  color: #ffe38c;
+  box-shadow: 0 0 12px rgba(255, 209, 102, 0.12);
+}
+
+.send-target:disabled {
+  opacity: 0.34;
+  cursor: not-allowed;
+}
+
+#send-body {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#send-text {
   min-width: 0;
   resize: none;
   border: 0;
@@ -66,6 +109,59 @@ body.send-panel-visible #chat {
 
 #send-text::placeholder {
   color: rgba(245, 247, 251, 0.45);
+}
+
+#send-preview {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 5px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.075);
+}
+
+#send-preview[hidden] {
+  display: none;
+}
+
+#send-preview-img {
+  width: 42px;
+  height: 42px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+#send-preview-name {
+  min-width: 0;
+  color: rgba(245, 247, 251, 0.78);
+  font-size: 12px;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#send-preview-clear,
+#send-file-button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(245, 247, 251, 0.78);
+  font: 900 15px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+#send-preview-clear {
+  width: 22px;
+  height: 22px;
+}
+
+#send-file-button {
+  flex: 0 0 34px;
 }
 
 #send-button {

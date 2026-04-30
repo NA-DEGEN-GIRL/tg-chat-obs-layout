@@ -1,7 +1,10 @@
 import asyncio
+import base64
 import colorsys
 import getpass
+import hashlib
 import html
+import io
 import json
 import os
 import sys
@@ -71,6 +74,7 @@ TELEGRAM_USER_SEND_FALLBACK_BOT = os.getenv("TELEGRAM_USER_SEND_FALLBACK_BOT", "
     "1", "true", "True", "yes", "on"
 }
 TELEGRAM_USER_SEND_MAX_CHARS = int(os.getenv("TELEGRAM_USER_SEND_MAX_CHARS", "1000") or "1000")
+TELEGRAM_USER_SEND_MAX_PHOTO_MB = float(os.getenv("TELEGRAM_USER_SEND_MAX_PHOTO_MB", "8") or "8")
 
 if not BOT_TOKEN:
     print("[ERROR] .env 의 BOT_TOKEN 이 비어 있습니다.", flush=True)
@@ -160,7 +164,7 @@ _user_colors: dict[str, str] = {}
 _levels_lock = threading.Lock()
 _level_store: dict[str, dict[str, Any]] = {}
 _send_dedupe_lock = threading.Lock()
-_send_dedupe: dict[tuple[str, str], dict[str, float | int]] = {}
+_send_dedupe: dict[tuple[str, str, str], dict[str, float | int]] = {}
 SEND_DEDUPE_TTL_SEC = 8.0
 
 
@@ -547,18 +551,18 @@ def _has_main_tts_destination() -> bool:
     return any(d.get("thread_id") is None for d in tts_destinations)
 
 
-def mark_overlay_send_for_dedupe(text: str, count: int) -> None:
+def mark_overlay_send_for_dedupe(kind: str, marker: str, count: int) -> None:
     sender_id = telegram_user_sender_id or str(VIDEOCHAT_HOST_USER_ID or "")
-    key = (sender_id, text)
-    if not sender_id or count <= 1:
+    key = (sender_id, kind, marker)
+    if not sender_id or not marker or count <= 1:
         return
     now = time.monotonic()
     with _send_dedupe_lock:
         _send_dedupe[key] = {"remaining": count - 1, "expires": now + SEND_DEDUPE_TTL_SEC}
 
 
-def should_skip_overlay_duplicate(profile: dict, text: str) -> bool:
-    key = (str(profile.get("speaker_id") or ""), text)
+def should_skip_overlay_duplicate(profile: dict, kind: str, marker: str) -> bool:
+    key = (str(profile.get("speaker_id") or ""), kind, marker)
     if not key[0]:
         return False
     now = time.monotonic()
@@ -726,13 +730,73 @@ async def dispatch_stt_message(dest: dict, text: str) -> None:
     await send_stt_by_bot(dest, text)
 
 
-def overlay_send_destinations() -> list[dict]:
-    dests = [{"chat_id": CHAT_ID, "thread_id": None}]
-    if active_thread is not None:
+def overlay_send_destinations(targets: list[str] | None = None) -> list[dict]:
+    requested = set(targets or ["main"])
+    dests = []
+    if "main" in requested:
+        dests.append({"chat_id": CHAT_ID, "thread_id": None, "target": "main"})
+    if "here" in requested and active_thread is not None:
         dest = {"chat_id": active_thread[0], "thread_id": active_thread[1]}
         if dest not in dests:
+            dest["target"] = "here"
             dests.append(dest)
     return dests
+
+
+def detect_image_mime(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def normalize_photo_name(name: str, mime: str) -> str:
+    clean = (name or "image").replace("\\", "_").replace("/", "_").strip() or "image"
+    ext = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }.get(mime, ".jpg")
+    if clean.lower().endswith(ext):
+        return clean[:120]
+    stem = clean.rsplit(".", 1)[0] if "." in clean else clean
+    return f"{stem[:100] or 'image'}{ext}"
+
+
+def decode_send_photo(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    raw = str(value.get("data") or "")
+    if not raw:
+        return None
+    if "," in raw and raw.split(",", 1)[0].startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid photo data") from exc
+    max_bytes = max(1, int(TELEGRAM_USER_SEND_MAX_PHOTO_MB * 1024 * 1024))
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400, detail="photo too large")
+    client_mime = str(value.get("mime") or "")
+    if client_mime and not client_mime.startswith("image/"):
+        raise HTTPException(status_code=400, detail="photo must be an image")
+    mime = detect_image_mime(data)
+    if not mime:
+        raise HTTPException(status_code=400, detail="unsupported image")
+    name = normalize_photo_name(str(value.get("name") or "image"), mime)
+    return {
+        "bytes": data,
+        "name": name,
+        "mime": mime,
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
 async def send_plain_by_bot(dest: dict, text: str) -> None:
@@ -743,6 +807,26 @@ async def send_plain_by_bot(dest: dict, text: str) -> None:
     await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **kwargs)
 
 
+def _named_bytes(data: bytes, filename: str) -> io.BytesIO:
+    fp = io.BytesIO(data)
+    fp.name = filename or "image.jpg"
+    return fp
+
+
+async def send_photo_by_bot(dest: dict, photo: dict, caption: str) -> None:
+    kwargs = {}
+    if dest.get("thread_id") is not None:
+        kwargs["reply_to_message_id"] = dest["thread_id"]
+        kwargs["allow_sending_without_reply"] = True
+    await asyncio.to_thread(
+        bot.send_photo,
+        dest["chat_id"],
+        _named_bytes(photo["bytes"], photo["name"]),
+        caption=caption or None,
+        **kwargs,
+    )
+
+
 async def send_plain_by_user(dest: dict, text: str) -> None:
     client = await ensure_telegram_user_client()
     kwargs = {}
@@ -751,21 +835,42 @@ async def send_plain_by_user(dest: dict, text: str) -> None:
     await client.send_message(dest["chat_id"], text, **kwargs)
 
 
-async def dispatch_overlay_user_message(text: str) -> list[dict]:
+async def send_photo_by_user(dest: dict, photo: dict, caption: str) -> None:
+    client = await ensure_telegram_user_client()
+    kwargs = {}
+    if dest.get("thread_id") is not None:
+        kwargs["reply_to"] = dest["thread_id"]
+    await client.send_file(
+        dest["chat_id"],
+        _named_bytes(photo["bytes"], photo["name"]),
+        caption=caption or None,
+        **kwargs,
+    )
+
+
+async def dispatch_overlay_user_message(text: str, targets: list[str], photo: dict | None = None) -> list[dict]:
     results = []
-    dests = overlay_send_destinations()
+    dests = overlay_send_destinations(targets)
+    if not dests:
+        return [{"ok": False, "error": "no selected destinations"}]
     try:
         await ensure_telegram_user_client()
     except Exception as exc:
         print(f"[SEND] user client unavailable: {exc}", flush=True)
         if not TELEGRAM_USER_SEND_FALLBACK_BOT:
             return [{"dest": dest, "ok": False, "via": "user", "error": str(exc)} for dest in dests]
-    mark_overlay_send_for_dedupe(text, len(dests))
+    if text:
+        mark_overlay_send_for_dedupe("text", text, len(dests))
+    if photo:
+        mark_overlay_send_for_dedupe("photo", photo["sha256"], len(dests))
     for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
         try:
-            await send_plain_by_user(dest, text)
+            if photo:
+                await send_photo_by_user(dest, photo, text)
+            else:
+                await send_plain_by_user(dest, text)
             results.append({"dest": dest, "ok": True, "via": "user"})
         except Exception as exc:
             print(f"[SEND] user dispatch failed dest={dest}: {exc}", flush=True)
@@ -773,7 +878,10 @@ async def dispatch_overlay_user_message(text: str) -> list[dict]:
                 results.append({"dest": dest, "ok": False, "via": "user", "error": str(exc)})
                 continue
             try:
-                await send_plain_by_bot(dest, text)
+                if photo:
+                    await send_photo_by_bot(dest, photo, text)
+                else:
+                    await send_plain_by_bot(dest, text)
                 results.append({"dest": dest, "ok": True, "via": "bot"})
             except Exception as bot_exc:
                 results.append({"dest": dest, "ok": False, "via": "bot", "error": str(bot_exc)})
@@ -945,7 +1053,7 @@ def on_text(message):
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     text = message.text
-    if should_skip_overlay_duplicate(profile, text):
+    if should_skip_overlay_duplicate(profile, "text", text):
         print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
         return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
@@ -994,6 +1102,13 @@ def on_photo(message):
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    try:
+        photo_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    except Exception:
+        photo_hash = file_unique_id
+    if should_skip_overlay_duplicate(profile, "photo", photo_hash):
+        print(f"[SEND] duplicate photo overlay echo skipped: {name}", flush=True)
+        return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     url = f"/photos/{file_unique_id}.jpg"
     print(f"{name}: [photo] {url}", flush=True)
@@ -1115,10 +1230,27 @@ async def get_config():
         "user_send_enabled": TELEGRAM_USER_SEND_ENABLED,
         "user_send_panel": TELEGRAM_USER_SEND_PANEL,
         "user_send_max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
+        "user_send_max_photo_mb": TELEGRAM_USER_SEND_MAX_PHOTO_MB,
+        "user_send_has_here": active_thread is not None,
         "videochat_host_user_id": str(VIDEOCHAT_HOST_USER_ID) if VIDEOCHAT_HOST_USER_ID else "",
         "videochat_host_username": VIDEOCHAT_HOST_USERNAME,
         "videochat_host_name": VIDEOCHAT_HOST_NAME,
         "videochat_bot_names": sorted(VIDEOCHAT_BOT_NAMES),
+    }
+
+
+@app.get("/api/send/status")
+async def api_send_status():
+    if not TELEGRAM_USER_SEND_ENABLED:
+        raise HTTPException(status_code=404, detail="send disabled")
+    return {
+        "enabled": True,
+        "targets": {
+            "main": True,
+            "here": active_thread is not None,
+        },
+        "max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
+        "max_photo_mb": TELEGRAM_USER_SEND_MAX_PHOTO_MB,
     }
 
 
@@ -1135,12 +1267,19 @@ async def api_send_message(request: Request):
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
     text = str(payload.get("text") or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="empty text")
+    photo = decode_send_photo(payload.get("photo"))
+    if not text and not photo:
+        raise HTTPException(status_code=400, detail="empty message")
     if len(text) > TELEGRAM_USER_SEND_MAX_CHARS:
         raise HTTPException(status_code=400, detail="text too long")
+    raw_targets = payload.get("targets")
+    if not isinstance(raw_targets, list):
+        raw_targets = []
+    targets = [str(x) for x in raw_targets if str(x) in {"main", "here"}]
+    if not targets:
+        raise HTTPException(status_code=400, detail="no targets selected")
 
-    results = await dispatch_overlay_user_message(text)
+    results = await dispatch_overlay_user_message(text, targets, photo)
     ok = [r for r in results if r.get("ok")]
     if not ok:
         raise HTTPException(status_code=502, detail={"message": "send failed", "results": results})
