@@ -982,6 +982,48 @@ body::before {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+.chat-line.photo img.clickable-media,
+.chat-line.photo video.clickable-media,
+.avatar .bubble.photo img.clickable-media,
+.avatar .bubble.photo video.clickable-media {
+  cursor: zoom-in;
+}
+
+#media-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 50000;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.78);
+  cursor: zoom-out;
+  pointer-events: auto;
+}
+
+#media-lightbox[hidden] {
+  display: none;
+}
+
+#media-lightbox-body {
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+#media-lightbox img,
+#media-lightbox video {
+  display: block;
+  max-width: min(96vw, 1400px);
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
 .chat-line.sticker img,
 .chat-line.sticker video,
 .chat-line.sticker .lottie-sticker {

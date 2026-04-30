@@ -18,6 +18,13 @@
   mentionMenu.id = "mention-menu";
   mentionMenu.hidden = true;
   document.body.appendChild(mentionMenu);
+  const mediaLightbox = document.createElement("div");
+  mediaLightbox.id = "media-lightbox";
+  mediaLightbox.hidden = true;
+  const mediaLightboxBody = document.createElement("div");
+  mediaLightboxBody.id = "media-lightbox-body";
+  mediaLightbox.appendChild(mediaLightboxBody);
+  document.body.appendChild(mediaLightbox);
   const MAX_MESSAGES = 50;
   const FONT_SIZE_KEY = "tg-chat-overlay.fontSize.v1";
   let fadeAfterSec = 30;
@@ -218,6 +225,54 @@
     }
   }
 
+  function closeMediaLightbox() {
+    mediaLightbox.hidden = true;
+    mediaLightboxBody.replaceChildren();
+  }
+
+  function openMediaLightbox(media) {
+    if (!media?.src) return;
+    const full = document.createElement(media.tagName === "VIDEO" ? "video" : "img");
+    full.src = media.src;
+    if (full.tagName === "VIDEO") {
+      full.controls = true;
+      full.autoplay = true;
+      full.loop = true;
+      full.muted = true;
+      full.playsInline = true;
+    } else {
+      full.alt = "";
+      full.decoding = "async";
+    }
+    mediaLightboxBody.replaceChildren(full);
+    mediaLightbox.hidden = false;
+  }
+
+  mediaLightbox.addEventListener("click", closeMediaLightbox);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !mediaLightbox.hidden) closeMediaLightbox();
+  });
+
+  function chatIsAtBottom() {
+    return chat.scrollHeight - chat.scrollTop - chat.clientHeight < 48;
+  }
+
+  function scrollChatToBottom() {
+    requestAnimationFrame(() => {
+      chat.scrollTo({ top: chat.scrollHeight, behavior: "auto" });
+    });
+  }
+
+  function keepBottomAfterMediaLoad(media, shouldStickToBottom) {
+    if (!shouldStickToBottom) return;
+    const settle = () => scrollChatToBottom();
+    media.addEventListener("load", settle, { once: true });
+    media.addEventListener("loadedmetadata", settle, { once: true });
+    media.addEventListener("loadeddata", settle, { once: true });
+    setTimeout(settle, 120);
+    setTimeout(settle, 500);
+  }
+
   function createMediaElement(data) {
     if (data.media_type === "tgs") {
       const box = document.createElement("div");
@@ -236,6 +291,11 @@
       media.alt = "";
       media.decoding = "async";
     }
+    media.classList.add("clickable-media");
+    media.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openMediaLightbox(media);
+    });
     return media;
   }
 
@@ -555,7 +615,8 @@
 
     if (isMedia) {
       if (!data.url) return;
-      el.appendChild(createMediaElement(data));
+      const media = createMediaElement(data);
+      el.appendChild(media);
       if (typeof data.text === "string" && data.text.trim()) {
         const text = document.createElement("span");
         text.className = "text photo-caption";
@@ -576,17 +637,19 @@
       }
     }
 
-    const shouldStickToBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 48;
+    const shouldStickToBottom = chatIsAtBottom();
     chat.appendChild(el);
+    if (isMedia) {
+      const media = el.querySelector("img, video");
+      if (media) keepBottomAfterMediaLoad(media, shouldStickToBottom);
+    }
 
     while (chat.children.length > MAX_MESSAGES) {
       chat.removeChild(chat.firstChild);
     }
 
     if (shouldStickToBottom) {
-      requestAnimationFrame(() => {
-        chat.scrollTo({ top: chat.scrollHeight, behavior: "auto" });
-      });
+      scrollChatToBottom();
     }
 
     if (fadeAfterSec >= 0) {

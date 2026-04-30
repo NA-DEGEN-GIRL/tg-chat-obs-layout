@@ -420,6 +420,46 @@ body.send-panel-visible #chat {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+.msg-media img.clickable-media,
+.msg-media video.clickable-media {
+  cursor: zoom-in;
+}
+
+#media-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 30000;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.78);
+  cursor: zoom-out;
+  pointer-events: auto;
+}
+
+#media-lightbox[hidden] {
+  display: none;
+}
+
+#media-lightbox-body {
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+#media-lightbox img,
+#media-lightbox video {
+  display: block;
+  max-width: min(96vw, 1400px);
+  max-height: 92vh;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
 .msg-sticker img,
 .msg-sticker video,
 .msg-sticker .lottie-sticker {

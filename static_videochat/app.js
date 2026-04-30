@@ -50,6 +50,13 @@
   mentionMenu.id = "chat-mention-menu";
   mentionMenu.hidden = true;
   document.body.appendChild(mentionMenu);
+  const mediaLightbox = document.createElement("div");
+  mediaLightbox.id = "media-lightbox";
+  mediaLightbox.hidden = true;
+  const mediaLightboxBody = document.createElement("div");
+  mediaLightboxBody.id = "media-lightbox-body";
+  mediaLightbox.appendChild(mediaLightboxBody);
+  document.body.appendChild(mediaLightbox);
   const CHAT_SETTINGS_KEY = "videochat.chatPanelSettings.v2";
   const TOPIC_SETTINGS_KEY = "videochat.topicSettings.v1";
   const AVATAR_SETTINGS_KEY = "videochat.avatarSettings.v1";
@@ -1815,6 +1822,54 @@
     }
   }
 
+  function closeMediaLightbox() {
+    mediaLightbox.hidden = true;
+    mediaLightboxBody.replaceChildren();
+  }
+
+  function openMediaLightbox(media) {
+    if (!media?.src) return;
+    const full = document.createElement(media.tagName === "VIDEO" ? "video" : "img");
+    full.src = media.src;
+    if (full.tagName === "VIDEO") {
+      full.controls = true;
+      full.autoplay = true;
+      full.loop = true;
+      full.muted = true;
+      full.playsInline = true;
+    } else {
+      full.alt = "";
+      full.decoding = "async";
+    }
+    mediaLightboxBody.replaceChildren(full);
+    mediaLightbox.hidden = false;
+  }
+
+  mediaLightbox.addEventListener("click", closeMediaLightbox);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !mediaLightbox.hidden) closeMediaLightbox();
+  });
+
+  function chatLogIsAtBottom() {
+    return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
+  }
+
+  function scrollChatLogToBottom() {
+    requestAnimationFrame(() => {
+      chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "auto" });
+    });
+  }
+
+  function keepChatLogBottomAfterMediaLoad(media, shouldStickToBottom) {
+    if (!shouldStickToBottom) return;
+    const settle = () => scrollChatLogToBottom();
+    media.addEventListener("load", settle, { once: true });
+    media.addEventListener("loadedmetadata", settle, { once: true });
+    media.addEventListener("loadeddata", settle, { once: true });
+    setTimeout(settle, 120);
+    setTimeout(settle, 500);
+  }
+
   function createMediaElement(data) {
     if (data.media_type === "tgs") {
       const box = document.createElement("div");
@@ -1833,6 +1888,11 @@
       media.alt = "";
       media.decoding = "async";
     }
+    media.classList.add("clickable-media");
+    media.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openMediaLightbox(media);
+    });
     return media;
   }
 
@@ -1940,7 +2000,8 @@
     const quote = createReplyQuote(data.reply);
     if (quote) item.appendChild(quote);
     if (isMedia) {
-      item.appendChild(createMediaElement(data));
+      const media = createMediaElement(data);
+      item.appendChild(media);
       if (typeof data.text === "string" && data.text.trim()) {
         const msg = document.createElement("span");
         msg.className = "chat-text photo-caption";
@@ -1959,16 +2020,18 @@
         item.appendChild(label);
       }
     }
-    const shouldStickToBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
+    const shouldStickToBottom = chatLogIsAtBottom();
     chatLog.appendChild(item);
+    if (isMedia) {
+      const media = item.querySelector("img, video");
+      if (media) keepChatLogBottomAfterMediaLoad(media, shouldStickToBottom);
+    }
     while (chatLog.children.length > MAX_CHAT_LINES) {
       chatLog.removeChild(chatLog.firstChild);
     }
     requestAnimationFrame(() => item.classList.add("show"));
     if (shouldStickToBottom) {
-      requestAnimationFrame(() => {
-        chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "auto" });
-      });
+      scrollChatLogToBottom();
     }
     const fadeSec = state.chatSettings ? state.chatSettings.fadeSec : -1;
     if (fadeSec >= 0) {
