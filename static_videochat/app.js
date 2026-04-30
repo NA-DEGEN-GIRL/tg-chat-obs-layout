@@ -61,12 +61,46 @@
   mediaLightboxBody.id = "media-lightbox-body";
   mediaLightbox.appendChild(mediaLightboxBody);
   document.body.appendChild(mediaLightbox);
+  const streamPreviewPanel = document.createElement("div");
+  streamPreviewPanel.id = "stream-preview-panel";
+  streamPreviewPanel.innerHTML = `
+    <div id="stream-preview-controls">
+      <button id="stream-preview-drag" type="button" title="preview move">M</button>
+      <button id="stream-preview-toggle" type="button" title="preview show/hide">hide</button>
+    </div>
+    <div id="stream-preview-list"></div>
+    <div id="stream-preview-resize" title="preview resize"></div>
+  `;
+  document.body.appendChild(streamPreviewPanel);
+  const streamPreviewControls = streamPreviewPanel.querySelector("#stream-preview-controls");
+  const streamPreviewDrag = streamPreviewPanel.querySelector("#stream-preview-drag");
+  const streamPreviewToggle = streamPreviewPanel.querySelector("#stream-preview-toggle");
+  const streamPreviewList = streamPreviewPanel.querySelector("#stream-preview-list");
+  const streamPreviewResize = streamPreviewPanel.querySelector("#stream-preview-resize");
+  const streamPreviewViewer = document.createElement("div");
+  streamPreviewViewer.id = "stream-preview-viewer";
+  streamPreviewViewer.hidden = true;
+  streamPreviewViewer.innerHTML = `
+    <div id="stream-viewer-bar">
+      <button id="stream-viewer-drag" type="button" title="viewer move">M</button>
+      <button id="stream-viewer-close" type="button" title="close">x</button>
+    </div>
+    <div id="stream-viewer-body"></div>
+    <div id="stream-viewer-resize" title="viewer resize"></div>
+  `;
+  document.body.appendChild(streamPreviewViewer);
+  const streamViewerBar = streamPreviewViewer.querySelector("#stream-viewer-bar");
+  const streamViewerDrag = streamPreviewViewer.querySelector("#stream-viewer-drag");
+  const streamViewerClose = streamPreviewViewer.querySelector("#stream-viewer-close");
+  const streamViewerBody = streamPreviewViewer.querySelector("#stream-viewer-body");
+  const streamViewerResize = streamPreviewViewer.querySelector("#stream-viewer-resize");
   const CHAT_SETTINGS_KEY = "videochat.chatPanelSettings.v2";
   const TOPIC_SETTINGS_KEY = "videochat.topicSettings.v1";
   const AVATAR_SETTINGS_KEY = "videochat.avatarSettings.v1";
   const CAMERA_SETTINGS_KEY = "videochat.cameraSettings.v1";
   const EFFECT_SETTINGS_KEY = "videochat.effectSettings.v1";
   const TOAST_SETTINGS_KEY = "videochat.toastSettings.v1";
+  const STREAM_PREVIEW_SETTINGS_KEY = "videochat.streamPreviewSettings.v1";
   const EMOJI_PICKER_POS_KEY = "videochat.emojiPicker.v1";
 
   const state = {
@@ -114,6 +148,8 @@
     avatarSettings: null,
     effectSettings: null,
     toastSettings: null,
+    streamPreviewSettings: null,
+    streamPreviewSignature: "",
     overlaySettings: {},
     overlaySettingsPushTimer: null,
     controlMode: false,
@@ -912,6 +948,18 @@
       out.toast.y = scaleValue(out.toast.y, sy);
       out.toast.scale = scaleValue(out.toast.scale, sm);
     }
+    if (out.streamPreview) {
+      out.streamPreview.x = scaleValue(out.streamPreview.x, sx);
+      out.streamPreview.y = scaleValue(out.streamPreview.y, sy);
+      out.streamPreview.w = scaleValue(out.streamPreview.w, sx);
+      out.streamPreview.h = scaleValue(out.streamPreview.h, sy);
+      if (out.streamPreview.viewer) {
+        out.streamPreview.viewer.x = scaleValue(out.streamPreview.viewer.x, sx);
+        out.streamPreview.viewer.y = scaleValue(out.streamPreview.viewer.y, sy);
+        out.streamPreview.viewer.w = scaleValue(out.streamPreview.viewer.w, sx);
+        out.streamPreview.viewer.h = scaleValue(out.streamPreview.viewer.h, sy);
+      }
+    }
     if (out.camera) {
       out.camera.screenOffsetX = scaleValue(out.camera.screenOffsetX, sx);
       out.camera.screenOffsetY = scaleValue(out.camera.screenOffsetY, sy);
@@ -929,6 +977,7 @@
       avatar: state.avatarSettings ? { ...state.avatarSettings } : loadAvatarSettings(),
       effect: state.effectSettings ? { ...state.effectSettings } : loadEffectSettings(),
       toast: state.toastSettings ? { ...state.toastSettings } : loadToastSettings(),
+      streamPreview: state.streamPreviewSettings ? cloneSettings(state.streamPreviewSettings) : loadStreamPreviewSettings(),
       camera: {
         yaw: state.view.yaw,
         distance: state.view.distance,
@@ -1147,6 +1196,297 @@
     window.addEventListener("resize", () => {
       applyChatSettings();
       saveChatSettings();
+    });
+  }
+
+  function defaultStreamPreviewSettings() {
+    const panelW = Math.min(300, Math.max(230, Math.round(window.innerWidth * 0.14)));
+    const panelH = Math.min(360, Math.max(220, Math.round(window.innerHeight * 0.28)));
+    const viewerW = Math.min(760, Math.max(440, Math.round(window.innerWidth * 0.34)));
+    const viewerH = Math.round(viewerW * 0.58);
+    return {
+      x: 18,
+      y: 92,
+      w: panelW,
+      h: panelH,
+      hidden: false,
+      viewer: {
+        open: false,
+        key: "",
+        x: Math.max(16, Math.round((window.innerWidth - viewerW) / 2)),
+        y: Math.max(16, Math.round((window.innerHeight - viewerH) / 2)),
+        w: viewerW,
+        h: viewerH,
+      },
+    };
+  }
+
+  function loadStreamPreviewSettings() {
+    try {
+      const raw = localStorage.getItem(STREAM_PREVIEW_SETTINGS_KEY);
+      const base = defaultStreamPreviewSettings();
+      const saved = raw ? JSON.parse(raw) : {};
+      const remote = settingSection("streamPreview") || {};
+      return Object.assign(base, saved, remote, {
+        viewer: Object.assign(base.viewer, saved.viewer || {}, remote.viewer || {}),
+      });
+    } catch (_) {
+      return defaultStreamPreviewSettings();
+    }
+  }
+
+  function saveStreamPreviewSettings() {
+    if (!state.streamPreviewSettings) return;
+    persistSetting(STREAM_PREVIEW_SETTINGS_KEY, state.streamPreviewSettings);
+  }
+
+  function clampStreamPreviewSettings(s) {
+    const minW = 176;
+    const minH = 136;
+    const pad = 6;
+    s.w = Math.min(window.innerWidth - pad * 2, Math.max(minW, Number(s.w) || minW));
+    s.h = Math.min(window.innerHeight - pad * 2, Math.max(minH, Number(s.h) || minH));
+    s.x = Math.min(window.innerWidth - s.w - pad, Math.max(pad, Number(s.x) || pad));
+    s.y = Math.min(window.innerHeight - s.h - pad, Math.max(pad, Number(s.y) || pad));
+    const viewer = s.viewer || {};
+    viewer.w = Math.min(window.innerWidth - pad * 2, Math.max(280, Number(viewer.w) || 480));
+    viewer.h = Math.min(window.innerHeight - pad * 2, Math.max(180, Number(viewer.h) || 280));
+    viewer.x = Math.min(window.innerWidth - viewer.w - pad, Math.max(pad, Number(viewer.x) || pad));
+    viewer.y = Math.min(window.innerHeight - viewer.h - pad, Math.max(pad, Number(viewer.y) || pad));
+    viewer.open = !!viewer.open;
+    viewer.key = String(viewer.key || "");
+    s.viewer = viewer;
+  }
+
+  function streamParticipantKey(p) {
+    return keyFor(p);
+  }
+
+  function cleanUsername(value) {
+    return String(value || "").trim().replace(/^@/, "").toLowerCase();
+  }
+
+  function isSelfParticipant(p) {
+    if (!p || typeof p !== "object") return false;
+    if (p.is_host || hasRole(p, "king")) return true;
+    const hostId = String(state.cfg.host_user_id || "").trim();
+    const id = String(p.id || p.speaker_id || "").trim();
+    if (hostId && id && hostId === id) return true;
+    const hostUsername = cleanUsername(state.cfg.host_username);
+    const username = cleanUsername(p.username);
+    if (hostUsername && username && hostUsername === username) return true;
+    const hostName = String(state.cfg.host_name || "").trim().toLowerCase();
+    const name = String(p.name || "").trim().toLowerCase();
+    return !!(hostName && name && hostName === name);
+  }
+
+  function streamPreviewRows() {
+    return Array.from(state.participants.values())
+      .filter((p) => (!!p.video || !!p.screen) && !isSelfParticipant(p))
+      .sort((a, b) => Number(b.screen || 0) - Number(a.screen || 0) || String(a.name).localeCompare(String(b.name)));
+  }
+
+  function streamPreviewLabel(p) {
+    return p.screen ? "SCREEN" : "LIVE";
+  }
+
+  function streamPreviewKind(p) {
+    return p.screen ? "screen" : "video";
+  }
+
+  function fillStreamSurface(target, p, large = false) {
+    target.innerHTML = "";
+    const color = participantColor(p);
+    const surface = document.createElement("div");
+    surface.className = `stream-preview-surface ${streamPreviewKind(p)}${large ? " large" : ""}`;
+    surface.style.setProperty("--stream-color", color);
+    const visual = document.createElement("div");
+    visual.className = "stream-preview-visual";
+    const avatar = document.createElement("div");
+    avatar.className = "stream-preview-avatar";
+    if (p.avatar_url) {
+      const img = document.createElement("img");
+      img.src = p.avatar_url;
+      img.alt = "";
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = initials(p.name || p.username);
+    }
+    const camera = document.createElement("div");
+    camera.className = "stream-preview-camera";
+    const label = document.createElement("div");
+    label.className = "stream-preview-live";
+    label.textContent = streamPreviewLabel(p);
+    visual.append(avatar, camera, label);
+    const footer = document.createElement("div");
+    footer.className = "stream-preview-footer";
+    const name = document.createElement("span");
+    name.className = "stream-preview-name";
+    name.textContent = p.name || p.username || "Unknown";
+    name.style.color = color;
+    const status = document.createElement("span");
+    status.className = "stream-preview-status";
+    status.textContent = streamPreviewLabel(p);
+    footer.append(name, status);
+    surface.append(visual, footer);
+    target.appendChild(surface);
+  }
+
+  function renderStreamPreviews(force = false) {
+    if (!state.streamPreviewSettings || !streamPreviewPanel || !streamPreviewList) return;
+    const rows = streamPreviewRows();
+    const activeKeys = new Set(rows.map(streamParticipantKey));
+    const viewer = state.streamPreviewSettings.viewer || {};
+    if (viewer.key && !activeKeys.has(viewer.key)) {
+      viewer.key = "";
+      viewer.open = false;
+    }
+    const signature = rows
+      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, participantColor(p)].join(":"))
+      .join("|") + `|${viewer.key}|${viewer.open ? 1 : 0}`;
+    const changed = force || signature !== state.streamPreviewSignature;
+    if (changed) {
+      state.streamPreviewSignature = signature;
+      streamPreviewList.innerHTML = "";
+      for (const p of rows) {
+        const key = streamParticipantKey(p);
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = `stream-preview-item ${streamPreviewKind(p)}`;
+        item.classList.toggle("active", viewer.open && viewer.key === key);
+        item.style.setProperty("--stream-color", participantColor(p));
+        item.dataset.key = key;
+        const thumb = document.createElement("div");
+        thumb.className = "stream-preview-thumb";
+        fillStreamSurface(thumb, p, false);
+        const meta = document.createElement("div");
+        meta.className = "stream-preview-meta";
+        const name = document.createElement("div");
+        name.className = "stream-preview-name";
+        name.textContent = p.name || p.username || "Unknown";
+        const tag = document.createElement("div");
+        tag.className = "stream-preview-tag";
+        tag.textContent = streamPreviewLabel(p);
+        meta.append(name, tag);
+        item.append(thumb, meta);
+        item.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          state.streamPreviewSettings.viewer.open = true;
+          state.streamPreviewSettings.viewer.key = key;
+          applyStreamPreviewSettings();
+          renderStreamPreviews(true);
+          saveStreamPreviewSettings();
+        });
+        streamPreviewList.appendChild(item);
+      }
+    }
+    streamPreviewPanel.classList.toggle("empty", rows.length === 0);
+    const active = rows.find((p) => streamParticipantKey(p) === viewer.key);
+    streamPreviewViewer.hidden = !(viewer.open && active);
+    if (active && streamViewerBody && (changed || streamViewerBody.dataset.key !== streamParticipantKey(active))) {
+      streamViewerBody.dataset.key = streamParticipantKey(active);
+      fillStreamSurface(streamViewerBody, active, true);
+    } else if (!active && streamViewerBody) {
+      streamViewerBody.dataset.key = "";
+    }
+  }
+
+  function applyStreamPreviewSettings() {
+    if (!state.streamPreviewSettings || !streamPreviewPanel) return;
+    clampStreamPreviewSettings(state.streamPreviewSettings);
+    const s = state.streamPreviewSettings;
+    streamPreviewPanel.style.left = `${s.x}px`;
+    streamPreviewPanel.style.top = `${s.y}px`;
+    streamPreviewPanel.style.width = `${s.w}px`;
+    streamPreviewPanel.style.height = `${s.h}px`;
+    streamPreviewPanel.classList.toggle("preview-hidden", !!s.hidden);
+    if (streamPreviewToggle) streamPreviewToggle.textContent = s.hidden ? "show" : "hide";
+    const viewer = s.viewer || {};
+    streamPreviewViewer.style.left = `${viewer.x}px`;
+    streamPreviewViewer.style.top = `${viewer.y}px`;
+    streamPreviewViewer.style.width = `${viewer.w}px`;
+    streamPreviewViewer.style.height = `${viewer.h}px`;
+    renderStreamPreviews(true);
+  }
+
+  function setupStreamPreviewControls() {
+    state.streamPreviewSettings = loadStreamPreviewSettings();
+    applyStreamPreviewSettings();
+    streamPreviewToggle?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.streamPreviewSettings.hidden = !state.streamPreviewSettings.hidden;
+      applyStreamPreviewSettings();
+      saveStreamPreviewSettings();
+    });
+    streamViewerClose?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.streamPreviewSettings.viewer.open = false;
+      state.streamPreviewSettings.viewer.key = "";
+      applyStreamPreviewSettings();
+      saveStreamPreviewSettings();
+    });
+
+    let dragMode = null;
+    let start = null;
+    function begin(ev, target, mode) {
+      if (!state.streamPreviewSettings) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      dragMode = { target, mode };
+      start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        panel: { ...state.streamPreviewSettings },
+        viewer: { ...(state.streamPreviewSettings.viewer || {}) },
+      };
+      streamPreviewControls?.classList.toggle("dragging", target === "panel");
+      streamViewerBar?.classList.toggle("dragging", target === "viewer");
+      ev.currentTarget.setPointerCapture?.(ev.pointerId);
+    }
+    function move(ev) {
+      if (!dragMode || !start) return;
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      if (dragMode.target === "panel") {
+        if (dragMode.mode === "move") {
+          state.streamPreviewSettings.x = start.panel.x + dx;
+          state.streamPreviewSettings.y = start.panel.y + dy;
+        } else {
+          state.streamPreviewSettings.w = start.panel.w + dx;
+          state.streamPreviewSettings.h = start.panel.h + dy;
+        }
+      } else {
+        const viewer = state.streamPreviewSettings.viewer;
+        if (dragMode.mode === "move") {
+          viewer.x = start.viewer.x + dx;
+          viewer.y = start.viewer.y + dy;
+        } else {
+          viewer.w = start.viewer.w + dx;
+          viewer.h = start.viewer.h + dy;
+        }
+      }
+      applyStreamPreviewSettings();
+    }
+    function end() {
+      if (!dragMode) return;
+      dragMode = null;
+      start = null;
+      streamPreviewControls?.classList.remove("dragging");
+      streamViewerBar?.classList.remove("dragging");
+      saveStreamPreviewSettings();
+    }
+    streamPreviewDrag?.addEventListener("pointerdown", (ev) => begin(ev, "panel", "move"));
+    streamPreviewResize?.addEventListener("pointerdown", (ev) => begin(ev, "panel", "resize"));
+    streamViewerDrag?.addEventListener("pointerdown", (ev) => begin(ev, "viewer", "move"));
+    streamViewerResize?.addEventListener("pointerdown", (ev) => begin(ev, "viewer", "resize"));
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("resize", () => {
+      applyStreamPreviewSettings();
+      saveStreamPreviewSettings();
     });
   }
 
@@ -1745,6 +2085,16 @@
         applyToastSettings();
         storageSet(TOAST_SETTINGS_KEY, JSON.stringify(state.toastSettings));
       }
+      if (nextSettings.streamPreview && state.streamPreviewSettings) {
+        Object.assign(state.streamPreviewSettings, nextSettings.streamPreview, {
+          viewer: Object.assign(
+            state.streamPreviewSettings.viewer || {},
+            nextSettings.streamPreview.viewer || {}
+          ),
+        });
+        applyStreamPreviewSettings();
+        storageSet(STREAM_PREVIEW_SETTINGS_KEY, JSON.stringify(state.streamPreviewSettings));
+      }
       if (nextSettings.camera) {
         applyCameraControl({ type: "videochat_camera", ...nextSettings.camera });
       }
@@ -1766,6 +2116,7 @@
   setupAvatarControls();
   setupEffectControls();
   setupToastControls();
+  setupStreamPreviewControls();
   if (state.controlMode) scheduleOverlaySettingsPush(300);
 
   function keyFor(p) {
@@ -2533,6 +2884,7 @@
       el.style.opacity = String(Math.max(0, 1 - progress * 0.86));
       el.style.filter = `brightness(${1 + (1 - progress) * 0.35}) drop-shadow(0 0 ${Math.round(18 + (1 - progress) * 18)}px rgba(235,248,255,${0.38 * (1 - progress)}))`;
     }
+    renderStreamPreviews();
   }
 
   function setSnapshot(data) {

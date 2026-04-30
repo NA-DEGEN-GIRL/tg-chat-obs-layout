@@ -70,6 +70,13 @@ Still no real stream decoding yet. This phase creates the user-facing layout and
 
 This lets layout and OBS composition be tested before the harder TDLib work.
 
+Implemented baseline:
+
+- The preview rail is created in `static_videochat/app.js`.
+- The preview settings are saved as `streamPreview` in overlay settings.
+- Host/current account matching uses the configured host id, username, name, plus `is_host`/`king` role.
+- The shell currently renders a visual placeholder from avatar/name/status. Real video frames still require Phase 3/4.
+
 ## Phase 3: TDLib Stream Probe
 
 Telethon is enough for participant state, but real preview playback likely needs TDLib.
