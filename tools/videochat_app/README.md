@@ -25,11 +25,14 @@ npm start -- --viewer
 npm start -- --control
 npm start -- --hide-ui
 npm start -- --always-on-top
+npm start -- --allow-throttle
 npm start -- --reset-window
 npm start -- --width=1920 --height=1080
 ```
 
 The app opens in control mode by default. Window size, position, fullscreen, always-on-top, control mode, and hidden UI state are saved under the repo-local `data/` directory.
+
+By default the app asks Chromium to keep rendering while the window is covered or backgrounded. This is meant to reduce frozen OBS Window Capture frames when another fullscreen program is active. Use `--allow-throttle` only if you want Electron/Chromium to use its normal background throttling behavior.
 
 ## Build Windows Portable EXE
 

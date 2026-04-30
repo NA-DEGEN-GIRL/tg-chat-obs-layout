@@ -1,19 +1,28 @@
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, powerSaveBlocker, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_BASE_URL = "http://127.0.0.1:9393/";
 const WINDOW_STATE_FILE = path.join(REPO_ROOT, "data", "videochat_app_window.json");
+const KEEP_RENDERING_DEFAULT = !process.argv.includes("--allow-throttle");
 
 app.setPath("userData", path.join(REPO_ROOT, "data", "videochat_app_profile"));
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+if (KEEP_RENDERING_DEFAULT) {
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+  app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+}
 
 let mainWindow = null;
 let currentBaseUrl = DEFAULT_BASE_URL;
 let controlMode = true;
 let overlayUiHidden = false;
+let keepRendering = KEEP_RENDERING_DEFAULT;
 let saveWindowTimer = null;
+let powerSaveBlockerId = null;
 
 function argValue(name) {
   const prefix = `--${name}=`;
@@ -43,6 +52,7 @@ function initializeMode() {
   if (hasArg("viewer")) controlMode = false;
   if (hasArg("control")) controlMode = true;
   if (hasArg("hide-ui")) overlayUiHidden = true;
+  if (hasArg("allow-throttle")) keepRendering = false;
 }
 
 function composeOverlayUrl() {
@@ -110,6 +120,21 @@ function sameOverlayOrigin(rawUrl) {
   } catch (_) {
     return false;
   }
+}
+
+function startKeepRenderingGuards() {
+  if (!keepRendering || powerSaveBlockerId !== null) return;
+  powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+}
+
+function stopKeepRenderingGuards() {
+  if (powerSaveBlockerId === null) return;
+  try {
+    if (powerSaveBlocker.isStarted(powerSaveBlockerId)) {
+      powerSaveBlocker.stop(powerSaveBlockerId);
+    }
+  } catch (_) {}
+  powerSaveBlockerId = null;
 }
 
 function unavailableHtml(targetUrl) {
@@ -257,6 +282,7 @@ function createMenu() {
 
 function createWindow() {
   initializeMode();
+  startKeepRenderingGuards();
   const saved = readWindowState();
   if (!hasArg("viewer") && !hasArg("control") && typeof saved.controlMode === "boolean") {
     controlMode = saved.controlMode;
@@ -283,6 +309,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: !keepRendering,
     },
   });
 
@@ -318,6 +345,8 @@ app.whenReady().then(createWindow);
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
+
+app.on("before-quit", stopKeepRenderingGuards);
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
