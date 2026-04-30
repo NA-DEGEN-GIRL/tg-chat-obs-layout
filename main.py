@@ -1052,7 +1052,6 @@ def on_text(message):
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
-    caption = str(getattr(message, "caption", None) or "").strip()
     text = message.text
     if should_skip_overlay_duplicate(profile, "text", text):
         print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
@@ -1103,6 +1102,7 @@ def on_photo(message):
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    caption = str(getattr(message, "caption", None) or "").strip()
     try:
         photo_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception:
