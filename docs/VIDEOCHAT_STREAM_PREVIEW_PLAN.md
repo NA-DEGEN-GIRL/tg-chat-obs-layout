@@ -97,6 +97,11 @@ Implemented experimental path:
 
 If this does not produce browser-playable chunks for normal participant cameras, a deeper TDLib or tgcalls/WebRTC path is still needed.
 
+Observed limitation:
+
+- `phone.getGroupCallStreamChannels` is for RTMP/livestream stream channels. Normal participant camera videochats can still expose participant `video` state while rejecting stream-channel probing with `GROUPCALL_INVALID`.
+- The watcher now checks the call's `rtmp_stream`/`stream_dc_id` fields before probing. If the current call is not that kind of stream, the preview remains a placeholder and the next path should be TDLib/tgcalls.
+
 TDLib may still be needed for participant-level stream metadata and more stable playback.
 
 Relevant official TDLib APIs:

@@ -111,9 +111,13 @@ videochat_call = None
 stream_channels_state: dict = {
     "type": "videochat_streams",
     "channels": [],
+    "supported": False,
+    "reason": "not_checked",
     "updated_at": 0.0,
 }
 stream_channel_error = ""
+stream_channel_supported = False
+stream_channel_reason = "not_checked"
 
 
 def parse_args() -> argparse.Namespace:
@@ -706,20 +710,38 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
 
 
 async def collect_stream_channels(client, call) -> list[dict]:
-    global stream_channel_error
+    global stream_channel_error, stream_channel_supported, stream_channel_reason
     if not VIDEOCHAT_STREAM_PREVIEW_ENABLED or client is None or call is None:
+        stream_channel_supported = False
+        stream_channel_reason = "disabled_or_not_ready"
+        return []
+    if not bool(getattr(call, "rtmp_stream", False) or getattr(call, "stream_dc_id", None)):
+        reason = "not_rtmp_livestream"
+        if stream_channel_error != reason:
+            stream_channel_error = reason
+            print(
+                "[videochat] stream chunks skipped: current call is not an RTMP/livestream call; "
+                "participant camera video needs a TDLib/tgcalls fallback",
+                flush=True,
+            )
+        stream_channel_supported = False
+        stream_channel_reason = reason
         return []
     from telethon.tl import functions
 
     try:
         result = await client(functions.phone.GetGroupCallStreamChannelsRequest(call=call))
     except Exception as exc:
-        message = str(exc)
+        message = f"{exc.__class__.__name__}: {exc}"
         if message != stream_channel_error:
             stream_channel_error = message
             print(f"[videochat] stream channels unavailable: {message}", flush=True)
+        stream_channel_supported = False
+        stream_channel_reason = message
         return []
     stream_channel_error = ""
+    stream_channel_supported = True
+    stream_channel_reason = ""
     channels: list[dict] = []
     for item in getattr(result, "channels", []) or []:
         try:
@@ -735,6 +757,8 @@ async def collect_stream_channels(client, call) -> list[dict]:
             "scale": max(0, scale),
             "last_timestamp_ms": last_timestamp_ms,
         })
+    if not channels:
+        stream_channel_reason = "no_stream_channels"
     return channels
 
 
@@ -743,6 +767,8 @@ def attach_stream_channels(rows: list[dict], channels: list[dict]) -> None:
     stream_channels_state = {
         "type": "videochat_streams",
         "channels": channels,
+        "supported": stream_channel_supported,
+        "reason": stream_channel_reason,
         "updated_at": time.time(),
     }
     if not rows or not channels:
@@ -782,7 +808,7 @@ def attach_stream_channels(rows: list[dict], channels: list[dict]) -> None:
 
 
 async def run_telethon_watcher() -> None:
-    global telethon_client, videochat_call
+    global telethon_client, videochat_call, stream_channel_supported, stream_channel_reason
     if not VIDEOCHAT_WATCH_ENABLED or not VIDEOCHAT_LINK:
         print("[videochat] watcher disabled or TD_VIDEOCHAT_LINK empty", flush=True)
         return
@@ -825,7 +851,12 @@ async def run_telethon_watcher() -> None:
                     continue
             rows = await collect_participants(client, call)
             active_stream_rows = [row for row in rows if row.get("video") or row.get("screen")]
-            channels = await collect_stream_channels(client, call) if active_stream_rows else []
+            if active_stream_rows:
+                channels = await collect_stream_channels(client, call)
+            else:
+                stream_channel_supported = False
+                stream_channel_reason = "no_active_broadcaster"
+                channels = []
             attach_stream_channels(rows, channels)
             snapshot = json.dumps(rows, ensure_ascii=False, sort_keys=True)
             if snapshot != last_snapshot:
