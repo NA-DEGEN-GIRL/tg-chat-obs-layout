@@ -14,7 +14,7 @@ from pathlib import Path
 import telebot
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from telebot.types import ChatPermissions
@@ -61,6 +61,16 @@ STT_AI_LABEL_TEXT = os.getenv("STT_AI_LABEL_TEXT", "aiSTT").strip() or "aiSTT"
 STT_SEND_AS_USER_FALLBACK_BOT = os.getenv("STT_SEND_AS_USER_FALLBACK_BOT", "1").strip() not in {
     "0", "false", "False", "no", "off"
 }
+TELEGRAM_USER_SEND_ENABLED = os.getenv("TELEGRAM_USER_SEND_ENABLED", "0").strip() in {
+    "1", "true", "True", "yes", "on"
+}
+TELEGRAM_USER_SEND_PANEL = os.getenv("TELEGRAM_USER_SEND_PANEL", "0").strip() in {
+    "1", "true", "True", "yes", "on"
+}
+TELEGRAM_USER_SEND_FALLBACK_BOT = os.getenv("TELEGRAM_USER_SEND_FALLBACK_BOT", "0").strip() in {
+    "1", "true", "True", "yes", "on"
+}
+TELEGRAM_USER_SEND_MAX_CHARS = int(os.getenv("TELEGRAM_USER_SEND_MAX_CHARS", "1000") or "1000")
 
 if not BOT_TOKEN:
     print("[ERROR] .env 의 BOT_TOKEN 이 비어 있습니다.", flush=True)
@@ -594,18 +604,16 @@ def stt_telegram_message(text: str) -> tuple[str, str | None]:
     )
 
 
-async def ensure_stt_user_client():
+async def ensure_telegram_user_client():
     global stt_user_client
-    if STT_SEND_AS != "user":
-        return None
     if stt_user_client is not None and stt_user_client.is_connected():
         return stt_user_client
     if not TD_API_ID or not TD_API_HASH:
-        raise RuntimeError("STT_SEND_AS=user requires TD_API_ID and TD_API_HASH")
+        raise RuntimeError("Telegram user send requires TD_API_ID and TD_API_HASH")
     try:
         from telethon import TelegramClient
     except ImportError as exc:
-        raise RuntimeError("STT_SEND_AS=user requires telethon") from exc
+        raise RuntimeError("Telegram user send requires telethon") from exc
 
     session_dir = DATA_DIR / "telethon"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -629,6 +637,12 @@ async def ensure_stt_user_client():
     return stt_user_client
 
 
+async def ensure_stt_user_client():
+    if STT_SEND_AS != "user":
+        return None
+    return await ensure_telegram_user_client()
+
+
 async def send_stt_by_bot(dest: dict, text: str) -> None:
     message, parse_mode = stt_telegram_message(text)
     kwargs = {}
@@ -645,7 +659,7 @@ async def send_stt_by_bot(dest: dict, text: str) -> None:
 
 
 async def send_stt_by_user(dest: dict, text: str) -> None:
-    client = await ensure_stt_user_client()
+    client = await ensure_telegram_user_client()
     message, parse_mode = stt_telegram_message(text)
     kwargs = {}
     if parse_mode:
@@ -665,6 +679,52 @@ async def dispatch_stt_message(dest: dict, text: str) -> None:
             if not STT_SEND_AS_USER_FALLBACK_BOT:
                 raise
     await send_stt_by_bot(dest, text)
+
+
+def overlay_send_destinations() -> list[dict]:
+    dests = [{"chat_id": CHAT_ID, "thread_id": None}]
+    if active_thread is not None:
+        dest = {"chat_id": active_thread[0], "thread_id": active_thread[1]}
+        if dest not in dests:
+            dests.append(dest)
+    return dests
+
+
+async def send_plain_by_bot(dest: dict, text: str) -> None:
+    kwargs = {}
+    if dest.get("thread_id") is not None:
+        kwargs["reply_to_message_id"] = dest["thread_id"]
+        kwargs["allow_sending_without_reply"] = True
+    await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **kwargs)
+
+
+async def send_plain_by_user(dest: dict, text: str) -> None:
+    client = await ensure_telegram_user_client()
+    kwargs = {}
+    if dest.get("thread_id") is not None:
+        kwargs["reply_to"] = dest["thread_id"]
+    await client.send_message(dest["chat_id"], text, **kwargs)
+
+
+async def dispatch_overlay_user_message(text: str) -> list[dict]:
+    results = []
+    for i, dest in enumerate(overlay_send_destinations()):
+        if i > 0:
+            await asyncio.sleep(TG_DISPATCH_GAP_SEC)
+        try:
+            await send_plain_by_user(dest, text)
+            results.append({"dest": dest, "ok": True, "via": "user"})
+        except Exception as exc:
+            print(f"[SEND] user dispatch failed dest={dest}: {exc}", flush=True)
+            if not TELEGRAM_USER_SEND_FALLBACK_BOT:
+                results.append({"dest": dest, "ok": False, "via": "user", "error": str(exc)})
+                continue
+            try:
+                await send_plain_by_bot(dest, text)
+                results.append({"dest": dest, "ok": True, "via": "bot"})
+            except Exception as bot_exc:
+                results.append({"dest": dest, "ok": False, "via": "bot", "error": str(bot_exc)})
+    return results
 
 
 async def stt_on_text(text: str) -> None:
@@ -996,11 +1056,39 @@ async def get_config():
     return {
         "fade_after_sec": FADE_AFTER_SEC,
         "chat_font_size": CHAT_FONT_SIZE,
+        "user_send_enabled": TELEGRAM_USER_SEND_ENABLED,
+        "user_send_panel": TELEGRAM_USER_SEND_PANEL,
+        "user_send_max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
         "videochat_host_user_id": str(VIDEOCHAT_HOST_USER_ID) if VIDEOCHAT_HOST_USER_ID else "",
         "videochat_host_username": VIDEOCHAT_HOST_USERNAME,
         "videochat_host_name": VIDEOCHAT_HOST_NAME,
         "videochat_bot_names": sorted(VIDEOCHAT_BOT_NAMES),
     }
+
+
+@app.post("/api/send")
+async def api_send_message(request: Request):
+    if not TELEGRAM_USER_SEND_ENABLED:
+        raise HTTPException(status_code=404, detail="send disabled")
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    if len(text) > TELEGRAM_USER_SEND_MAX_CHARS:
+        raise HTTPException(status_code=400, detail="text too long")
+
+    results = await dispatch_overlay_user_message(text)
+    ok = [r for r in results if r.get("ok")]
+    if not ok:
+        raise HTTPException(status_code=502, detail={"message": "send failed", "results": results})
+    return {"ok": True, "sent": len(ok), "results": results}
 
 
 @app.websocket("/ws")

@@ -24,6 +24,68 @@ html, body {
   pointer-events: none;
 }
 
+#send-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(10, 14, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+
+#send-panel[hidden] {
+  display: none;
+}
+
+#send-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  border-radius: 9px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #f5f7fb;
+  font: 650 14px/1.35 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+#send-text::placeholder {
+  color: rgba(245, 247, 251, 0.45);
+}
+
+#send-button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 12px;
+  background: rgba(255, 209, 102, 0.9);
+  color: #141821;
+  font: 900 13px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+#send-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+#send-panel.send-error {
+  border-color: rgba(255, 92, 122, 0.76);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.36),
+    0 0 0 2px rgba(255, 92, 122, 0.12);
+}
+
 .msg {
   max-width: 100%;
   width: fit-content;

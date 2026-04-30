@@ -1,7 +1,11 @@
 (async function () {
   const chat = document.getElementById("chat");
+  const sendPanel = document.getElementById("send-panel");
+  const sendText = document.getElementById("send-text");
+  const sendButton = document.getElementById("send-button");
   const MAX_MESSAGES = 50;
   let fadeAfterSec = 30;
+  let userSendEnabled = false;
 
   try {
     const cfg = await fetch("/config").then((r) => r.json());
@@ -14,7 +18,57 @@
         cfg.chat_font_size + "px"
       );
     }
+    userSendEnabled = !!cfg.user_send_enabled;
+    if (sendPanel && cfg.user_send_panel && userSendEnabled) {
+      sendPanel.hidden = false;
+    }
+    if (sendText && typeof cfg.user_send_max_chars === "number") {
+      sendText.maxLength = cfg.user_send_max_chars;
+    }
   } catch (_) {}
+
+  async function sendMessage(text) {
+    const res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      let detail = "send failed";
+      try {
+        const body = await res.json();
+        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  sendPanel?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!userSendEnabled || !sendText || !sendButton) return;
+    const text = sendText.value.trim();
+    if (!text) return;
+    sendButton.disabled = true;
+    sendPanel.classList.remove("send-error");
+    try {
+      await sendMessage(text);
+      sendText.value = "";
+    } catch (err) {
+      sendPanel.classList.add("send-error");
+      sendText.title = err?.message || "send failed";
+    } finally {
+      sendButton.disabled = false;
+      sendText.focus();
+    }
+  });
+
+  sendText?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && !ev.shiftKey) {
+      ev.preventDefault();
+      sendPanel?.requestSubmit();
+    }
+  });
 
   function append(data) {
     if (!data) return;
