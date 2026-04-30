@@ -1957,6 +1957,10 @@
           <div class="level"></div>
         </div>
         <div class="status"></div>
+        <div class="broadcast-badge" aria-hidden="true">
+          <span class="broadcast-icon"></span>
+          <span class="broadcast-label">LIVE</span>
+        </div>
       </div>
     `;
     participantLayer.appendChild(el);
@@ -2448,8 +2452,20 @@
       el.classList.toggle("muted", !!p.muted);
       el.classList.toggle("host", !!p.is_host);
       el.classList.toggle("role-girl", hasRole(p, "girl"));
+      el.classList.toggle("video-on", !!p.video);
+      el.classList.toggle("screen-on", !!p.screen);
+      el.classList.toggle("broadcasting", !!p.video || !!p.screen);
       el.classList.toggle("has-photo", !!p.avatar_url);
       el.classList.toggle("no-photo", !p.avatar_url);
+      const broadcastBadge = el.querySelector(".broadcast-badge");
+      const broadcastLabel = broadcastBadge?.querySelector(".broadcast-label");
+      if (broadcastBadge && broadcastLabel) {
+        const label = p.screen ? "SCREEN" : "LIVE";
+        const title = p.screen ? "화면 공유 중" : p.video ? "카메라 방송 중" : "방송 없음";
+        broadcastLabel.textContent = label;
+        broadcastBadge.title = title;
+        broadcastBadge.setAttribute("aria-label", title);
+      }
       const levelsEnabled = p.level_system_enabled !== false && state.cfg.level_system_enabled !== false;
       const levelValue = levelsEnabled ? (p.is_host ? 99 : Number(p.level || 0)) : NaN;
       const hasLevelValue = levelsEnabled && (p.is_host || Number.isFinite(levelValue));
@@ -2563,6 +2579,8 @@
         username: isHost ? hostUsername : `mock_user_${String(i).padStart(2, "0")}`,
         name: isHost ? hostName : `${label} ${String(i).padStart(2, "0")}`,
         muted: !isHost && i % 4 !== 0,
+        video: isHost || (!isHost && i % 6 === 1),
+        screen: !isHost && i % 12 === 5,
         is_host: isHost,
         role: roles[0] || "",
         roles,
