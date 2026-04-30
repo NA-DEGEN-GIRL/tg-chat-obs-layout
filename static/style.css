@@ -271,6 +271,26 @@ body.send-panel-visible #chat {
   transform: translateY(-4px);
 }
 
+.msg.delete-out {
+  max-height: 0 !important;
+  margin-top: -8px;
+  margin-bottom: -8px;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  transform: translateX(-18px) scale(0.96);
+  filter: blur(2px);
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.34s ease,
+    transform 0.34s ease,
+    filter 0.34s ease,
+    max-height 0.48s ease,
+    margin 0.48s ease,
+    padding 0.48s ease;
+}
+
 .msg .name {
   margin-right: 0.45em;
   font-weight: 800;

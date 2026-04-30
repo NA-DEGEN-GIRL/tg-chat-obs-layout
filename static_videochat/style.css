@@ -407,7 +407,7 @@ body::before {
 
 #chat-log {
   position: absolute;
-  inset: 0;
+  inset: 0 0 108px 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -419,7 +419,209 @@ body::before {
   pointer-events: none;
 }
 
+#chat-send-panel {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 7px;
+  align-items: stretch;
+  padding: 7px;
+  border-radius: 12px;
+  background: rgba(7, 11, 16, 0.78);
+  border: 1px solid rgba(255,255,255,0.13);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.34);
+  pointer-events: auto;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#chat-send-panel[hidden] {
+  display: none;
+}
+
+#chat-send-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.chat-send-target,
+#chat-send-button,
+#chat-send-file-button,
+#chat-send-preview-clear,
+#chat-reply-preview-clear,
+#chat-message-menu button {
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.82);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.chat-send-target {
+  min-width: 46px;
+  height: 26px;
+}
+
+.chat-send-target.active {
+  background: rgba(255, 214, 106, 0.18);
+  color: #ffe38c;
+}
+
+.chat-send-target:disabled {
+  opacity: 0.36;
+  cursor: not-allowed;
+}
+
+#chat-send-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+#chat-send-text {
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(255,255,255,0.09);
+  color: #f7f8fb;
+  font: 650 13px/1.35 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+#chat-send-preview,
+#chat-reply-preview {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.075);
+  color: rgba(255,255,255,0.78);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+#chat-reply-preview {
+  grid-template-columns: minmax(0, 1fr) 22px;
+  background: rgba(255, 214, 106, 0.13);
+  color: #ffe38c;
+}
+
+#chat-send-preview[hidden],
+#chat-reply-preview[hidden] {
+  display: none;
+}
+
+#chat-send-preview-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+#chat-send-preview-name,
+#chat-reply-preview-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#chat-send-file-button {
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+}
+
+#chat-send-button {
+  padding: 0 10px;
+  background: rgba(255, 214, 106, 0.9);
+  color: #141821;
+}
+
+#chat-send-button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+#chat-message-menu,
+#chat-mention-menu {
+  position: fixed;
+  z-index: 25000;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(7, 11, 16, 0.92);
+  border: 1px solid rgba(255,255,255,0.15);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.36);
+  pointer-events: auto;
+}
+
+#chat-message-menu[hidden],
+#chat-mention-menu[hidden] {
+  display: none;
+}
+
+#chat-message-menu button {
+  height: 30px;
+  min-width: 90px;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.mention-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  min-width: 240px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255,255,255,0.9);
+  cursor: pointer;
+}
+
+.mention-item.active,
+.mention-item:hover {
+  background: rgba(255, 214, 106, 0.14);
+}
+
+.mention-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.mention-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 850;
+}
+
+.mention-handle {
+  color: #ffe38c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 #chat-panel.chat-hidden #chat-log,
+#chat-panel.chat-hidden #chat-send-panel,
 #chat-panel.chat-hidden #chat-resize {
   display: none;
 }
@@ -569,6 +771,26 @@ body::before {
 .chat-line.fade-out {
   opacity: 0;
   transform: translateY(-4px);
+}
+
+.chat-line.delete-out {
+  max-height: 0 !important;
+  margin-top: -8px;
+  margin-bottom: -8px;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0 !important;
+  transform: translateX(18px) scale(0.96);
+  filter: blur(2px);
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.34s ease,
+    transform 0.34s ease,
+    filter 0.34s ease,
+    max-height 0.52s ease,
+    margin 0.52s ease,
+    padding 0.52s ease;
 }
 
 .chat-header {

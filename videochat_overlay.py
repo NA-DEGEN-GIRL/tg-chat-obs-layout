@@ -4,14 +4,17 @@ import getpass
 import json
 import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
@@ -42,6 +45,16 @@ VIDEOCHAT_DEBUG_SPEECH = os.getenv("VIDEOCHAT_DEBUG_SPEECH", "0").strip() in {
 TD_API_ID = os.getenv("TD_API_ID", "").strip()
 TD_API_HASH = os.getenv("TD_API_HASH", "").strip()
 TD_PHONE = os.getenv("TD_PHONE", "").strip()
+
+
+def chat_api_base() -> str:
+    parsed = urlparse(CHAT_WS_URL)
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    path = parsed.path.rsplit("/", 1)[0].rstrip("/")
+    return f"{scheme}://{parsed.netloc}{path}"
+
+
+CHAT_API_BASE = chat_api_base()
 
 clients: set[WebSocket] = set()
 clients_lock = asyncio.Lock()
@@ -536,6 +549,57 @@ async def get_config():
         "mock_avatar_urls": mock_avatar_urls(),
         "debug_speech": VIDEOCHAT_DEBUG_SPEECH,
     }
+
+
+async def proxy_chat_api(method: str, path: str, request: Request) -> JSONResponse:
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    query = request.url.query
+    url = f"{CHAT_API_BASE}{path}" + (f"?{query}" if query else "")
+    body = await request.body() if method == "POST" else None
+
+    def run_request():
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers={"Content-Type": "application/json"} if method == "POST" else {},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as res:
+                raw = res.read().decode("utf-8")
+                return res.status, json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = json.loads(raw)
+            except Exception:
+                detail = raw or str(exc)
+            return exc.code, detail
+
+    status, payload = await asyncio.to_thread(run_request)
+    return JSONResponse(payload, status_code=status)
+
+
+@app.get("/api/send/status")
+async def proxy_send_status(request: Request):
+    return await proxy_chat_api("GET", "/api/send/status", request)
+
+
+@app.get("/api/users/search")
+async def proxy_user_search(request: Request):
+    return await proxy_chat_api("GET", "/api/users/search", request)
+
+
+@app.post("/api/send")
+async def proxy_send(request: Request):
+    return await proxy_chat_api("POST", "/api/send", request)
+
+
+@app.post("/api/message/delete")
+async def proxy_delete(request: Request):
+    return await proxy_chat_api("POST", "/api/message/delete", request)
 
 
 @app.get("/api/videochat/state")

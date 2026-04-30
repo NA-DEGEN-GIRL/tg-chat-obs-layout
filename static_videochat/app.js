@@ -3,6 +3,21 @@
   const chatPanel = document.getElementById("chat-panel");
   const chatLog = document.getElementById("chat-log");
   const chatControls = document.getElementById("chat-controls");
+  const chatSendPanel = document.getElementById("chat-send-panel");
+  const chatSendText = document.getElementById("chat-send-text");
+  const chatSendButton = document.getElementById("chat-send-button");
+  const chatSendFile = document.getElementById("chat-send-file");
+  const chatSendTargets = Array.from(document.querySelectorAll(".chat-send-target"));
+  const chatSendPreview = document.getElementById("chat-send-preview");
+  const chatSendPreviewImg = document.getElementById("chat-send-preview-img");
+  const chatSendPreviewName = document.getElementById("chat-send-preview-name");
+  const chatSendPreviewClear = document.getElementById("chat-send-preview-clear");
+  const chatReplyPreview = document.getElementById("chat-reply-preview");
+  const chatReplyPreviewLabel = document.getElementById("chat-reply-preview-label");
+  const chatReplyPreviewClear = document.getElementById("chat-reply-preview-clear");
+  const chatMessageMenu = document.getElementById("chat-message-menu");
+  const chatMenuReply = document.getElementById("chat-menu-reply");
+  const chatMenuDelete = document.getElementById("chat-menu-delete");
   const chatDrag = document.getElementById("chat-drag");
   const chatResize = document.getElementById("chat-resize");
   const chatFontDown = document.getElementById("chat-font-down");
@@ -31,6 +46,10 @@
   const eventToasts = document.getElementById("event-toasts");
   const canvas = document.getElementById("scene");
   const MAX_CHAT_LINES = 50;
+  const mentionMenu = document.createElement("div");
+  mentionMenu.id = "chat-mention-menu";
+  mentionMenu.hidden = true;
+  document.body.appendChild(mentionMenu);
   const CHAT_SETTINGS_KEY = "videochat.chatPanelSettings.v2";
   const TOPIC_SETTINGS_KEY = "videochat.topicSettings.v1";
   const AVATAR_SETTINGS_KEY = "videochat.avatarSettings.v1";
@@ -84,6 +103,14 @@
     toastSettings: null,
     cameraUpdate: null,
     three: null,
+    userSendEnabled: false,
+    selectedPhoto: null,
+    maxPhotoBytes: 8 * 1024 * 1024,
+    replyTo: null,
+    menuTarget: null,
+    mentionToken: null,
+    mentionTimer: null,
+    mentionSelected: 0,
   };
 
   const DEFAULT_CAMERA_VIEW = {
@@ -120,6 +147,181 @@
   state.mockCount = Math.min(120, Math.max(0, Number(params.get("mock_participants") || params.get("mock") || 0) || 0));
   state.mockBaseCount = state.mockCount;
   if (state.mockCount > 0 && params.get("debug_speech") !== "0") state.cfg.debug_speech = true;
+
+  function selectedSendTargets() {
+    return chatSendTargets
+      .filter((btn) => btn.classList.contains("active") && !btn.disabled)
+      .map((btn) => btn.dataset.target);
+  }
+
+  function updateSendButton() {
+    if (!chatSendButton || !chatSendText) return;
+    const hasBody = !!chatSendText.value.trim() || !!state.selectedPhoto;
+    chatSendButton.disabled = !state.userSendEnabled || !hasBody || (!state.replyTo && selectedSendTargets().length === 0);
+  }
+
+  async function refreshSendStatus() {
+    try {
+      const status = await fetch("/api/send/status").then((r) => r.json());
+      state.userSendEnabled = !!status.enabled;
+      if (typeof status.max_photo_mb === "number") state.maxPhotoBytes = Math.max(1, status.max_photo_mb) * 1024 * 1024;
+      for (const btn of chatSendTargets) {
+        const available = !!status.targets?.[btn.dataset.target];
+        btn.disabled = !available;
+        if (!available) btn.classList.remove("active");
+      }
+      if (!selectedSendTargets().length && chatSendTargets[0] && !chatSendTargets[0].disabled) {
+        chatSendTargets[0].classList.add("active");
+      }
+      if (chatSendPanel) chatSendPanel.hidden = false;
+    } catch (_) {
+      state.userSendEnabled = false;
+    }
+    updateSendButton();
+  }
+
+  function setSendPhoto(file) {
+    if (!file || !file.type.startsWith("image/")) return;
+    if (file.size > state.maxPhotoBytes) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.selectedPhoto = { name: file.name || "image.jpg", mime: file.type || "image/jpeg", data: String(reader.result || "") };
+      if (chatSendPreviewImg) chatSendPreviewImg.src = state.selectedPhoto.data;
+      if (chatSendPreviewName) chatSendPreviewName.textContent = state.selectedPhoto.name;
+      if (chatSendPreview) chatSendPreview.hidden = false;
+      updateSendButton();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearSendPhoto() {
+    state.selectedPhoto = null;
+    if (chatSendPreviewImg) chatSendPreviewImg.removeAttribute("src");
+    if (chatSendPreviewName) chatSendPreviewName.textContent = "";
+    if (chatSendPreview) chatSendPreview.hidden = true;
+    if (chatSendFile) chatSendFile.value = "";
+    updateSendButton();
+  }
+
+  function setSendReply(data) {
+    if (!data?.message?.chat_id || !data?.message?.message_id) return;
+    state.replyTo = data.message;
+    if (chatReplyPreviewLabel) chatReplyPreviewLabel.textContent = `↩ ${data.name || "Unknown"}`;
+    if (chatReplyPreview) chatReplyPreview.hidden = false;
+    chatSendText?.focus();
+    updateSendButton();
+  }
+
+  function clearSendReply() {
+    state.replyTo = null;
+    if (chatReplyPreview) chatReplyPreview.hidden = true;
+    updateSendButton();
+  }
+
+  async function sendOverlayMessage(text, targets, photo, replyTo) {
+    const res = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, targets, photo, reply_to: replyTo }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async function deleteOverlayMessage(ref) {
+    const res = await fetch("/api/message/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(ref),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  function hideChatMessageMenu() {
+    if (chatMessageMenu) chatMessageMenu.hidden = true;
+    state.menuTarget = null;
+  }
+
+  function showChatMessageMenu(ev, data, el) {
+    if (!chatMessageMenu || !data?.message?.chat_id || !data?.message?.message_id) return;
+    ev.preventDefault();
+    state.menuTarget = { data, el };
+    chatMessageMenu.hidden = false;
+    chatMessageMenu.style.left = `${Math.min(ev.clientX, window.innerWidth - 112)}px`;
+    chatMessageMenu.style.top = `${Math.min(ev.clientY, window.innerHeight - 76)}px`;
+  }
+
+  function hideMentionMenu() {
+    mentionMenu.hidden = true;
+    mentionMenu.replaceChildren();
+    state.mentionToken = null;
+  }
+
+  function mentionAtCaret() {
+    if (!chatSendText) return null;
+    const pos = chatSendText.selectionStart;
+    const before = chatSendText.value.slice(0, pos);
+    const match = before.match(/(^|\s)@([^\s@]{1,32})$/);
+    if (!match) return null;
+    return { query: match[2], start: pos - match[2].length - 1, end: pos };
+  }
+
+  async function searchMentions(query) {
+    const res = await fetch(`/api/users/search?q=${encodeURIComponent(query)}`);
+    if (!res.ok) return [];
+    const body = await res.json();
+    return Array.isArray(body.users) ? body.users : [];
+  }
+
+  function chooseMention(user) {
+    if (!chatSendText || !state.mentionToken || !user?.can_tag) return;
+    const insert = `${user.insert} `;
+    const value = chatSendText.value;
+    chatSendText.value = value.slice(0, state.mentionToken.start) + insert + value.slice(state.mentionToken.end);
+    const pos = state.mentionToken.start + insert.length;
+    chatSendText.setSelectionRange(pos, pos);
+    hideMentionMenu();
+    updateSendButton();
+    chatSendText.focus();
+  }
+
+  function renderMentionMenu(users) {
+    mentionMenu.replaceChildren();
+    if (!users.length || !state.mentionToken) return hideMentionMenu();
+    const rect = chatSendPanel.getBoundingClientRect();
+    mentionMenu.style.left = `${rect.left}px`;
+    mentionMenu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
+    mentionMenu.style.width = `${Math.min(320, rect.width)}px`;
+    users.forEach((user, index) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `mention-item${index === state.mentionSelected ? " active" : ""}`;
+      btn.disabled = !user.can_tag;
+      btn.innerHTML = `<span class="mention-name"></span><span class="mention-handle"></span>`;
+      btn.querySelector(".mention-name").textContent = user.name || "Unknown";
+      btn.querySelector(".mention-handle").textContent = user.username ? `@${user.username}` : "username 없음";
+      btn.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        chooseMention(user);
+      });
+      mentionMenu.appendChild(btn);
+    });
+    mentionMenu.hidden = false;
+  }
+
+  function scheduleMentionSearch() {
+    clearTimeout(state.mentionTimer);
+    const token = mentionAtCaret();
+    if (!token) return hideMentionMenu();
+    state.mentionToken = token;
+    state.mentionTimer = setTimeout(async () => {
+      const users = await searchMentions(token.query);
+      if (!state.mentionToken || state.mentionToken.query !== token.query) return;
+      state.mentionSelected = 0;
+      renderMentionMenu(users);
+    }, 180);
+  }
 
   function storageGet(key, fallback) {
     try {
@@ -605,6 +807,83 @@
       break;
     }
     setTimeout(() => el.remove(), 4300);
+  }
+
+  function setupChatSender() {
+    refreshSendStatus();
+    setInterval(refreshSendStatus, 2500);
+    for (const btn of chatSendTargets) {
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        btn.classList.toggle("active");
+        updateSendButton();
+      });
+    }
+    chatSendText?.addEventListener("input", () => {
+      updateSendButton();
+      scheduleMentionSearch();
+    });
+    chatSendText?.addEventListener("keydown", (ev) => {
+      if (!mentionMenu.hidden && ev.key === "Enter") {
+        const item = mentionMenu.querySelector(".mention-item:not(:disabled)");
+        if (item) {
+          ev.preventDefault();
+          item.dispatchEvent(new MouseEvent("mousedown"));
+          return;
+        }
+      }
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        chatSendPanel?.requestSubmit();
+      }
+    });
+    chatSendFile?.addEventListener("change", () => setSendPhoto(chatSendFile.files?.[0]));
+    chatSendPreviewClear?.addEventListener("click", clearSendPhoto);
+    chatReplyPreviewClear?.addEventListener("click", clearSendReply);
+    chatSendPanel?.addEventListener("dragover", (ev) => ev.preventDefault());
+    chatSendPanel?.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      const file = Array.from(ev.dataTransfer?.files || []).find((f) => f.type.startsWith("image/"));
+      setSendPhoto(file);
+    });
+    chatSendPanel?.addEventListener("paste", (ev) => {
+      const file = Array.from(ev.clipboardData?.items || [])
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .find((f) => f && f.type.startsWith("image/"));
+      if (file) setSendPhoto(file);
+    });
+    chatSendPanel?.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const text = (chatSendText?.value || "").trim();
+      const targets = selectedSendTargets();
+      if ((!text && !state.selectedPhoto) || (!state.replyTo && !targets.length)) return;
+      chatSendButton.disabled = true;
+      try {
+        await sendOverlayMessage(text, targets, state.selectedPhoto, state.replyTo);
+        chatSendText.value = "";
+        clearSendPhoto();
+        clearSendReply();
+      } finally {
+        updateSendButton();
+        chatSendText?.focus();
+      }
+    });
+    chatMenuReply?.addEventListener("click", () => {
+      if (state.menuTarget) setSendReply(state.menuTarget.data);
+      hideChatMessageMenu();
+    });
+    chatMenuDelete?.addEventListener("click", async () => {
+      const target = state.menuTarget;
+      hideChatMessageMenu();
+      if (!target) return;
+      await deleteOverlayMessage(target.data.message);
+      removeChatLineElement(target.el);
+    });
+    document.addEventListener("click", () => {
+      hideChatMessageMenu();
+      hideMentionMenu();
+    });
   }
 
   function toastMessageParts(template, name, fallback) {
@@ -1524,7 +1803,7 @@
     if (!ref?.chat_id || !ref?.message_id) return;
     const key = `${ref.chat_id}:${ref.message_id}`;
     for (const el of Array.from(chatLog?.querySelectorAll(".chat-line[data-message-key]") || [])) {
-      if (el.dataset.messageKey === key) el.remove();
+      if (el.dataset.messageKey === key) removeChatLineElement(el);
     }
     for (const el of Array.from(participantLayer?.querySelectorAll(".avatar[data-bubble-message-key]") || [])) {
       if (el.dataset.bubbleMessageKey !== key) continue;
@@ -1536,6 +1815,13 @@
         bubble.classList.remove("photo", "sticker");
       }
     }
+  }
+
+  function removeChatLineElement(el) {
+    if (!el || el.classList.contains("delete-out")) return;
+    el.style.maxHeight = `${el.scrollHeight}px`;
+    el.classList.add("delete-out");
+    setTimeout(() => el.remove(), 560);
   }
 
   function focusChatLineByKey(key) {
@@ -1565,6 +1851,7 @@
     item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
     if (data.message?.chat_id && data.message?.message_id) {
       item.dataset.messageKey = `${data.message.chat_id}:${data.message.message_id}`;
+      item.addEventListener("contextmenu", (ev) => showChatMessageMenu(ev, data, item));
     }
     item.style.setProperty("--speaker-color", speechColor(data, participantKey));
     if (tier) {
@@ -2204,6 +2491,7 @@
   }
   connectVideochat();
   connectChatSpeech();
+  setupChatSender();
   initThree();
   startDebugSpeech();
 })();

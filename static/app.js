@@ -395,8 +395,15 @@
     if (!ref?.chat_id || !ref?.message_id) return;
     const key = `${ref.chat_id}:${ref.message_id}`;
     for (const el of Array.from(document.querySelectorAll(".msg[data-message-key]"))) {
-      if (el.dataset.messageKey === key) el.remove();
+      if (el.dataset.messageKey === key) removeMessageElement(el);
     }
+  }
+
+  function removeMessageElement(el) {
+    if (!el || el.classList.contains("delete-out")) return;
+    el.style.maxHeight = `${el.scrollHeight}px`;
+    el.classList.add("delete-out");
+    setTimeout(() => el.remove(), 520);
   }
 
   function focusMessageByKey(key) {
@@ -435,7 +442,7 @@
     if (!target) return;
     try {
       await deleteMessage(target.data.message);
-      target.el.remove();
+      removeMessageElement(target.el);
     } catch (err) {
       sendPanel?.classList.add("send-error");
       if (sendText) sendText.title = err?.message || "delete failed";

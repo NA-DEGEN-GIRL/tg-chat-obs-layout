@@ -75,6 +75,33 @@
       <button id="chat-toggle" type="button" title="채팅창 보이기/숨기기">◉</button>
     </div>
     <div id="chat-log"></div>
+    <form id="chat-send-panel" hidden>
+      <div id="chat-send-targets" aria-label="전송 대상">
+        <button class="chat-send-target active" data-target="main" type="button">main</button>
+        <button class="chat-send-target" data-target="here" type="button" disabled>here</button>
+      </div>
+      <div id="chat-send-body">
+        <div id="chat-reply-preview" hidden>
+          <span id="chat-reply-preview-label"></span>
+          <button id="chat-reply-preview-clear" type="button" title="답장 취소">x</button>
+        </div>
+        <textarea id="chat-send-text" rows="2" maxlength="1000" placeholder="Telegram으로 보내기"></textarea>
+        <div id="chat-send-preview" hidden>
+          <img id="chat-send-preview-img" alt="">
+          <span id="chat-send-preview-name"></span>
+          <button id="chat-send-preview-clear" type="button" title="사진 제거">x</button>
+        </div>
+      </div>
+      <label id="chat-send-file-button" title="사진 추가">
+        +
+        <input id="chat-send-file" type="file" accept="image/*" hidden>
+      </label>
+      <button id="chat-send-button" type="submit" disabled>send</button>
+    </form>
+    <div id="chat-message-menu" hidden>
+      <button id="chat-menu-reply" type="button">답장</button>
+      <button id="chat-menu-delete" type="button">삭제</button>
+    </div>
     <div id="chat-resize" title="채팅창 크기 조절"></div>
   </div>
   <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>

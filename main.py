@@ -157,6 +157,7 @@ bot_user_id: int | None = None
 bot_display_name: str = "Bot"
 stt_user_client = None
 telegram_user_sender_id: str = ""
+telegram_delete_listener_registered = False
 
 # 활성 댓글창 (한 번에 하나만). (chat_id, message_thread_id)
 active_thread: tuple[int, int] | None = None
@@ -664,7 +665,7 @@ def stt_telegram_message(text: str) -> tuple[str, str | None]:
 
 
 async def ensure_telegram_user_client():
-    global stt_user_client, telegram_user_sender_id
+    global stt_user_client, telegram_user_sender_id, telegram_delete_listener_registered
     if stt_user_client is not None and stt_user_client.is_connected():
         return stt_user_client
     if not TD_API_ID or not TD_API_HASH:
@@ -699,6 +700,25 @@ async def ensure_telegram_user_client():
             telegram_user_sender_id = str(getattr(me, "id", "") or "")
         except Exception as exc:
             print(f"[WARN] Telegram user id lookup failed: {exc}", flush=True)
+    if not telegram_delete_listener_registered:
+        try:
+            from telethon import events
+
+            @stt_user_client.on(events.MessageDeleted)
+            async def _on_telegram_message_deleted(event):
+                chat_id = getattr(event, "chat_id", None)
+                if chat_id is None:
+                    return
+                for message_id in getattr(event, "deleted_ids", []) or []:
+                    await broadcast({
+                        "type": "delete",
+                        "message": {"chat_id": str(chat_id), "message_id": message_id},
+                    })
+
+            telegram_delete_listener_registered = True
+            print("[INFO] Telegram delete listener enabled", flush=True)
+        except Exception as exc:
+            print(f"[WARN] Telegram delete listener setup failed: {exc}", flush=True)
     return stt_user_client
 
 
@@ -1431,6 +1451,12 @@ async def lifespan(app: FastAPI):
         loop=main_loop,
         on_text=stt_on_text,
     )
+
+    if TELEGRAM_USER_SEND_ENABLED or STT_SEND_AS == "user":
+        try:
+            await ensure_telegram_user_client()
+        except Exception as e:
+            print(f"[WARN] Telegram user listener startup skipped: {e}", flush=True)
 
     state = load_state()
     if state.get("tts_on"):
