@@ -148,6 +148,7 @@ stt_manager: STTManager | None = None
 bot_user_id: int | None = None
 bot_display_name: str = "Bot"
 stt_user_client = None
+telegram_user_sender_id: str = ""
 
 # 활성 댓글창 (한 번에 하나만). (chat_id, message_thread_id)
 active_thread: tuple[int, int] | None = None
@@ -158,6 +159,9 @@ _colors_lock = threading.Lock()
 _user_colors: dict[str, str] = {}
 _levels_lock = threading.Lock()
 _level_store: dict[str, dict[str, Any]] = {}
+_send_dedupe_lock = threading.Lock()
+_send_dedupe: dict[tuple[str, str], dict[str, float | int]] = {}
+SEND_DEDUPE_TTL_SEC = 8.0
 
 
 def _hex_rgb(color: str) -> tuple[int, int, int] | None:
@@ -543,6 +547,41 @@ def _has_main_tts_destination() -> bool:
     return any(d.get("thread_id") is None for d in tts_destinations)
 
 
+def mark_overlay_send_for_dedupe(text: str, count: int) -> None:
+    sender_id = telegram_user_sender_id or str(VIDEOCHAT_HOST_USER_ID or "")
+    key = (sender_id, text)
+    if not sender_id or count <= 1:
+        return
+    now = time.monotonic()
+    with _send_dedupe_lock:
+        _send_dedupe[key] = {"remaining": count - 1, "expires": now + SEND_DEDUPE_TTL_SEC}
+
+
+def should_skip_overlay_duplicate(profile: dict, text: str) -> bool:
+    key = (str(profile.get("speaker_id") or ""), text)
+    if not key[0]:
+        return False
+    now = time.monotonic()
+    with _send_dedupe_lock:
+        # Keep this tiny; it only tracks local web sends for a few seconds.
+        expired = [k for k, v in _send_dedupe.items() if float(v.get("expires", 0)) <= now]
+        for k in expired:
+            _send_dedupe.pop(k, None)
+        state = _send_dedupe.get(key)
+        if not state:
+            return False
+        remaining = int(state.get("remaining", 0))
+        if remaining <= 0:
+            _send_dedupe.pop(key, None)
+            return False
+        remaining -= 1
+        if remaining <= 0:
+            _send_dedupe.pop(key, None)
+        else:
+            state["remaining"] = remaining
+        return True
+
+
 @bot.message_handler(commands=["stream_on"])
 def cmd_stream_on(message):
     if not _is_owner_in_target_chat(message):
@@ -605,7 +644,7 @@ def stt_telegram_message(text: str) -> tuple[str, str | None]:
 
 
 async def ensure_telegram_user_client():
-    global stt_user_client
+    global stt_user_client, telegram_user_sender_id
     if stt_user_client is not None and stt_user_client.is_connected():
         return stt_user_client
     if not TD_API_ID or not TD_API_HASH:
@@ -634,6 +673,12 @@ async def ensure_telegram_user_client():
                 raise
             password = getpass.getpass("Telegram 2FA password for STT sender: ")
             await stt_user_client.sign_in(password=password)
+    if not telegram_user_sender_id:
+        try:
+            me = await stt_user_client.get_me()
+            telegram_user_sender_id = str(getattr(me, "id", "") or "")
+        except Exception as exc:
+            print(f"[WARN] Telegram user id lookup failed: {exc}", flush=True)
     return stt_user_client
 
 
@@ -708,7 +753,15 @@ async def send_plain_by_user(dest: dict, text: str) -> None:
 
 async def dispatch_overlay_user_message(text: str) -> list[dict]:
     results = []
-    for i, dest in enumerate(overlay_send_destinations()):
+    dests = overlay_send_destinations()
+    try:
+        await ensure_telegram_user_client()
+    except Exception as exc:
+        print(f"[SEND] user client unavailable: {exc}", flush=True)
+        if not TELEGRAM_USER_SEND_FALLBACK_BOT:
+            return [{"dest": dest, "ok": False, "via": "user", "error": str(exc)} for dest in dests]
+    mark_overlay_send_for_dedupe(text, len(dests))
+    for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
         try:
@@ -892,6 +945,9 @@ def on_text(message):
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     text = message.text
+    if should_skip_overlay_duplicate(profile, text):
+        print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
+        return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     print(f"{name}: {text}", flush=True)
     if main_loop is not None:
