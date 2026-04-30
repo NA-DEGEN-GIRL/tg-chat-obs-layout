@@ -695,6 +695,32 @@ body::after {
   place-items: center;
 }
 
+.stream-preview-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  background: #050910;
+  transition: opacity 180ms ease;
+  z-index: 1;
+}
+
+.stream-preview-surface.has-real-stream .stream-preview-media {
+  opacity: 1;
+}
+
+.stream-preview-surface.has-real-stream .stream-preview-avatar,
+.stream-preview-surface.has-real-stream .stream-preview-camera {
+  display: none;
+}
+
+.stream-preview-surface.has-real-stream .stream-preview-live,
+.stream-preview-surface.has-real-stream .stream-preview-footer {
+  z-index: 3;
+}
+
 .stream-preview-avatar {
   width: 34px;
   height: 34px;

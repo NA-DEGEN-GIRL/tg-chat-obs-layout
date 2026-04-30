@@ -76,10 +76,28 @@ Implemented baseline:
 - The preview settings are saved as `streamPreview` in overlay settings.
 - Host/current account matching uses the configured host id, username, name, plus `is_host`/`king` role.
 - The shell currently renders a visual placeholder from avatar/name/status. Real video frames still require Phase 3/4.
+- Experimental real chunk rendering is wired: if the backend attaches a `stream.url` to a participant, the preview card tries to play it with a muted `<video>` element and falls back to the placeholder if loading fails.
 
 ## Phase 3: TDLib Stream Probe
 
-Telethon is enough for participant state, but real preview playback likely needs TDLib.
+Telethon is enough for participant state. For livestream/RTMP-style chunks, Telethon exposes the relevant MTProto requests:
+
+- `phone.getGroupCallStreamChannels`
+- `upload.getFile` with `inputGroupCallStream`
+
+Implemented experimental path:
+
+- `videochat_overlay.py` calls `phone.getGroupCallStreamChannels` while active video/screen participants exist.
+- Participant `video.source_groups` and `presentation.source_groups` are carried as source ids.
+- Returned stream channels are matched against those source ids when possible.
+- A single-active-broadcaster fallback maps the first returned stream channel to that broadcaster.
+- Local endpoint:
+  - `/api/videochat/streams`
+  - `/api/videochat/streams/{channel}/chunk.mp4?scale=...&time_ms=...`
+
+If this does not produce browser-playable chunks for normal participant cameras, a deeper TDLib or tgcalls/WebRTC path is still needed.
+
+TDLib may still be needed for participant-level stream metadata and more stable playback.
 
 Relevant official TDLib APIs:
 

@@ -1294,6 +1294,11 @@
     return p.screen ? "screen" : "video";
   }
 
+  function streamPreviewUrl(p) {
+    const stream = p?.stream && typeof p.stream === "object" ? p.stream : null;
+    return stream && typeof stream.url === "string" ? stream.url : "";
+  }
+
   function fillStreamSurface(target, p, large = false) {
     target.innerHTML = "";
     const color = participantColor(p);
@@ -1302,6 +1307,24 @@
     surface.style.setProperty("--stream-color", color);
     const visual = document.createElement("div");
     visual.className = "stream-preview-visual";
+    const streamUrl = streamPreviewUrl(p);
+    if (streamUrl) {
+      const media = document.createElement("video");
+      media.className = "stream-preview-media";
+      media.src = streamUrl;
+      media.autoplay = true;
+      media.muted = true;
+      media.loop = true;
+      media.playsInline = true;
+      media.controls = large;
+      media.addEventListener("loadeddata", () => {
+        surface.classList.add("has-real-stream");
+      });
+      media.addEventListener("error", () => {
+        surface.classList.remove("has-real-stream");
+      });
+      visual.appendChild(media);
+    }
     const avatar = document.createElement("div");
     avatar.className = "stream-preview-avatar";
     if (p.avatar_url) {
@@ -1342,7 +1365,7 @@
       viewer.open = false;
     }
     const signature = rows
-      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, participantColor(p)].join(":"))
+      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, streamPreviewUrl(p), participantColor(p)].join(":"))
       .join("|") + `|${viewer.key}|${viewer.open ? 1 : 0}`;
     const changed = force || signature !== state.streamPreviewSignature;
     if (changed) {

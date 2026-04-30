@@ -59,6 +59,11 @@ VIDEOCHAT_DEBUG_SPEECH = os.getenv("VIDEOCHAT_DEBUG_SPEECH", "0").strip() in {
     "1", "true", "True", "yes", "on"
 }
 VIDEOCHAT_LEVEL_SYSTEM_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_LEVEL_SYSTEM_ENABLED"), True)
+VIDEOCHAT_STREAM_PREVIEW_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_STREAM_PREVIEW_ENABLED"), True)
+VIDEOCHAT_STREAM_CHUNK_LIMIT = min(
+    1_048_576,
+    max(65_536, int(os.getenv("VIDEOCHAT_STREAM_CHUNK_LIMIT", "524288"))),
+)
 TD_API_ID = os.getenv("TD_API_ID", "").strip()
 TD_API_HASH = os.getenv("TD_API_HASH", "").strip()
 TD_PHONE = os.getenv("TD_PHONE", "").strip()
@@ -101,6 +106,14 @@ level_system = level_core.LevelStore(
 pending_level_notifications: list[dict] = []
 resolved_videochat_entity = None
 invite_flood_wait_until = 0.0
+telethon_client = None
+videochat_call = None
+stream_channels_state: dict = {
+    "type": "videochat_streams",
+    "channels": [],
+    "updated_at": 0.0,
+}
+stream_channel_error = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -379,6 +392,9 @@ def normalize_participants(items, *, collect_notifications: bool = True) -> list
             "muted": bool(p.get("muted")),
             "video": bool(p.get("video")),
             "screen": bool(p.get("screen")),
+            "video_sources": normalize_int_list(p.get("video_sources")),
+            "screen_sources": normalize_int_list(p.get("screen_sources")),
+            "stream": normalize_stream_info(p.get("stream")),
             "avatar_url": str(p.get("avatar_url") or ""),
             "level": level,
             "level_label": level_label,
@@ -388,6 +404,41 @@ def normalize_participants(items, *, collect_notifications: bool = True) -> list
             "roles": roles,
         })
     return rows
+
+
+def normalize_int_list(value) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for item in value:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number not in out:
+            out.append(number)
+    return out
+
+
+def normalize_stream_info(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    try:
+        channel = int(value.get("channel"))
+        scale = int(value.get("scale", 0))
+        time_ms = int(value.get("time_ms", 0))
+    except (TypeError, ValueError):
+        return {}
+    if channel <= 0 or time_ms <= 0:
+        return {}
+    kind = str(value.get("kind") or "video")
+    return {
+        "channel": channel,
+        "scale": max(0, scale),
+        "time_ms": time_ms,
+        "kind": "screen" if kind == "screen" else "video",
+        "url": f"/api/videochat/streams/{channel}/chunk.mp4?scale={max(0, scale)}&time_ms={time_ms}",
+    }
 
 
 def participant_name_parts(user) -> tuple[str, str]:
@@ -597,6 +648,18 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
     def media_active(value) -> bool:
         return bool(value) and not bool(getattr(value, "paused", False))
 
+    def video_sources(value) -> list[int]:
+        out: list[int] = []
+        for group in getattr(value, "source_groups", []) or []:
+            for source in getattr(group, "sources", []) or []:
+                try:
+                    number = int(source)
+                except (TypeError, ValueError):
+                    continue
+                if number not in out:
+                    out.append(number)
+        return out
+
     offset = ""
     users_by_id = {}
     rows: list[dict] = []
@@ -630,6 +693,8 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
                 "muted": bool(getattr(participant, "muted", False)),
                 "video": media_active(video_info),
                 "screen": media_active(presentation_info),
+                "video_sources": video_sources(video_info),
+                "screen_sources": video_sources(presentation_info),
                 "avatar_url": f"/avatars/{user_id}.jpg" if photo_path else "",
             })
 
@@ -640,7 +705,84 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
     return rows
 
 
+async def collect_stream_channels(client, call) -> list[dict]:
+    global stream_channel_error
+    if not VIDEOCHAT_STREAM_PREVIEW_ENABLED or client is None or call is None:
+        return []
+    from telethon.tl import functions
+
+    try:
+        result = await client(functions.phone.GetGroupCallStreamChannelsRequest(call=call))
+    except Exception as exc:
+        message = str(exc)
+        if message != stream_channel_error:
+            stream_channel_error = message
+            print(f"[videochat] stream channels unavailable: {message}", flush=True)
+        return []
+    stream_channel_error = ""
+    channels: list[dict] = []
+    for item in getattr(result, "channels", []) or []:
+        try:
+            channel = int(getattr(item, "channel"))
+            scale = int(getattr(item, "scale", 0))
+            last_timestamp_ms = int(getattr(item, "last_timestamp_ms", 0))
+        except (TypeError, ValueError):
+            continue
+        if channel <= 0 or last_timestamp_ms <= 0:
+            continue
+        channels.append({
+            "channel": channel,
+            "scale": max(0, scale),
+            "last_timestamp_ms": last_timestamp_ms,
+        })
+    return channels
+
+
+def attach_stream_channels(rows: list[dict], channels: list[dict]) -> None:
+    global stream_channels_state
+    stream_channels_state = {
+        "type": "videochat_streams",
+        "channels": channels,
+        "updated_at": time.time(),
+    }
+    if not rows or not channels:
+        return
+    by_channel = {int(item["channel"]): item for item in channels if item.get("channel")}
+    assigned: set[int] = set()
+    for row in rows:
+        row["stream"] = {}
+        candidates: list[tuple[str, int]] = []
+        if row.get("screen"):
+            candidates.extend(("screen", source) for source in normalize_int_list(row.get("screen_sources")))
+        if row.get("video"):
+            candidates.extend(("video", source) for source in normalize_int_list(row.get("video_sources")))
+        for kind, source in candidates:
+            channel = by_channel.get(source)
+            if not channel:
+                continue
+            row["stream"] = {
+                "channel": channel["channel"],
+                "scale": channel["scale"],
+                "time_ms": channel["last_timestamp_ms"],
+                "kind": kind,
+            }
+            assigned.add(channel["channel"])
+            break
+
+    active_rows = [row for row in rows if row.get("video") or row.get("screen")]
+    unassigned_channels = [item for item in channels if item["channel"] not in assigned]
+    if len(active_rows) == 1 and unassigned_channels and not active_rows[0].get("stream"):
+        channel = unassigned_channels[0]
+        active_rows[0]["stream"] = {
+            "channel": channel["channel"],
+            "scale": channel["scale"],
+            "time_ms": channel["last_timestamp_ms"],
+            "kind": "screen" if active_rows[0].get("screen") else "video",
+        }
+
+
 async def run_telethon_watcher() -> None:
+    global telethon_client, videochat_call
     if not VIDEOCHAT_WATCH_ENABLED or not VIDEOCHAT_LINK:
         print("[videochat] watcher disabled or TD_VIDEOCHAT_LINK empty", flush=True)
         return
@@ -657,6 +799,7 @@ async def run_telethon_watcher() -> None:
     session_dir.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(session_dir / "videochat_overlay"), int(TD_API_ID), TD_API_HASH)
     await client.connect()
+    telethon_client = client
     if not await client.is_user_authorized():
         phone = clean_env(TD_PHONE) or input("Telegram phone number: ").strip()
         await client.send_code_request(phone)
@@ -675,11 +818,15 @@ async def run_telethon_watcher() -> None:
         try:
             if call is None:
                 call = await resolve_call(client, VIDEOCHAT_LINK)
+                videochat_call = call
                 if call is None:
                     await set_videochat_snapshot([], source="telethon")
                     await asyncio.sleep(VIDEOCHAT_WATCH_INTERVAL)
                     continue
             rows = await collect_participants(client, call)
+            active_stream_rows = [row for row in rows if row.get("video") or row.get("screen")]
+            channels = await collect_stream_channels(client, call) if active_stream_rows else []
+            attach_stream_channels(rows, channels)
             snapshot = json.dumps(rows, ensure_ascii=False, sort_keys=True)
             if snapshot != last_snapshot:
                 last_snapshot = snapshot
@@ -691,6 +838,7 @@ async def run_telethon_watcher() -> None:
         except Exception as exc:
             print(f"[videochat] watcher error: {exc}", flush=True)
             call = None
+            videochat_call = None
             await asyncio.sleep(max(VIDEOCHAT_WATCH_INTERVAL, 5.0))
 
 
@@ -987,6 +1135,56 @@ async def proxy_fire_settings(request: Request):
 @app.post("/api/fire/settings")
 async def proxy_fire_settings_update(request: Request):
     return await proxy_chat_api("POST", "/api/fire/settings", request)
+
+
+@app.get("/api/videochat/streams")
+async def get_videochat_streams(request: Request):
+    require_local_request(request)
+    return stream_channels_state
+
+
+@app.get("/api/videochat/streams/{channel}/chunk.mp4")
+async def get_videochat_stream_chunk(channel: int, request: Request, scale: int = 0, time_ms: int = 0):
+    require_local_request(request)
+    if not VIDEOCHAT_STREAM_PREVIEW_ENABLED:
+        raise HTTPException(status_code=404, detail="stream preview disabled")
+    if telethon_client is None or videochat_call is None:
+        raise HTTPException(status_code=503, detail="videochat watcher not ready")
+    if channel <= 0 or time_ms <= 0:
+        raise HTTPException(status_code=400, detail="invalid stream position")
+    from telethon.tl import functions, types
+
+    location = types.InputGroupCallStream(
+        call=videochat_call,
+        time_ms=int(time_ms),
+        scale=max(0, int(scale)),
+        video_channel=int(channel),
+    )
+    try:
+        result = await telethon_client(
+            functions.upload.GetFileRequest(
+                location=location,
+                offset=0,
+                limit=VIDEOCHAT_STREAM_CHUNK_LIMIT,
+                precise=True,
+                cdn_supported=False,
+            )
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"stream chunk unavailable: {exc}") from exc
+    data = getattr(result, "bytes", b"") or b""
+    if not data:
+        raise HTTPException(status_code=404, detail="empty stream chunk")
+    return Response(
+        content=data,
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Accept-Ranges": "none",
+            "X-Videochat-Stream-Channel": str(channel),
+            "X-Videochat-Stream-Time": str(time_ms),
+        },
+    )
 
 
 @app.get("/api/videochat/state")
