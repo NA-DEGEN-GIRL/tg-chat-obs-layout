@@ -594,6 +594,9 @@ async def resolve_call(client, link: str):
 async def collect_participants(client, call, limit: int = 100) -> list[dict]:
     from telethon.tl import functions
 
+    def media_active(value) -> bool:
+        return bool(value) and not bool(getattr(value, "paused", False))
+
     offset = ""
     users_by_id = {}
     rows: list[dict] = []
@@ -615,6 +618,8 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
             user_id = getattr(peer, "user_id", None)
             user = users_by_id.get(user_id)
             name, username = participant_name_parts(user)
+            video_info = getattr(participant, "video", None)
+            presentation_info = getattr(participant, "presentation", None)
             photo_path = ""
             if VIDEOCHAT_DOWNLOAD_PHOTOS and user is not None:
                 photo_path = await download_profile_photo(client, user)
@@ -623,8 +628,8 @@ async def collect_participants(client, call, limit: int = 100) -> list[dict]:
                 "name": name,
                 "username": username,
                 "muted": bool(getattr(participant, "muted", False)),
-                "video": bool(getattr(participant, "video_joined", False)),
-                "screen": bool(getattr(participant, "presentation", None)),
+                "video": media_active(video_info),
+                "screen": media_active(presentation_info),
                 "avatar_url": f"/avatars/{user_id}.jpg" if photo_path else "",
             })
 
