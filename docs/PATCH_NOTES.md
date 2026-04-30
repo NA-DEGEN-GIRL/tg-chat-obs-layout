@@ -5,6 +5,7 @@
 - Added `docs/VIDEOCHAT_STREAM_PREVIEW_PLAN.md` to document the staged plan for Telegram videochat camera/screen-share indicators, preview UI, TDLib stream probing, and eventual playback.
 - 9393 videochat participant cards now show a compact camera/screen-share badge when TDLib reports active participant video or presentation state.
 - Fixed LIVE badge detection to use the participant's active `video` stream instead of the broader `video_joined` flag.
+- Documented that future video preview panels must exclude the host/current account's own outgoing stream by default.
 - Mock participants now include sample camera/screen-share states so the broadcast badge can be tested without a live Telegram videochat.
 - Updated the Electron 9393 wrapper to keep rendering when the window is backgrounded or covered by another fullscreen app. It now disables Chromium background throttling/occlusion behavior and starts a `prevent-app-suspension` power-save blocker by default.
 - Added `--allow-throttle` to the Electron wrapper for reverting to normal Chromium background throttling when desired.

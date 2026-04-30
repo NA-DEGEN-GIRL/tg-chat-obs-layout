@@ -16,8 +16,8 @@ When a participant starts broadcasting video or screen sharing in Telegram video
 `videochat_overlay.py` already collects basic broadcast state through Telethon:
 
 ```python
-"video": bool(getattr(participant, "video_joined", False)),
-"screen": bool(getattr(participant, "presentation", None)),
+"video": media_active(getattr(participant, "video", None)),
+"screen": media_active(getattr(participant, "presentation", None)),
 ```
 
 `normalize_participants()` forwards these fields to the 9393 frontend:
@@ -58,6 +58,11 @@ Still no real stream decoding yet. This phase creates the user-facing layout and
 
 - Add left-corner preview rail for active broadcasters.
 - Show participant avatar/name/status cards.
+- Exclude the host/current account from the preview rail by default. The host can still show a LIVE/SCREEN badge on their own character card, but their own outgoing stream should not consume preview space.
+- Match the current account using the same host identity config used elsewhere:
+  - `VIDEOCHAT_HOST_USER_ID`
+  - `VIDEOCHAT_HOST_USERNAME`
+  - `VIDEOCHAT_HOST_NAME`
 - Make the panel draggable/resizable.
 - Save settings in `videochat_overlay_settings.json`.
 - Clicking a card opens a larger floating viewer shell.
