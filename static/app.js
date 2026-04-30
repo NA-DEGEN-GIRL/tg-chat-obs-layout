@@ -13,6 +13,7 @@
   const fontUp = document.getElementById("font-up");
   const messageMenu = document.getElementById("message-menu");
   const menuReply = document.getElementById("menu-reply");
+  const menuQuote = document.getElementById("menu-quote");
   const menuDelete = document.getElementById("menu-delete");
   const mentionMenu = document.createElement("div");
   mentionMenu.id = "mention-menu";
@@ -36,7 +37,26 @@
   let mentionTimer = null;
   let mentionToken = null;
   let mentionSelected = 0;
+  let sendInFlight = false;
   let maxPhotoBytes = 8 * 1024 * 1024;
+  let maxMediaBytes = 50 * 1024 * 1024;
+
+  function appendRichText(target, text, options = {}) {
+    if (window.TgChatCore?.appendRichText) {
+      window.TgChatCore.appendRichText(target, text, options);
+    } else {
+      target.textContent = text;
+    }
+  }
+
+  function selectedTextWithin(el) {
+    if (window.TgChatCore?.selectedTextWithin) {
+      return window.TgChatCore.selectedTextWithin(el);
+    }
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed) return "";
+    return selection.toString().trim().slice(0, 500).trim();
+  }
 
   function selectedTargets() {
     return sendTargets
@@ -47,7 +67,7 @@
   function updateSendButton() {
     if (!sendButton || !sendText) return;
     const hasBody = !!sendText.value.trim() || !!selectedPhoto;
-    sendButton.disabled = !userSendEnabled || !hasBody || (!replyTo && selectedTargets().length === 0);
+    sendButton.disabled = sendInFlight || !userSendEnabled || !hasBody || (!replyTo && selectedTargets().length === 0);
   }
 
   function clamp(value, min, max) {
@@ -55,9 +75,31 @@
   }
 
   function applyFontSize(size) {
-    chatFontSize = clamp(Number(size) || 22, 12, 64);
+    chatFontSize = clamp(Number(size) || 22, 12, 96);
     document.documentElement.style.setProperty("--msg-font-size", chatFontSize + "px");
     try { localStorage.setItem(FONT_SIZE_KEY, String(chatFontSize)); } catch (_) {}
+  }
+
+  function sendFileMime(file) {
+    const type = String(file?.type || "").toLowerCase();
+    if (type) return type;
+    const name = String(file?.name || "").toLowerCase();
+    if (name.endsWith(".mp4")) return "video/mp4";
+    if (name.endsWith(".webm")) return "video/webm";
+    if (name.endsWith(".gif")) return "image/gif";
+    if (name.endsWith(".webp")) return "image/webp";
+    if (name.endsWith(".png")) return "image/png";
+    return name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg" : "";
+  }
+
+  function isSupportedSendFile(file) {
+    const type = sendFileMime(file);
+    return type.startsWith("image/") || type === "video/mp4" || type === "video/webm";
+  }
+
+  function maxBytesForSendFile(file) {
+    const type = sendFileMime(file);
+    return type.startsWith("video/") ? maxMediaBytes : maxPhotoBytes;
   }
 
   async function refreshSendStatus() {
@@ -68,9 +110,6 @@
         const available = !!status.targets?.[btn.dataset.target];
         btn.disabled = !available;
         if (!available) btn.classList.remove("active");
-      }
-      if (sendTargets.length && !selectedTargets().length && !sendTargets[0].disabled) {
-        sendTargets[0].classList.add("active");
       }
       updateSendButton();
     } catch (_) {}
@@ -90,6 +129,9 @@
     if (typeof cfg.user_send_max_photo_mb === "number") {
       maxPhotoBytes = Math.max(1, cfg.user_send_max_photo_mb) * 1024 * 1024;
     }
+    if (typeof cfg.user_send_max_media_mb === "number") {
+      maxMediaBytes = Math.max(1, cfg.user_send_max_media_mb) * 1024 * 1024;
+    }
     if (sendPanel && cfg.user_send_panel && userSendEnabled) {
       sendPanel.hidden = false;
       document.body.classList.add("send-panel-visible");
@@ -103,19 +145,28 @@
 
   function setPhoto(file) {
     if (!file) return;
-    if (!file.type.startsWith("image/")) return;
-    if (file.size > maxPhotoBytes) {
+    if (!isSupportedSendFile(file)) return;
+    if (file.size > maxBytesForSendFile(file)) {
       sendPanel?.classList.add("send-error");
       return;
     }
     const reader = new FileReader();
     reader.onload = () => {
+      const mime = sendFileMime(file) || "image/jpeg";
       selectedPhoto = {
         name: file.name || "image.jpg",
-        mime: file.type || "image/jpeg",
+        mime,
         data: String(reader.result || ""),
       };
-      if (previewImg) previewImg.src = selectedPhoto.data;
+      if (previewImg) {
+        if (mime.startsWith("image/")) {
+          previewImg.hidden = false;
+          previewImg.src = selectedPhoto.data;
+        } else {
+          previewImg.hidden = true;
+          previewImg.removeAttribute("src");
+        }
+      }
       if (previewName) previewName.textContent = selectedPhoto.name;
       if (preview) preview.hidden = false;
       sendPanel?.classList.remove("send-error");
@@ -127,6 +178,7 @@
   function clearPhoto() {
     selectedPhoto = null;
     if (previewImg) previewImg.removeAttribute("src");
+    if (previewImg) previewImg.hidden = false;
     if (previewName) previewName.textContent = "";
     if (preview) preview.hidden = true;
     if (sendFile) sendFile.value = "";
@@ -152,12 +204,16 @@
     return box;
   }
 
-  function setReply(data) {
+  function setReply(data, quoteText = "") {
     if (!data?.message?.chat_id || !data?.message?.message_id) return;
-    replyTo = data.message;
+    const quote = window.TgChatCore?.normalizeQuoteText
+      ? window.TgChatCore.normalizeQuoteText(quoteText, 1024)
+      : String(quoteText || "").replace(/\r/g, "").slice(0, 1024);
+    replyTo = { ...data.message };
+    if (quote) replyTo.quote_text = quote;
     const box = ensureReplyPreview();
     const label = document.getElementById("reply-preview-label");
-    if (label) label.textContent = `↩ ${data.name || "Unknown"}`;
+    if (label) label.textContent = `${quote ? "인용" : "답장"}: ${data.name || "Unknown"}`;
     if (box) box.hidden = false;
     sendText?.focus();
     updateSendButton();
@@ -312,7 +368,7 @@
     name.textContent = reply.name || "Unknown";
     const text = document.createElement("span");
     text.className = "reply-text";
-    text.textContent = reply.text || "메시지";
+    text.textContent = reply.quote_text || reply.text || "메시지";
     quote.append(name, text);
     quote.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -323,6 +379,7 @@
 
   function hideMessageMenu() {
     if (messageMenu) messageMenu.hidden = true;
+    if (menuQuote) menuQuote.hidden = true;
     menuTarget = null;
   }
 
@@ -443,7 +500,9 @@
   function showMessageMenu(ev, data, el) {
     if (!messageMenu || !data?.message?.chat_id || !data?.message?.message_id) return;
     ev.preventDefault();
-    menuTarget = { data, el };
+    const quoteText = selectedTextWithin(el);
+    menuTarget = { data, el, quoteText };
+    if (menuQuote) menuQuote.hidden = !quoteText;
     messageMenu.hidden = false;
     const w = messageMenu.offsetWidth || 120;
     const h = messageMenu.offsetHeight || 80;
@@ -496,6 +555,10 @@
     if (menuTarget) setReply(menuTarget.data);
     hideMessageMenu();
   });
+  menuQuote?.addEventListener("click", () => {
+    if (menuTarget?.quoteText) setReply(menuTarget.data, menuTarget.quoteText);
+    hideMessageMenu();
+  });
   menuDelete?.addEventListener("click", async () => {
     const target = menuTarget;
     hideMessageMenu();
@@ -526,7 +589,7 @@
   sendPanel?.addEventListener("drop", (ev) => {
     ev.preventDefault();
     sendPanel.classList.remove("drag-over");
-    const file = Array.from(ev.dataTransfer?.files || []).find((f) => f.type.startsWith("image/"));
+    const file = Array.from(ev.dataTransfer?.files || []).find(isSupportedSendFile);
     setPhoto(file);
   });
 
@@ -534,7 +597,7 @@
     const file = Array.from(ev.clipboardData?.items || [])
       .filter((item) => item.kind === "file")
       .map((item) => item.getAsFile())
-      .find((f) => f && f.type.startsWith("image/"));
+      .find((f) => f && isSupportedSendFile(f));
     if (!file) return;
     setPhoto(file);
     if (!ev.clipboardData?.getData("text/plain")) {
@@ -544,11 +607,13 @@
 
   sendPanel?.addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    if (sendInFlight) return;
     if (!userSendEnabled || !sendText || !sendButton) return;
     const text = sendText.value.trim();
     const targets = selectedTargets();
     if ((!text && !selectedPhoto) || (!replyTo && !targets.length)) return;
-    sendButton.disabled = true;
+    sendInFlight = true;
+    updateSendButton();
     sendPanel.classList.remove("send-error");
     try {
       await sendMessage(text, targets, selectedPhoto, replyTo);
@@ -559,6 +624,7 @@
       sendPanel.classList.add("send-error");
       sendText.title = err?.message || "send failed";
     } finally {
+      sendInFlight = false;
       updateSendButton();
       sendText.focus();
     }
@@ -620,14 +686,14 @@
       if (typeof data.text === "string" && data.text.trim()) {
         const text = document.createElement("span");
         text.className = "text photo-caption";
-        text.textContent = data.text;
+        appendRichText(text, data.text, { entities: data.entities || [] });
         el.appendChild(text);
       }
     } else {
       if (typeof data.text !== "string") return;
       const text = document.createElement("span");
       text.className = "text";
-      text.textContent = data.text;
+      appendRichText(text, data.text, { entities: data.entities || [] });
       el.appendChild(text);
       if (data.stt_label) {
         const label = document.createElement("span");

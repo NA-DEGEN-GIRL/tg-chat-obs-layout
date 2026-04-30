@@ -17,6 +17,7 @@
   const chatReplyPreviewClear = document.getElementById("chat-reply-preview-clear");
   const chatMessageMenu = document.getElementById("chat-message-menu");
   const chatMenuReply = document.getElementById("chat-menu-reply");
+  const chatMenuQuote = document.getElementById("chat-menu-quote");
   const chatMenuDelete = document.getElementById("chat-menu-delete");
   const chatDrag = document.getElementById("chat-drag");
   const chatResize = document.getElementById("chat-resize");
@@ -108,11 +109,18 @@
     avatarSettings: null,
     effectSettings: null,
     toastSettings: null,
+    overlaySettings: {},
+    overlaySettingsPushTimer: null,
+    controlMode: false,
+    remoteApplying: false,
+    clientId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
     cameraUpdate: null,
     three: null,
     userSendEnabled: false,
+    sendInFlight: false,
     selectedPhoto: null,
     maxPhotoBytes: 8 * 1024 * 1024,
+    maxMediaBytes: 50 * 1024 * 1024,
     replyTo: null,
     menuTarget: null,
     mentionToken: null,
@@ -138,6 +146,23 @@
     { min: 70, max: 89, name: "Crimson", color: "#ff7a74", glow: "rgba(255,122,116,0.4)" },
     { min: 90, max: 99, name: "Mythic", color: "#ff4b5f", glow: "rgba(255,75,95,0.58)" },
   ];
+
+  function appendRichText(target, text, options = {}) {
+    if (window.TgChatCore?.appendRichText) {
+      window.TgChatCore.appendRichText(target, text, options);
+    } else {
+      target.textContent = text;
+    }
+  }
+
+  function selectedTextWithin(el) {
+    if (window.TgChatCore?.selectedTextWithin) {
+      return window.TgChatCore.selectedTextWithin(el);
+    }
+    const selection = window.getSelection?.();
+    if (!selection || selection.isCollapsed) return "";
+    return selection.toString().trim().slice(0, 500).trim();
+  }
   const SPEAKER_PALETTE = [
     "#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#b197fc", "#ff922b",
     "#66d9e8", "#f783ac", "#a9e34b", "#ffa8a8", "#74c0fc", "#e599f7",
@@ -150,10 +175,19 @@
     state.cfg = Object.assign(state.cfg, await fetch("/config").then((r) => r.json()));
   } catch (_) {}
   const params = new URLSearchParams(location.search);
+  state.controlMode = ["1", "true", "yes", "on"].includes(String(params.get("control") || "").toLowerCase());
+  document.body.classList.toggle("control-mode", state.controlMode);
+  document.body.classList.toggle("viewer-mode", !state.controlMode);
   if (params.get("debug_speech") === "1") state.cfg.debug_speech = true;
   state.mockCount = Math.min(120, Math.max(0, Number(params.get("mock_participants") || params.get("mock") || 0) || 0));
   state.mockBaseCount = state.mockCount;
   if (state.mockCount > 0 && params.get("debug_speech") !== "0") state.cfg.debug_speech = true;
+  try {
+    const overlayState = await fetch("/api/videochat/settings").then((r) => r.json());
+    if (overlayState?.settings && typeof overlayState.settings === "object") {
+      state.overlaySettings = adaptOverlaySettings(overlayState.settings);
+    }
+  } catch (_) {}
 
   function selectedSendTargets() {
     return chatSendTargets
@@ -164,7 +198,29 @@
   function updateSendButton() {
     if (!chatSendButton || !chatSendText) return;
     const hasBody = !!chatSendText.value.trim() || !!state.selectedPhoto;
-    chatSendButton.disabled = !state.userSendEnabled || !hasBody || (!state.replyTo && selectedSendTargets().length === 0);
+    chatSendButton.disabled = state.sendInFlight || !state.userSendEnabled || !hasBody || (!state.replyTo && selectedSendTargets().length === 0);
+  }
+
+  function sendFileMime(file) {
+    const type = String(file?.type || "").toLowerCase();
+    if (type) return type;
+    const name = String(file?.name || "").toLowerCase();
+    if (name.endsWith(".mp4")) return "video/mp4";
+    if (name.endsWith(".webm")) return "video/webm";
+    if (name.endsWith(".gif")) return "image/gif";
+    if (name.endsWith(".webp")) return "image/webp";
+    if (name.endsWith(".png")) return "image/png";
+    return name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg" : "";
+  }
+
+  function isSupportedSendFile(file) {
+    const type = sendFileMime(file);
+    return type.startsWith("image/") || type === "video/mp4" || type === "video/webm";
+  }
+
+  function maxBytesForSendFile(file) {
+    const type = sendFileMime(file);
+    return type.startsWith("video/") ? state.maxMediaBytes : state.maxPhotoBytes;
   }
 
   async function refreshSendStatus() {
@@ -172,13 +228,11 @@
       const status = await fetch("/api/send/status").then((r) => r.json());
       state.userSendEnabled = !!status.enabled;
       if (typeof status.max_photo_mb === "number") state.maxPhotoBytes = Math.max(1, status.max_photo_mb) * 1024 * 1024;
+      if (typeof status.max_media_mb === "number") state.maxMediaBytes = Math.max(1, status.max_media_mb) * 1024 * 1024;
       for (const btn of chatSendTargets) {
         const available = !!status.targets?.[btn.dataset.target];
         btn.disabled = !available;
         if (!available) btn.classList.remove("active");
-      }
-      if (!selectedSendTargets().length && chatSendTargets[0] && !chatSendTargets[0].disabled) {
-        chatSendTargets[0].classList.add("active");
       }
       if (chatSendPanel) chatSendPanel.hidden = false;
     } catch (_) {
@@ -188,12 +242,21 @@
   }
 
   function setSendPhoto(file) {
-    if (!file || !file.type.startsWith("image/")) return;
-    if (file.size > state.maxPhotoBytes) return;
+    if (!file || !isSupportedSendFile(file)) return;
+    if (file.size > maxBytesForSendFile(file)) return;
     const reader = new FileReader();
     reader.onload = () => {
-      state.selectedPhoto = { name: file.name || "image.jpg", mime: file.type || "image/jpeg", data: String(reader.result || "") };
-      if (chatSendPreviewImg) chatSendPreviewImg.src = state.selectedPhoto.data;
+      const mime = sendFileMime(file) || "image/jpeg";
+      state.selectedPhoto = { name: file.name || "image.jpg", mime, data: String(reader.result || "") };
+      if (chatSendPreviewImg) {
+        if (mime.startsWith("image/")) {
+          chatSendPreviewImg.hidden = false;
+          chatSendPreviewImg.src = state.selectedPhoto.data;
+        } else {
+          chatSendPreviewImg.hidden = true;
+          chatSendPreviewImg.removeAttribute("src");
+        }
+      }
       if (chatSendPreviewName) chatSendPreviewName.textContent = state.selectedPhoto.name;
       if (chatSendPreview) chatSendPreview.hidden = false;
       updateSendButton();
@@ -204,16 +267,21 @@
   function clearSendPhoto() {
     state.selectedPhoto = null;
     if (chatSendPreviewImg) chatSendPreviewImg.removeAttribute("src");
+    if (chatSendPreviewImg) chatSendPreviewImg.hidden = false;
     if (chatSendPreviewName) chatSendPreviewName.textContent = "";
     if (chatSendPreview) chatSendPreview.hidden = true;
     if (chatSendFile) chatSendFile.value = "";
     updateSendButton();
   }
 
-  function setSendReply(data) {
+  function setSendReply(data, quoteText = "") {
     if (!data?.message?.chat_id || !data?.message?.message_id) return;
-    state.replyTo = data.message;
-    if (chatReplyPreviewLabel) chatReplyPreviewLabel.textContent = `↩ ${data.name || "Unknown"}`;
+    const quote = window.TgChatCore?.normalizeQuoteText
+      ? window.TgChatCore.normalizeQuoteText(quoteText, 1024)
+      : String(quoteText || "").replace(/\r/g, "").slice(0, 1024);
+    state.replyTo = { ...data.message };
+    if (quote) state.replyTo.quote_text = quote;
+    if (chatReplyPreviewLabel) chatReplyPreviewLabel.textContent = `${quote ? "인용" : "답장"}: ${data.name || "Unknown"}`;
     if (chatReplyPreview) chatReplyPreview.hidden = false;
     chatSendText?.focus();
     updateSendButton();
@@ -247,6 +315,7 @@
 
   function hideChatMessageMenu() {
     if (chatMessageMenu) chatMessageMenu.hidden = true;
+    if (chatMenuQuote) chatMenuQuote.hidden = true;
     state.menuTarget = null;
   }
 
@@ -254,10 +323,14 @@
     if (!chatMessageMenu || !data?.message?.chat_id || !data?.message?.message_id) return;
     ev.preventDefault();
     ev.stopPropagation();
-    state.menuTarget = { data, el };
+    const quoteText = selectedTextWithin(el);
+    state.menuTarget = { data, el, quoteText };
+    if (chatMenuQuote) chatMenuQuote.hidden = !quoteText;
     chatMessageMenu.hidden = false;
-    chatMessageMenu.style.left = `${Math.min(ev.clientX, window.innerWidth - 112)}px`;
-    chatMessageMenu.style.top = `${Math.min(ev.clientY, window.innerHeight - 76)}px`;
+    const w = chatMessageMenu.offsetWidth || 126;
+    const h = chatMessageMenu.offsetHeight || 96;
+    chatMessageMenu.style.left = `${Math.min(Math.max(ev.clientX, 6), window.innerWidth - w - 6)}px`;
+    chatMessageMenu.style.top = `${Math.min(Math.max(ev.clientY, 6), window.innerHeight - h - 6)}px`;
   }
 
   function showChatMessageMenuFromEvent(ev) {
@@ -369,11 +442,127 @@
     try { localStorage.setItem(key, value); } catch (_) {}
   }
 
+  function settingSection(name) {
+    const value = state.overlaySettings?.[name];
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function cloneSettings(value) {
+    try {
+      return JSON.parse(JSON.stringify(value || {}));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function viewportSettings() {
+    return {
+      w: Math.max(1, window.innerWidth || 1),
+      h: Math.max(1, window.innerHeight || 1),
+    };
+  }
+
+  function scaleValue(value, ratio) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n * ratio : value;
+  }
+
+  function adaptOverlaySettings(settings) {
+    const out = cloneSettings(settings);
+    const source = out.viewport && typeof out.viewport === "object" ? out.viewport : null;
+    const sourceW = Number(source?.w);
+    const sourceH = Number(source?.h);
+    if (!Number.isFinite(sourceW) || !Number.isFinite(sourceH) || sourceW <= 0 || sourceH <= 0) {
+      return out;
+    }
+    const current = viewportSettings();
+    const sx = current.w / sourceW;
+    const sy = current.h / sourceH;
+    const sm = Math.min(sx, sy);
+    if (out.chat) {
+      out.chat.x = scaleValue(out.chat.x, sx);
+      out.chat.y = scaleValue(out.chat.y, sy);
+      out.chat.w = scaleValue(out.chat.w, sx);
+      out.chat.h = scaleValue(out.chat.h, sy);
+      out.chat.fontSize = scaleValue(out.chat.fontSize, sm);
+    }
+    if (out.topic) {
+      out.topic.x = scaleValue(out.topic.x, sx);
+      out.topic.y = scaleValue(out.topic.y, sy);
+      out.topic.w = scaleValue(out.topic.w, sx);
+      out.topic.fontSize = scaleValue(out.topic.fontSize, sm);
+    }
+    if (out.toast) {
+      out.toast.x = scaleValue(out.toast.x, sx);
+      out.toast.y = scaleValue(out.toast.y, sy);
+      out.toast.scale = scaleValue(out.toast.scale, sm);
+    }
+    if (out.camera) {
+      out.camera.screenOffsetX = scaleValue(out.camera.screenOffsetX, sx);
+      out.camera.screenOffsetY = scaleValue(out.camera.screenOffsetY, sy);
+    }
+    out.viewport = current;
+    return out;
+  }
+
+  function settingsSnapshot() {
+    const camera = state.three?.camera;
+    return {
+      viewport: viewportSettings(),
+      chat: state.chatSettings ? { ...state.chatSettings } : loadChatSettings(),
+      topic: state.topicSettings ? { ...state.topicSettings } : loadTopicSettings(),
+      avatar: state.avatarSettings ? { ...state.avatarSettings } : loadAvatarSettings(),
+      effect: state.effectSettings ? { ...state.effectSettings } : loadEffectSettings(),
+      toast: state.toastSettings ? { ...state.toastSettings } : loadToastSettings(),
+      camera: {
+        yaw: state.view.yaw,
+        distance: state.view.distance,
+        height: state.view.height,
+        target: {
+          x: state.view.target.x,
+          y: state.view.target.y,
+          z: state.view.target.z,
+        },
+        screenOffsetX: state.view.screenOffsetX,
+        screenOffsetY: state.view.screenOffsetY,
+        fov: camera?.fov || state.view.fov || 45,
+      },
+    };
+  }
+
+  function scheduleOverlaySettingsPush(delay = 120) {
+    if (!state.controlMode || state.remoteApplying) return;
+    if (state.overlaySettingsPushTimer) return;
+    state.overlaySettingsPushTimer = window.setTimeout(async () => {
+      state.overlaySettingsPushTimer = null;
+      const payload = {
+        type: "videochat_overlay_settings",
+        client_id: state.clientId,
+        settings: settingsSnapshot(),
+      };
+      try {
+        await fetch("/api/videochat/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      } catch (_) {}
+    }, delay);
+  }
+
+  function persistSetting(key, value) {
+    storageSet(key, JSON.stringify(value));
+    scheduleOverlaySettingsPush();
+  }
+
   function loadCameraSettings() {
     try {
       const raw = localStorage.getItem(CAMERA_SETTINGS_KEY);
-      if (!raw) return;
-      const s = JSON.parse(raw);
+      const s = Object.assign(
+        {},
+        raw ? JSON.parse(raw) : {},
+        settingSection("camera") || {}
+      );
       if (!s || typeof s !== "object") return;
       if (Number.isFinite(Number(s.yaw))) state.view.yaw = Number(s.yaw);
       if (Number.isFinite(Number(s.distance))) state.view.distance = Number(s.distance);
@@ -394,7 +583,7 @@
 
   function saveCameraSettings() {
     const camera = state.three?.camera;
-    storageSet(CAMERA_SETTINGS_KEY, JSON.stringify({
+    persistSetting(CAMERA_SETTINGS_KEY, {
       yaw: state.view.yaw,
       distance: state.view.distance,
       height: state.view.height,
@@ -406,7 +595,7 @@
       screenOffsetX: state.view.screenOffsetX,
       screenOffsetY: state.view.screenOffsetY,
       fov: camera?.fov || state.view.fov || 45,
-    }));
+    });
   }
 
   loadCameraSettings();
@@ -435,7 +624,7 @@
   function loadChatSettings() {
     try {
       const raw = localStorage.getItem(CHAT_SETTINGS_KEY);
-      return raw ? Object.assign(defaultChatSettings(), JSON.parse(raw)) : defaultChatSettings();
+      return Object.assign(defaultChatSettings(), raw ? JSON.parse(raw) : {}, settingSection("chat") || {});
     } catch (_) {
       return defaultChatSettings();
     }
@@ -443,7 +632,7 @@
 
   function saveChatSettings() {
     if (!state.chatSettings) return;
-    storageSet(CHAT_SETTINGS_KEY, JSON.stringify(state.chatSettings));
+    persistSetting(CHAT_SETTINGS_KEY, state.chatSettings);
   }
 
   function clampChatSettings(s) {
@@ -454,7 +643,7 @@
     s.h = Math.min(window.innerHeight - viewportPad * 2, Math.max(minH, Number(s.h) || minH));
     s.x = Math.min(window.innerWidth - s.w - 6, Math.max(6, Number(s.x) || 6));
     s.y = Math.min(window.innerHeight - s.h - 6, Math.max(6, Number(s.y) || 6));
-    s.fontSize = Math.min(34, Math.max(10, Number(s.fontSize) || 18));
+    s.fontSize = Math.min(96, Math.max(10, Number(s.fontSize) || 18));
     s.fadeSec = Number.isFinite(Number(s.fadeSec)) ? Number(s.fadeSec) : -1;
   }
 
@@ -560,7 +749,7 @@
   function loadTopicSettings() {
     try {
       const raw = localStorage.getItem(TOPIC_SETTINGS_KEY);
-      return raw ? Object.assign(defaultTopicSettings(), JSON.parse(raw)) : defaultTopicSettings();
+      return Object.assign(defaultTopicSettings(), raw ? JSON.parse(raw) : {}, settingSection("topic") || {});
     } catch (_) {
       return defaultTopicSettings();
     }
@@ -568,7 +757,7 @@
 
   function saveTopicSettings() {
     if (!state.topicSettings) return;
-    storageSet(TOPIC_SETTINGS_KEY, JSON.stringify(state.topicSettings));
+    persistSetting(TOPIC_SETTINGS_KEY, state.topicSettings);
   }
 
   function clampTopicSettings(s) {
@@ -714,7 +903,7 @@
   function loadAvatarSettings() {
     try {
       const raw = localStorage.getItem(AVATAR_SETTINGS_KEY);
-      return raw ? Object.assign(defaultAvatarSettings(), JSON.parse(raw)) : defaultAvatarSettings();
+      return Object.assign(defaultAvatarSettings(), raw ? JSON.parse(raw) : {}, settingSection("avatar") || {});
     } catch (_) {
       return defaultAvatarSettings();
     }
@@ -722,7 +911,7 @@
 
   function saveAvatarSettings() {
     if (!state.avatarSettings) return;
-    storageSet(AVATAR_SETTINGS_KEY, JSON.stringify(state.avatarSettings));
+    persistSetting(AVATAR_SETTINGS_KEY, state.avatarSettings);
   }
 
   function applyAvatarSettings() {
@@ -770,7 +959,7 @@
   function loadEffectSettings() {
     try {
       const raw = localStorage.getItem(EFFECT_SETTINGS_KEY);
-      return raw ? Object.assign(defaultEffectSettings(), JSON.parse(raw)) : defaultEffectSettings();
+      return Object.assign(defaultEffectSettings(), raw ? JSON.parse(raw) : {}, settingSection("effect") || {});
     } catch (_) {
       return defaultEffectSettings();
     }
@@ -778,7 +967,7 @@
 
   function saveEffectSettings() {
     if (!state.effectSettings) return;
-    storageSet(EFFECT_SETTINGS_KEY, JSON.stringify(state.effectSettings));
+    persistSetting(EFFECT_SETTINGS_KEY, state.effectSettings);
   }
 
   function applyEffectSettings() {
@@ -888,34 +1077,41 @@
     chatSendPanel?.addEventListener("dragover", (ev) => ev.preventDefault());
     chatSendPanel?.addEventListener("drop", (ev) => {
       ev.preventDefault();
-      const file = Array.from(ev.dataTransfer?.files || []).find((f) => f.type.startsWith("image/"));
+      const file = Array.from(ev.dataTransfer?.files || []).find(isSupportedSendFile);
       setSendPhoto(file);
     });
     chatSendPanel?.addEventListener("paste", (ev) => {
       const file = Array.from(ev.clipboardData?.items || [])
         .filter((item) => item.kind === "file")
         .map((item) => item.getAsFile())
-        .find((f) => f && f.type.startsWith("image/"));
+        .find((f) => f && isSupportedSendFile(f));
       if (file) setSendPhoto(file);
     });
     chatSendPanel?.addEventListener("submit", async (ev) => {
       ev.preventDefault();
+      if (state.sendInFlight) return;
       const text = (chatSendText?.value || "").trim();
       const targets = selectedSendTargets();
       if ((!text && !state.selectedPhoto) || (!state.replyTo && !targets.length)) return;
-      chatSendButton.disabled = true;
+      state.sendInFlight = true;
+      updateSendButton();
       try {
         await sendOverlayMessage(text, targets, state.selectedPhoto, state.replyTo);
         chatSendText.value = "";
         clearSendPhoto();
         clearSendReply();
       } finally {
+        state.sendInFlight = false;
         updateSendButton();
         chatSendText?.focus();
       }
     });
     chatMenuReply?.addEventListener("click", () => {
       if (state.menuTarget) setSendReply(state.menuTarget.data);
+      hideChatMessageMenu();
+    });
+    chatMenuQuote?.addEventListener("click", () => {
+      if (state.menuTarget?.quoteText) setSendReply(state.menuTarget.data, state.menuTarget.quoteText);
       hideChatMessageMenu();
     });
     chatMenuDelete?.addEventListener("click", async () => {
@@ -980,7 +1176,7 @@
   function loadToastSettings() {
     try {
       const raw = localStorage.getItem(TOAST_SETTINGS_KEY);
-      return raw ? Object.assign(defaultToastSettings(), JSON.parse(raw)) : defaultToastSettings();
+      return Object.assign(defaultToastSettings(), raw ? JSON.parse(raw) : {}, settingSection("toast") || {});
     } catch (_) {
       return defaultToastSettings();
     }
@@ -988,7 +1184,7 @@
 
   function saveToastSettings() {
     if (!state.toastSettings) return;
-    storageSet(TOAST_SETTINGS_KEY, JSON.stringify(state.toastSettings));
+    persistSetting(TOAST_SETTINGS_KEY, state.toastSettings);
   }
 
   function applyToastSettings() {
@@ -1073,6 +1269,46 @@
     });
   }
 
+  function applyOverlaySettings(settings, clientId = "") {
+    if (!settings || typeof settings !== "object") return;
+    if (clientId && clientId === state.clientId) return;
+    const nextSettings = adaptOverlaySettings(settings);
+    state.overlaySettings = nextSettings;
+    state.remoteApplying = true;
+    try {
+      if (nextSettings.chat && state.chatSettings) {
+        Object.assign(state.chatSettings, nextSettings.chat);
+        applyChatSettings();
+        storageSet(CHAT_SETTINGS_KEY, JSON.stringify(state.chatSettings));
+      }
+      if (nextSettings.topic && state.topicSettings) {
+        Object.assign(state.topicSettings, nextSettings.topic);
+        refreshTopicLayout(topicEditor?.classList.contains("editing"));
+        storageSet(TOPIC_SETTINGS_KEY, JSON.stringify(state.topicSettings));
+      }
+      if (nextSettings.avatar && state.avatarSettings) {
+        Object.assign(state.avatarSettings, nextSettings.avatar);
+        applyAvatarSettings();
+        storageSet(AVATAR_SETTINGS_KEY, JSON.stringify(state.avatarSettings));
+      }
+      if (nextSettings.effect && state.effectSettings) {
+        Object.assign(state.effectSettings, nextSettings.effect);
+        applyEffectSettings();
+        storageSet(EFFECT_SETTINGS_KEY, JSON.stringify(state.effectSettings));
+      }
+      if (nextSettings.toast && state.toastSettings) {
+        Object.assign(state.toastSettings, nextSettings.toast);
+        applyToastSettings();
+        storageSet(TOAST_SETTINGS_KEY, JSON.stringify(state.toastSettings));
+      }
+      if (nextSettings.camera) {
+        applyCameraControl({ type: "videochat_camera", ...nextSettings.camera });
+      }
+    } finally {
+      state.remoteApplying = false;
+    }
+  }
+
   function setTopicTitle(text) {
     const value = String(text || "").trim();
     if (!topicTitle) return;
@@ -1086,6 +1322,7 @@
   setupAvatarControls();
   setupEffectControls();
   setupToastControls();
+  if (state.controlMode) scheduleOverlaySettingsPush(300);
 
   function keyFor(p) {
     return String(p.id || p.username || p.name || "");
@@ -1135,6 +1372,28 @@
     return p._displayColor || speakerColor(keyFor(p));
   }
 
+  function rolesOf(value) {
+    const out = [];
+    const add = (role) => {
+      const normalized = String(role || "").trim().toLowerCase();
+      if (normalized && !out.includes(normalized)) out.push(normalized);
+    };
+    if (!value || typeof value !== "object") return out;
+    if (Array.isArray(value.roles)) {
+      value.roles.forEach(add);
+    } else if (typeof value.roles === "string") {
+      value.roles.split(/[,\s;]+/).forEach(add);
+    }
+    if (typeof value.role === "string") value.role.split(/[,\s;]+/).forEach(add);
+    if (value.is_host) add("king");
+    if (value.is_bot) add("bot");
+    return out;
+  }
+
+  function hasRole(value, role) {
+    return rolesOf(value).includes(String(role || "").trim().toLowerCase());
+  }
+
   function levelTier(level, isHost = false) {
     if (isHost) return LEVEL_TIERS[LEVEL_TIERS.length - 1];
     const value = Number(level);
@@ -1150,10 +1409,11 @@
     return speakerColor(data.speaker_id || data.username || data.name || "offcall");
   }
 
-  function speakerKey(data) {
-    const id = String(data.speaker_id || "");
+  function speakerKey(data, useVideochatAlias = false) {
+    const source = useVideochatAlias && data.videochat_alias ? data.videochat_alias : data;
+    const id = String(source.speaker_id || source.id || "");
     if (id && state.participants.has(id)) return id;
-    const username = String(data.username || "").replace(/^@/, "");
+    const username = String(source.username || "").replace(/^@/, "");
     if (username) {
       for (const p of state.participants.values()) {
         if (String(p.username || "").toLowerCase() === username.toLowerCase()) {
@@ -1161,7 +1421,7 @@
         }
       }
     }
-    const name = String(data.name || "");
+    const name = String(source.name || "");
     for (const p of state.participants.values()) {
       if (String(p.name || "").toLowerCase() === name.toLowerCase()) return keyFor(p);
     }
@@ -1237,9 +1497,15 @@
     el = document.createElement("div");
     el.className = "avatar";
     el.innerHTML = `
-      <div class="bubble"></div>
+      <div class="bubble-stack"></div>
       <div class="identity-card">
         <div class="crown"><span></span><span></span><span></span></div>
+        <div class="girl-heart" aria-hidden="true">
+          <svg viewBox="0 0 64 58" focusable="false">
+            <path class="heart-fill" d="M32 53C20.5 43.5 7 31.7 7 19.1 7 11 12.9 5.5 20.3 5.5c4.8 0 9.1 2.7 11.7 6.8 2.6-4.1 6.9-6.8 11.7-6.8C51.1 5.5 57 11 57 19.1 57 31.7 43.5 43.5 32 53Z"></path>
+            <ellipse class="heart-spark" cx="22" cy="15" rx="6" ry="3.3" transform="rotate(-30 22 15)"></ellipse>
+          </svg>
+        </div>
         <div class="entering-badge">입장중</div>
         <div class="portrait"><span class="initial"></span></div>
         <div class="text-stack">
@@ -1276,6 +1542,57 @@
     if (worldQuaternion) child.quaternion.multiply(worldQuaternion);
   }
 
+  function entryDurationForMode(mode) {
+    if (mode === "drop") return 2100;
+    if (mode === "fade") return 1200;
+    if (mode === "none") return 1;
+    return 3200;
+  }
+
+  function exitDurationForMode(mode) {
+    if (mode === "none") return 1;
+    if (mode === "fade") return 1400;
+    return 2600;
+  }
+
+  function isEntryStillVisible(group, now = performance.now()) {
+    if (!group || group.userData.enterDone) return false;
+    const mode = group.userData.entryEffect || "drop";
+    const start = group.userData.enterStartedAt || now;
+    return now - start < entryDurationForMode(mode);
+  }
+
+  function beginCharacterLeave(key, group, now = performance.now()) {
+    if (!group || group.userData.leavingUntil) return;
+    if (isEntryStillVisible(group, now)) {
+      group.userData.pendingLeave = true;
+      return;
+    }
+    const mode = state.effectSettings?.exitEffect || "ascend";
+    const duration = exitDurationForMode(mode);
+    const lift = mode === "ascend" ? 1.9 : 0.35;
+    group.userData.pendingLeave = false;
+    group.userData.leavingStartedAt = now;
+    group.userData.leavingUntil = now + duration;
+    group.userData.leaveFrom = group.position.clone();
+    group.userData.leaveTo = group.position.clone().add(new THREE.Vector3(0, lift, 0));
+    group.userData.exitEffect = mode;
+    const p = group.userData.participant || {};
+    const name = eventDisplayName(p.name || p.username);
+    if (mode !== "none") {
+      showEventToast(
+        toastMessageParts(state.toastSettings?.exitTemplate, name, "{name} \uC548\uB155 \uB2E4\uC74C\uC5D0 \uB610\uBD10\uC694"),
+        "leave",
+        participantColor(p)
+      );
+    }
+    state.leaving.set(key, {
+      key,
+      until: group.userData.leavingUntil,
+      screen: { x: 0, y: 0 },
+    });
+  }
+
   function createCharacter(p) {
     const key = keyFor(p);
     const group = new THREE.Group();
@@ -1290,10 +1607,11 @@
     const skin = seededColor(key, 34);
     const cloth = p.is_host ? new THREE.Color(0x63d8ff) : seededColor(key, 147);
     const accent = seededColor(key, 271);
+    const isGirl = hasRole(p, "girl");
 
     const body = new THREE.Mesh(
       new THREE.CapsuleGeometry(0.28, 0.46, 5, 12),
-      new THREE.MeshStandardMaterial({ color: cloth, roughness: 0.72 })
+      new THREE.MeshStandardMaterial({ color: isGirl ? cloth.clone().lerp(new THREE.Color(0xff7ec8), 0.32) : cloth, roughness: 0.72 })
     );
     body.position.y = 0.58;
     body.scale.x = 0.92 + (hashString(key) % 18) / 100;
@@ -1322,6 +1640,91 @@
     hair.rotation.x = -0.18;
     group.add(hair);
 
+    if (isGirl) {
+      hair.material.color.setHex(0x2a1426);
+      const hairBack = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.2, 0.62, 6, 14),
+        new THREE.MeshStandardMaterial({ color: 0x261421, roughness: 0.82 })
+      );
+      hairBack.position.set(0, 0.9, -0.13);
+      hairBack.scale.set(1.28, 1, 0.76);
+      group.add(hairBack);
+
+      const strandGeo = new THREE.CapsuleGeometry(0.055, 0.56, 5, 10);
+      const strandMat = new THREE.MeshStandardMaterial({ color: 0x2b1628, roughness: 0.82 });
+      const strandL = new THREE.Mesh(strandGeo, strandMat);
+      const strandR = new THREE.Mesh(strandGeo, strandMat);
+      strandL.position.set(-0.2, 0.9, 0.13);
+      strandR.position.set(0.2, 0.9, 0.13);
+      strandL.rotation.z = -0.1;
+      strandR.rotation.z = 0.1;
+      group.add(strandL, strandR);
+
+      const dress = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.5, 0.68, 24),
+        new THREE.MeshStandardMaterial({
+          color: cloth.clone().lerp(new THREE.Color(0xff5fb8), 0.66),
+          roughness: 0.68,
+        })
+      );
+      dress.position.y = 0.46;
+      dress.scale.set(0.92, 1, 0.82);
+      group.add(dress);
+
+      const headband = new THREE.Mesh(
+        new THREE.TorusGeometry(0.235, 0.014, 8, 28),
+        new THREE.MeshStandardMaterial({
+          color: 0xffd6ef,
+          emissive: 0x5c2448,
+          emissiveIntensity: 0.16,
+          roughness: 0.42,
+        })
+      );
+      headband.position.set(0, 1.2, 0.015);
+      headband.rotation.x = Math.PI / 2;
+      headband.scale.set(1, 0.72, 1);
+      group.add(headband);
+
+    } else {
+      const tieMat = new THREE.MeshStandardMaterial({
+        color: p.is_host ? 0xff4b5f : 0x17223f,
+        emissive: p.is_host ? 0x3c0712 : 0x000000,
+        emissiveIntensity: p.is_host ? 0.12 : 0,
+        roughness: 0.5,
+        side: THREE.DoubleSide,
+      });
+
+      const knotShape = new THREE.Shape();
+      knotShape.moveTo(0, 0.055);
+      knotShape.lineTo(0.065, 0);
+      knotShape.lineTo(0, -0.06);
+      knotShape.lineTo(-0.065, 0);
+      knotShape.lineTo(0, 0.055);
+      const tieKnot = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(knotShape, { depth: 0.018, bevelEnabled: false }),
+        tieMat
+      );
+      tieKnot.position.set(0, 0.86, 0.282);
+      group.add(tieKnot);
+
+      const bladeShape = new THREE.Shape();
+      bladeShape.moveTo(-0.052, 0.09);
+      bladeShape.lineTo(0.052, 0.09);
+      bladeShape.lineTo(0.083, -0.07);
+      bladeShape.lineTo(0.035, -0.235);
+      bladeShape.lineTo(0, -0.315);
+      bladeShape.lineTo(-0.035, -0.235);
+      bladeShape.lineTo(-0.083, -0.07);
+      bladeShape.lineTo(-0.052, 0.09);
+      const tieBlade = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(bladeShape, { depth: 0.016, bevelEnabled: false }),
+        tieMat
+      );
+      tieBlade.position.set(0, 0.76, 0.286);
+      group.add(tieBlade);
+
+    }
+
     if (p.is_host) {
       const crown = new THREE.Group();
       const gold = new THREE.MeshStandardMaterial({
@@ -1340,6 +1743,47 @@
         crown.add(spike);
       });
       group.add(crown);
+    }
+
+    if (hasRole(p, "girl")) {
+      const heart = new THREE.Group();
+      const heartShape = new THREE.Shape();
+      heartShape.moveTo(0, 0.055);
+      heartShape.bezierCurveTo(-0.085, 0.145, -0.22, 0.055, -0.128, -0.07);
+      heartShape.bezierCurveTo(-0.075, -0.142, -0.02, -0.18, 0, -0.215);
+      heartShape.bezierCurveTo(0.02, -0.18, 0.075, -0.142, 0.128, -0.07);
+      heartShape.bezierCurveTo(0.22, 0.055, 0.085, 0.145, 0, 0.055);
+      const heartMat = new THREE.MeshStandardMaterial({
+        color: 0xff72c6,
+        emissive: 0x691447,
+        emissiveIntensity: 0.2,
+        roughness: 0.46,
+        side: THREE.DoubleSide,
+      });
+      const heartMesh = new THREE.Mesh(
+        new THREE.ExtrudeGeometry(heartShape, { depth: 0.028, bevelEnabled: true, bevelSize: 0.008, bevelThickness: 0.006, bevelSegments: 1 }),
+        heartMat
+      );
+      heartMesh.scale.set(0.42, 0.42, 0.42);
+      heartMesh.position.set(0.17, 1.36, 0.205);
+      heartMesh.rotation.z = -0.18;
+      heart.add(heartMesh);
+
+      const tailMat = new THREE.MeshStandardMaterial({
+        color: 0xffa7db,
+        emissive: 0x421032,
+        emissiveIntensity: 0.12,
+        roughness: 0.5,
+        side: THREE.DoubleSide,
+      });
+      const tailL = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 3), tailMat);
+      const tailR = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 3), tailMat);
+      tailL.position.set(0.13, 1.27, 0.205);
+      tailR.position.set(0.2, 1.27, 0.205);
+      tailL.rotation.set(0, 0, 2.78);
+      tailR.rotation.set(0, 0, -2.78);
+      heart.add(tailL, tailR);
+      group.add(heart);
     }
 
     const armGeo = new THREE.CapsuleGeometry(0.055, 0.32, 4, 8);
@@ -1411,28 +1855,7 @@
     const now = performance.now();
     for (const [key, group] of state.characters) {
       if (!liveKeys.has(key) && !group.userData.leavingUntil) {
-        const mode = state.effectSettings?.exitEffect || "ascend";
-        const duration = mode === "none" ? 1 : mode === "fade" ? 1400 : 2600;
-        const lift = mode === "ascend" ? 1.9 : 0.35;
-        group.userData.leavingStartedAt = now;
-        group.userData.leavingUntil = now + duration;
-        group.userData.leaveFrom = group.position.clone();
-        group.userData.leaveTo = group.position.clone().add(new THREE.Vector3(0, lift, 0));
-        group.userData.exitEffect = mode;
-        const p = group.userData.participant || {};
-        const name = eventDisplayName(p.name || p.username);
-        if (mode !== "none") {
-          showEventToast(
-            toastMessageParts(state.toastSettings?.exitTemplate, name, "{name} \uC548\uB155 \uB2E4\uC74C\uC5D0 \uB610\uBD10\uC694"),
-            "leave",
-            participantColor(p)
-          );
-        }
-        state.leaving.set(key, {
-          key,
-          until: group.userData.leavingUntil,
-          screen: { x: 0, y: 0 },
-        });
+        beginCharacterLeave(key, group, now);
       }
     }
   }
@@ -1518,6 +1941,16 @@
     rows.forEach((p, i) => {
       const key = keyFor(p);
       const char = state.characters.get(key) || createCharacter(p);
+      const wasLeaving = !!char.userData.leavingUntil;
+      if (wasLeaving) {
+        char.userData.leavingUntil = 0;
+        char.userData.pendingLeave = false;
+        char.userData.enterStartedAt = performance.now();
+        char.userData.enterFrom = null;
+        char.userData.enterDone = false;
+        char.userData.entryEffect = state.effectSettings?.entryEffect || "drop";
+        state.leaving.delete(key);
+      }
       char.userData.participant = p;
       const layoutIndex = holdingLayout && Number.isFinite(char.userData.layoutIndex) ? char.userData.layoutIndex : i;
       const layoutCount = holdingLayout && Number.isFinite(char.userData.layoutCount) ? char.userData.layoutCount : rows.length;
@@ -1565,6 +1998,7 @@
       el.style.filter = "";
       el.classList.toggle("muted", !!p.muted);
       el.classList.toggle("host", !!p.is_host);
+      el.classList.toggle("role-girl", hasRole(p, "girl"));
       el.classList.toggle("has-photo", !!p.avatar_url);
       el.classList.toggle("no-photo", !p.avatar_url);
       const levelValue = p.is_host ? 99 : Number(p.level || 1);
@@ -1672,6 +2106,7 @@
     ];
     return Array.from({ length: count }, (_, i) => {
       const isHost = i === 0;
+      const roles = isHost ? ["king"] : (i % 5 === 2 ? ["girl"] : []);
       const label = i === 1 ? "VeryLongNicknameForLayoutTest" : names[i % names.length];
       return {
         id: isHost ? state.cfg.host_user_id || "mock-host" : `mock-${i}`,
@@ -1679,6 +2114,8 @@
         name: isHost ? hostName : `${label} ${String(i).padStart(2, "0")}`,
         muted: !isHost && i % 4 !== 0,
         is_host: isHost,
+        role: roles[0] || "",
+        roles,
         level: isHost ? 99 : 1,
         level_label: isHost ? "Lv. 99" : "",
         avatar_url: isHost && avatarUrls.length
@@ -1749,6 +2186,52 @@
     }, 2600);
   }
 
+  function syncAvatarSpeechState(el) {
+    const hasBubbles = !!el?.querySelector(".bubble-stack .bubble:not(.leaving)");
+    el?.classList.toggle("speaking", hasBubbles);
+    if (!hasBubbles && el) {
+      delete el.dataset.bubbleMessageKey;
+    }
+  }
+
+  function removeSpeechBubble(el, bubble) {
+    if (!bubble || bubble.classList.contains("leaving")) return;
+    bubble.classList.add("leaving");
+    clearTimeout(bubble._removeTimer);
+    setTimeout(() => {
+      bubble.remove();
+      syncAvatarSpeechState(el);
+    }, 220);
+  }
+
+  function createSpeechBubble(data, type, isMedia) {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble${isMedia ? " photo" : ""}${type === "sticker" ? " sticker" : ""}`;
+    if (data.message?.chat_id && data.message?.message_id) {
+      bubble.dataset.messageKey = `${data.message.chat_id}:${data.message.message_id}`;
+    }
+    const bubbleQuote = createReplyQuote(data.reply);
+    if (bubbleQuote) bubble.appendChild(bubbleQuote);
+    if (isMedia) {
+      bubble.appendChild(createMediaElement(data));
+      if (typeof data.text === "string" && data.text.trim()) {
+        const caption = document.createElement("span");
+        caption.className = "photo-caption";
+        appendRichText(caption, data.text, { entities: data.entities || [] });
+        bubble.appendChild(caption);
+      }
+    } else {
+      appendRichText(bubble, data.text, { entities: data.entities || [] });
+      if (data.stt_label) {
+        const label = document.createElement("span");
+        label.className = "stt-label";
+        label.textContent = ` ${data.stt_label}`;
+        bubble.appendChild(label);
+      }
+    }
+    return bubble;
+  }
+
   function showSpeech(data) {
     if (!data) return;
     const type = data.type || "text";
@@ -1760,44 +2243,32 @@
     if (type !== "text" && !isMedia) return;
     if (type === "text" && typeof data.text !== "string") return;
     if (isMedia && !data.url) return;
-    const key = speakerKey(data);
-    addChatLine(data, !!key);
+    const chatKey = speakerKey(data, false);
+    const key = speakerKey(data, true);
+    addChatLine(data, !!chatKey);
     const el = key ? state.elements.get(key) : null;
     const char = key ? state.characters.get(key) : null;
     if (el) {
-      const bubble = el.querySelector(".bubble");
-      bubble.replaceChildren();
+      const stack = el.querySelector(".bubble-stack");
+      if (!stack) return;
+      const bubble = createSpeechBubble(data, type, isMedia);
       if (data.message?.chat_id && data.message?.message_id) {
         el.dataset.bubbleMessageKey = `${data.message.chat_id}:${data.message.message_id}`;
       } else {
         delete el.dataset.bubbleMessageKey;
       }
-      bubble.classList.toggle("photo", isMedia);
-      bubble.classList.toggle("sticker", type === "sticker");
-      const bubbleQuote = createReplyQuote(data.reply);
-      if (bubbleQuote) bubble.appendChild(bubbleQuote);
-      if (isMedia) {
-        bubble.appendChild(createMediaElement(data));
-        if (typeof data.text === "string" && data.text.trim()) {
-          const caption = document.createElement("span");
-          caption.className = "photo-caption";
-          caption.textContent = data.text;
-          bubble.appendChild(caption);
-        }
-      } else {
-        bubble.textContent = data.text;
+      stack.appendChild(bubble);
+      const visibleBubbles = Array.from(stack.children).filter((child) => !child.classList.contains("leaving"));
+      while (visibleBubbles.length > 3) {
+        removeSpeechBubble(el, visibleBubbles.shift());
       }
       const z = 22000 + (++state.speechOrder);
       el.dataset.speechZ = String(z);
       el.style.zIndex = String(z);
       el.classList.add("speaking");
-      if (char) char.userData.speakingUntil = performance.now() + 5200;
-      clearTimeout(el._speechTimer);
-      el._speechTimer = setTimeout(() => {
-        el.classList.remove("speaking");
-        bubble.classList.remove("photo");
-        bubble.classList.remove("sticker");
-      }, 5200);
+      if (char) char.userData.speakingUntil = performance.now() + 7200;
+      requestAnimationFrame(() => bubble.classList.add("show"));
+      bubble._removeTimer = setTimeout(() => removeSpeechBubble(el, bubble), 7200);
     }
   }
 
@@ -1909,7 +2380,7 @@
     name.textContent = reply.name || "Unknown";
     const text = document.createElement("span");
     text.className = "reply-text";
-    text.textContent = reply.text || "메시지";
+    text.textContent = reply.quote_text || reply.text || "메시지";
     quote.append(name, text);
     quote.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -1924,15 +2395,9 @@
     for (const el of Array.from(chatLog?.querySelectorAll(".chat-line[data-message-key]") || [])) {
       if (el.dataset.messageKey === key) removeChatLineElement(el);
     }
-    for (const el of Array.from(participantLayer?.querySelectorAll(".avatar[data-bubble-message-key]") || [])) {
-      if (el.dataset.bubbleMessageKey !== key) continue;
-      el.classList.remove("speaking");
-      delete el.dataset.bubbleMessageKey;
-      const bubble = el.querySelector(".bubble");
-      if (bubble) {
-        bubble.replaceChildren();
-        bubble.classList.remove("photo", "sticker");
-      }
+    for (const bubble of Array.from(participantLayer?.querySelectorAll(`.bubble[data-message-key="${CSS.escape(key)}"]`) || [])) {
+      const avatar = bubble.closest(".avatar");
+      removeSpeechBubble(avatar, bubble);
     }
   }
 
@@ -1961,10 +2426,11 @@
     const participantKey = speakerKey(data);
     const participant = participantKey ? state.participants.get(participantKey) : null;
     const isHost = !!(participant?.is_host || data.is_host);
+    const isBot = !!data.is_bot && !isHost;
     const explicitLevel = Number(data.level);
-    const levelValue = participant
+    const levelValue = isBot ? null : (participant
       ? (participant.is_host ? 99 : Number(participant.level || data.level || 1))
-      : (isHost ? 99 : (Number.isFinite(explicitLevel) ? explicitLevel : 1));
+      : (isHost ? 99 : (Number.isFinite(explicitLevel) ? explicitLevel : 1)));
     const tier = Number.isFinite(levelValue) ? levelTier(levelValue, isHost) : null;
     const item = document.createElement("div");
     item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
@@ -1990,10 +2456,10 @@
     who.className = "chat-name";
     who.textContent = name;
     header.append(who);
-    if (Number.isFinite(levelValue)) {
+    if (isBot || Number.isFinite(levelValue)) {
       const level = document.createElement("span");
-      level.className = "chat-level";
-      level.textContent = data.level_label || `Lv. ${levelValue}`;
+      level.className = `chat-level${isBot ? " bot" : ""}`;
+      level.textContent = isBot ? "Bot" : (data.level_label || `Lv. ${levelValue}`);
       header.append(level);
     }
     item.append(header);
@@ -2005,13 +2471,13 @@
       if (typeof data.text === "string" && data.text.trim()) {
         const msg = document.createElement("span");
         msg.className = "chat-text photo-caption";
-        msg.textContent = data.text;
+        appendRichText(msg, data.text, { entities: data.entities || [] });
         item.appendChild(msg);
       }
     } else {
       const msg = document.createElement("span");
       msg.className = "chat-text";
-      msg.textContent = String(data.text || "");
+      appendRichText(msg, String(data.text || ""), { entities: data.entities || [] });
       item.append(document.createTextNode(": "), msg);
       if (data.stt_label) {
         const label = document.createElement("span");
@@ -2182,6 +2648,7 @@
         const data = JSON.parse(ev.data);
         if (data.type === "videochat_snapshot" && state.mockCount <= 0) setSnapshot(data);
         if (data.type === "videochat_camera" || data.type === "camera") applyCameraControl(data);
+        if (data.type === "videochat_overlay_settings") applyOverlaySettings(data.settings, data.client_id);
       } catch (_) {}
     };
     ws.onclose = () => setTimeout(connectVideochat, 1500);
@@ -2551,7 +3018,7 @@
         if (target) {
           const enterStart = group.userData.enterStartedAt || now;
           const mode = group.userData.entryEffect || "drop";
-          const duration = mode === "drop" ? 2100 : mode === "fade" ? 1200 : 3200;
+          const duration = entryDurationForMode(mode);
           const progress = clamp((now - enterStart) / duration, 0, 1);
           const entering = !group.userData.enterDone && progress < 1;
           const eased = mode === "drop" ? progress * progress : 1 - Math.pow(1 - progress, 2.4);
@@ -2602,6 +3069,7 @@
           if (progress >= 1) {
             group.userData.enterDone = true;
             group.userData.enterFrom = null;
+            if (group.userData.pendingLeave) beginCharacterLeave(group.userData.key, group, now);
           }
         }
         const stillEntering = !group.userData.enterDone;

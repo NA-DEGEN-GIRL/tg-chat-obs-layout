@@ -6,10 +6,17 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
+import ipaddress
+import re
+import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +27,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from telebot.types import ChatPermissions
+from telebot.types import ChatPermissions, ReplyParameters
 
 from stt import STTManager
 
@@ -75,6 +82,7 @@ TELEGRAM_USER_SEND_FALLBACK_BOT = os.getenv("TELEGRAM_USER_SEND_FALLBACK_BOT", "
 }
 TELEGRAM_USER_SEND_MAX_CHARS = int(os.getenv("TELEGRAM_USER_SEND_MAX_CHARS", "1000") or "1000")
 TELEGRAM_USER_SEND_MAX_PHOTO_MB = float(os.getenv("TELEGRAM_USER_SEND_MAX_PHOTO_MB", "8") or "8")
+TELEGRAM_USER_SEND_MAX_MEDIA_MB = float(os.getenv("TELEGRAM_USER_SEND_MAX_MEDIA_MB", "50") or "50")
 
 if not BOT_TOKEN:
     print("[ERROR] .env 의 BOT_TOKEN 이 비어 있습니다.", flush=True)
@@ -85,6 +93,7 @@ if CHAT_ID == 0:
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
+SHARED_STATIC_DIR = BASE_DIR / "static_shared"
 DATA_DIR = BASE_DIR / "data"
 COLORS_FILE = DATA_DIR / "user_colors.json"
 STATE_FILE = DATA_DIR / "state.json"
@@ -155,6 +164,7 @@ main_loop: asyncio.AbstractEventLoop | None = None
 stt_manager: STTManager | None = None
 bot_user_id: int | None = None
 bot_display_name: str = "Bot"
+bot_username: str = ""
 stt_user_client = None
 telegram_user_sender_id: str = ""
 telegram_delete_listener_registered = False
@@ -306,6 +316,12 @@ def load_level_store() -> None:
             record["level"] = max(1, min(99, int(record.get("level", 1))))
         except (TypeError, ValueError):
             record["level"] = 1
+        roles = normalize_roles(record.get("roles"))
+        legacy_role = str(record.get("role") or "").strip().lower()
+        if legacy_role and legacy_role not in roles:
+            roles.append(legacy_role)
+        record["roles"] = roles
+        record["role"] = primary_role(roles)
         next_store[str(key)] = record
     _level_store = next_store
 
@@ -336,26 +352,108 @@ def level_key(user_id: str, username: str, name: str) -> str:
     return f"name:{name}"
 
 
+def normalize_roles(value) -> list[str]:
+    if value is None:
+        raw = []
+    elif isinstance(value, str):
+        raw = value.replace(";", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw = value
+    else:
+        raw = [str(value)]
+    roles: list[str] = []
+    for item in raw:
+        for part in str(item or "").replace(";", ",").split(","):
+            role = part.strip().lower()
+            if role and role not in roles:
+                roles.append(role)
+    return roles
+
+
+def primary_role(roles: list[str]) -> str:
+    return roles[0] if roles else ""
+
+
+def roles_for_profile(profile: dict) -> list[str]:
+    roles = normalize_roles(profile.get("roles"))
+    legacy = str(profile.get("role") or "").strip().lower()
+    if legacy and legacy not in roles:
+        roles.append(legacy)
+    auto_roles = auto_roles_for_profile(profile)
+    return merge_roles(auto_roles, roles)
+
+
+def is_host_profile(profile: dict) -> bool:
+    if profile.get("is_bot"):
+        return False
+    username = str(profile.get("username") or "")
+    name = str(profile.get("name") or "")
+    speaker_id = str(profile.get("speaker_id") or "")
+    return (
+        bool(VIDEOCHAT_HOST_USER_ID and speaker_id == str(VIDEOCHAT_HOST_USER_ID))
+        or bool(VIDEOCHAT_HOST_USERNAME and username.lower().lstrip("@") == VIDEOCHAT_HOST_USERNAME.lower())
+        or bool(VIDEOCHAT_HOST_NAME and name.lower() == VIDEOCHAT_HOST_NAME.lower())
+    )
+
+
+def is_bot_profile(profile: dict) -> bool:
+    username = str(profile.get("username") or "").lower().lstrip("@")
+    name = str(profile.get("name") or "").lower()
+    return bool(
+        profile.get("is_bot")
+        or (username and (username in VIDEOCHAT_BOT_NAMES or username.endswith("bot")))
+        or (name and name in VIDEOCHAT_BOT_NAMES)
+    )
+
+
+def auto_roles_for_profile(profile: dict) -> list[str]:
+    roles: list[str] = []
+    if is_host_profile(profile):
+        roles.append("king")
+    if is_bot_profile(profile) and "bot" not in roles:
+        roles.append("bot")
+    return roles
+
+
+def merge_roles(*role_sets) -> list[str]:
+    roles: list[str] = []
+    for role_set in role_sets:
+        for role in normalize_roles(role_set):
+            if role not in roles:
+                roles.append(role)
+    return roles
+
+
 def level_for_profile(profile: dict, explicit_level=None) -> int:
-    if profile.get("is_host"):
-        return 99
     user_id = str(profile.get("speaker_id") or "")
     username = str(profile.get("username") or "").lstrip("@")
     name = str(profile.get("name") or username or user_id or "Unknown")
+    roles = roles_for_profile(profile)
+    role = primary_role(roles)
+    is_king = "king" in roles
     key = level_key(user_id, username, name)
     now = time.time()
     with _levels_lock:
+        if key not in _level_store and user_id and username:
+            username_key = level_key("", username, name)
+            if username_key in _level_store:
+                _level_store[key] = _level_store.pop(username_key)
         record = _level_store.get(key)
         changed = False
         if not isinstance(record, dict):
-            try:
-                level = max(1, min(99, int(explicit_level)))
-            except (TypeError, ValueError):
-                level = 1
+            if is_king:
+                level = 99
+            else:
+                try:
+                    level = max(1, min(99, int(explicit_level)))
+                except (TypeError, ValueError):
+                    level = 1
             record = {
                 "id": user_id,
                 "username": username,
                 "name": name,
+                "role": role,
+                "roles": roles,
                 "level": level,
                 "first_seen_at": now,
                 "updated_at": now,
@@ -363,18 +461,23 @@ def level_for_profile(profile: dict, explicit_level=None) -> int:
             _level_store[key] = record
             changed = True
         else:
-            for field, value in {"id": user_id, "username": username, "name": name}.items():
+            for field, value in {"id": user_id, "username": username, "name": name, "role": role, "roles": roles}.items():
                 if record.get(field) != value:
                     record[field] = value
                     changed = True
             if "first_seen_at" not in record:
                 record["first_seen_at"] = now
                 changed = True
-            try:
-                record["level"] = max(1, min(99, int(record.get("level", 1))))
-            except (TypeError, ValueError):
-                record["level"] = 1
-                changed = True
+            if is_king:
+                if record.get("level") != 99:
+                    record["level"] = 99
+                    changed = True
+            else:
+                try:
+                    record["level"] = max(1, min(99, int(record.get("level", 1))))
+                except (TypeError, ValueError):
+                    record["level"] = 1
+                    changed = True
         if changed:
             record["updated_at"] = now
             save_level_store()
@@ -384,15 +487,17 @@ def level_for_profile(profile: dict, explicit_level=None) -> int:
 def enrich_profile_level(profile: dict) -> dict:
     profile = dict(profile)
     if profile.get("is_host") is None:
-        username = str(profile.get("username") or "")
-        name = str(profile.get("name") or "")
-        speaker_id = str(profile.get("speaker_id") or "")
-        profile["is_host"] = (
-            bool(VIDEOCHAT_HOST_USER_ID and speaker_id == str(VIDEOCHAT_HOST_USER_ID))
-            or bool(VIDEOCHAT_HOST_USERNAME and username.lower().lstrip("@") == VIDEOCHAT_HOST_USERNAME.lower())
-            or bool(VIDEOCHAT_HOST_NAME and name.lower() == VIDEOCHAT_HOST_NAME.lower())
-        )
-    profile["level"] = level_for_profile(profile)
+        profile["is_host"] = is_host_profile(profile)
+    if profile.get("is_bot") is None:
+        profile["is_bot"] = is_bot_profile(profile)
+    profile["roles"] = roles_for_profile(profile)
+    profile["role"] = primary_role(profile["roles"])
+    stored_level = level_for_profile(profile)
+    if "bot" in profile["roles"] and "king" not in profile["roles"]:
+        profile["level"] = None
+        profile["level_label"] = "Bot"
+        return profile
+    profile["level"] = stored_level
     profile["level_label"] = "Lv. 99" if profile.get("is_host") else f"Lv. {profile['level']}"
     return profile
 
@@ -490,20 +595,18 @@ def message_profile(message) -> dict:
             "name": (getattr(sc, "title", None) or getattr(sc, "username", None) or "Channel"),
             "speaker_id": str(sc.id),
             "username": (getattr(sc, "username", None) or ""),
+            "is_bot": False,
         }
     user = getattr(message, "from_user", None)
     if user is None:
-        return {"name": "Unknown", "speaker_id": "", "username": ""}
+        return {"name": "Unknown", "speaker_id": "", "username": "", "is_bot": False}
     username = (getattr(user, "username", None) or "").strip()
-    if (
-        (bot_user_id is not None and user.id == bot_user_id)
-        or (username and username.lower() in VIDEOCHAT_BOT_NAMES)
-    ):
-        return host_speaker_payload()
+    is_bot = bool(getattr(user, "is_bot", False))
     return {
-        "name": display_name(user),
+        "name": username if is_bot and username else display_name(user),
         "speaker_id": str(user.id),
         "username": username,
+        "is_bot": is_bot,
     }
 
 
@@ -513,6 +616,21 @@ def host_speaker_payload() -> dict:
         "speaker_id": str(VIDEOCHAT_HOST_USER_ID) if VIDEOCHAT_HOST_USER_ID else "",
         "username": VIDEOCHAT_HOST_USERNAME,
         "is_host": True,
+        "is_bot": False,
+        "role": "king",
+        "roles": ["king"],
+    }
+
+
+def bot_speaker_payload() -> dict:
+    return {
+        "name": bot_username or bot_display_name or "Bot",
+        "speaker_id": str(bot_user_id or ""),
+        "username": bot_username,
+        "is_host": False,
+        "is_bot": True,
+        "role": "bot",
+        "roles": ["bot"],
     }
 
 
@@ -634,32 +752,51 @@ def should_skip_overlay_duplicate(profile: dict, kind: str, marker: str) -> bool
         return True
 
 
-def emit_text_overlay(message, text: str | None = None) -> None:
-    if main_loop is None:
-        return
-    if mark_message_seen_from_message(message):
-        return
+def message_overlay_payload(message, text: str | None = None) -> dict | None:
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     body = str(text if text is not None else getattr(message, "text", "") or "")
+    body, stt_label = split_stt_label_from_text(body, profile)
     if not body:
-        return
+        return None
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
+    payload = {
+        "type": "text",
+        "name": name,
+        "text": body,
+        "entities": text_entities_payload(getattr(message, "entities", None), body),
+        "message": message_ref_payload(message),
+        "reply": reply_summary_payload(message),
+        "color": color,
+        "speaker_id": profile["speaker_id"],
+        "username": profile["username"],
+        "is_host": profile["is_host"],
+        "is_bot": profile.get("is_bot", False),
+        "role": profile.get("role", ""),
+        "roles": profile.get("roles", []),
+        "level": profile["level"],
+        "level_label": profile["level_label"],
+    }
+    if stt_label:
+        payload["stt_label"] = stt_label
+        if profile.get("is_bot"):
+            payload["videochat_alias"] = host_speaker_payload()
+    return payload
+
+
+def emit_text_overlay(message, text: str | None = None, extra: dict | None = None) -> None:
+    if main_loop is None:
+        return
+    if mark_message_seen_from_message(message):
+        return
+    payload = message_overlay_payload(message, text)
+    if payload is None:
+        return
+    if extra:
+        payload.update(extra)
     asyncio.run_coroutine_threadsafe(
-        broadcast({
-            "type": "text",
-            "name": name,
-            "text": body,
-            "message": message_ref_payload(message),
-            "reply": reply_summary_payload(message),
-            "color": color,
-            "speaker_id": profile["speaker_id"],
-            "username": profile["username"],
-            "is_host": profile["is_host"],
-            "level": profile["level"],
-            "level_label": profile["level_label"],
-        }),
+        broadcast(payload),
         main_loop,
     )
 
@@ -673,36 +810,42 @@ def reply_to_with_overlay(message, text: str):
 def telethon_display_name(sender) -> str:
     if sender is None:
         return "Unknown"
+    username = (getattr(sender, "username", None) or "").strip()
+    if bool(getattr(sender, "bot", False)) and username:
+        return username
     first = getattr(sender, "first_name", None) or ""
     last = getattr(sender, "last_name", None) or ""
     name = f"{first} {last}".strip()
     if name:
         return name
-    return getattr(sender, "title", None) or getattr(sender, "username", None) or "Unknown"
+    return getattr(sender, "title", None) or username or "Unknown"
 
 
 def telethon_profile(sender) -> dict:
     if sender is None:
-        return {"name": "Unknown", "speaker_id": "", "username": ""}
+        return {"name": "Unknown", "speaker_id": "", "username": "", "is_bot": False}
     username = (getattr(sender, "username", None) or "").strip()
     sender_id = str(getattr(sender, "id", "") or "")
-    if (
-        (bot_user_id is not None and sender_id == str(bot_user_id))
-        or (username and username.lower() in VIDEOCHAT_BOT_NAMES)
-    ):
-        return host_speaker_payload()
     return {
         "name": telethon_display_name(sender),
         "speaker_id": sender_id,
         "username": username,
+        "is_bot": bool(getattr(sender, "bot", False)),
     }
 
 
-def telethon_reply_summary(reply) -> dict | None:
+def telethon_reply_quote_text(source_msg) -> str:
+    reply_to = getattr(source_msg, "reply_to", None)
+    quote_text = str(getattr(reply_to, "quote_text", None) or "").replace("\r", "").strip()
+    return quote_text[:160] if quote_text else ""
+
+
+def telethon_reply_summary(reply, source_msg=None) -> dict | None:
     if reply is None:
         return None
     sender = getattr(reply, "sender", None)
     profile = telethon_profile(sender)
+    quote_text = telethon_reply_quote_text(source_msg) if source_msg is not None else ""
     text = str(getattr(reply, "message", None) or getattr(reply, "text", None) or "").strip()
     if not text:
         if getattr(reply, "photo", None):
@@ -715,7 +858,8 @@ def telethon_reply_summary(reply) -> dict | None:
             text = "메시지"
     return {
         "name": profile.get("name") or "Unknown",
-        "text": text[:160],
+        "text": quote_text or text[:160],
+        "quote_text": quote_text,
         "message": {
             "chat_id": str(getattr(reply, "chat_id", "") or ""),
             "message_id": getattr(reply, "id", None),
@@ -733,26 +877,53 @@ def is_external_telethon_bot(sender) -> bool:
     return True
 
 
-async def download_telethon_photo(event, message) -> str:
+def telethon_media_kind(message) -> str:
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "gif", None) or getattr(message, "video", None):
+        return "animation"
+    document = getattr(message, "document", None)
+    mime = str(getattr(document, "mime_type", "") or "").lower()
+    if mime.startswith("video/") or mime == "image/gif":
+        return "animation"
+    return ""
+
+
+async def download_telethon_media(event, message, kind: str) -> tuple[str, str]:
     chat_id = str(getattr(event, "chat_id", "") or "")
     message_id = str(getattr(message, "id", "") or "")
     if not chat_id or not message_id:
-        return ""
-    digest = hashlib.sha256(f"telethon-photo:{chat_id}:{message_id}".encode("utf-8")).hexdigest()[:24]
-    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
-    for existing in PHOTOS_DIR.glob(f"telethon_{digest}.*"):
+        return "", ""
+    digest = hashlib.sha256(f"telethon-{kind}:{chat_id}:{message_id}".encode("utf-8")).hexdigest()[:24]
+    if kind == "photo":
+        target_dir = PHOTOS_DIR
+        url_prefix = "/photos"
+        file_prefix = "telethon_photo"
+    else:
+        target_dir = ANIMATIONS_DIR
+        url_prefix = "/animations"
+        file_prefix = "telethon_anim"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for existing in target_dir.glob(f"{file_prefix}_{digest}.*"):
         if existing.is_file():
-            return f"/photos/{existing.name}"
+            media_type = "image" if existing.suffix.lower() == ".gif" else "video"
+            if kind == "photo":
+                media_type = "image"
+            return f"{url_prefix}/{existing.name}", media_type
     try:
-        saved = await event.client.download_media(message, file=str(PHOTOS_DIR / f"telethon_{digest}"))
+        saved = await event.client.download_media(message, file=str(target_dir / f"{file_prefix}_{digest}"))
     except Exception as exc:
-        print(f"[WARN] telethon photo download failed: {exc}", flush=True)
-        return ""
+        print(f"[WARN] telethon media download failed: {exc}", flush=True)
+        return "", ""
     if not saved:
-        return ""
+        return "", ""
     path = Path(saved)
-    cleanup_photos()
-    return f"/photos/{path.name}"
+    if kind == "photo":
+        cleanup_photos()
+        return f"{url_prefix}/{path.name}", "image"
+    cleanup_animations()
+    media_type = "image" if path.suffix.lower() == ".gif" else "video"
+    return f"{url_prefix}/{path.name}", media_type
 
 
 async def telethon_message_payload(event, sender=None) -> dict | None:
@@ -762,12 +933,14 @@ async def telethon_message_payload(event, sender=None) -> dict | None:
     chat_id = getattr(event, "chat_id", None)
     message_id = getattr(msg, "id", None)
     text = str(getattr(msg, "message", None) or getattr(msg, "text", None) or "").strip()
-    has_photo = bool(getattr(msg, "photo", None))
-    if not text and not has_photo:
+    media_kind = telethon_media_kind(msg)
+    if not text and not media_kind:
         return None
     if sender is None:
         sender = await event.get_sender()
     profile = enrich_profile_level(telethon_profile(sender))
+    text, stt_label = split_stt_label_from_text(text, profile)
+    entities = text_entities_payload(getattr(msg, "entities", None), text)
     identity_id = int(profile["speaker_id"]) if str(profile["speaker_id"]).lstrip("-").isdigit() else 0
     reply = None
     try:
@@ -776,28 +949,39 @@ async def telethon_message_payload(event, sender=None) -> dict | None:
         reply = None
     common = {
         "name": profile["name"],
+        "entities": entities,
         "message": {
             "chat_id": str(chat_id or ""),
             "message_id": message_id,
             "thread_id": getattr(msg, "reply_to_msg_id", None),
         },
-        "reply": telethon_reply_summary(reply),
+        "reply": telethon_reply_summary(reply, msg),
         "color": color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0],
         "speaker_id": profile["speaker_id"],
         "username": profile["username"],
         "is_host": profile["is_host"],
+        "is_bot": profile.get("is_bot", False),
+        "role": profile.get("role", ""),
+        "roles": profile.get("roles", []),
         "level": profile["level"],
         "level_label": profile["level_label"],
     }
-    if has_photo:
-        url = await download_telethon_photo(event, msg)
+    if stt_label:
+        common["stt_label"] = stt_label
+        if profile.get("is_bot"):
+            common["videochat_alias"] = host_speaker_payload()
+    if media_kind:
+        url, media_type = await download_telethon_media(event, msg, media_kind)
         if url:
-            return {
-                "type": "photo",
+            payload = {
+                "type": "photo" if media_kind == "photo" else "animation",
                 "url": url,
                 "text": text,
                 **common,
             }
+            if media_kind != "photo":
+                payload["media_type"] = media_type or "video"
+            return payload
         if not text:
             return None
     return {
@@ -805,6 +989,30 @@ async def telethon_message_payload(event, sender=None) -> dict | None:
         "text": text,
         **common,
     }
+
+
+async def broadcast_telethon_bot_message(event, replace: bool = False) -> None:
+    if main_loop is None:
+        return
+    if not telethon_overlay_source(event):
+        return
+    sender = await event.get_sender()
+    if not is_external_telethon_bot(sender):
+        return
+    message = getattr(event, "message", None)
+    chat_id = getattr(event, "chat_id", None)
+    message_id = getattr(message, "id", None)
+    payload = await telethon_message_payload(event, sender)
+    if payload is None:
+        return
+    if replace:
+        await broadcast({
+            "type": "delete",
+            "message": {"chat_id": str(chat_id or ""), "message_id": message_id},
+        })
+    elif mark_message_seen(chat_id, message_id):
+        return
+    await broadcast(payload)
 
 
 def telethon_thread_id(message) -> int | None:
@@ -893,6 +1101,29 @@ def stt_label_payload() -> str:
     return STT_AI_LABEL_TEXT if STT_AI_LABEL else ""
 
 
+def split_stt_label_from_text(text: str, profile: dict | None = None) -> tuple[str, str]:
+    body = str(text or "")
+    label = stt_label_payload()
+    if not label:
+        return body, ""
+    if profile is not None:
+        is_stt_sender = bool(
+            profile.get("is_bot")
+            or profile.get("is_host")
+            or (bot_user_id is not None and str(profile.get("speaker_id") or "") == str(bot_user_id))
+            or (VIDEOCHAT_HOST_USER_ID and str(profile.get("speaker_id") or "") == str(VIDEOCHAT_HOST_USER_ID))
+        )
+        if not is_stt_sender:
+            return body, ""
+    stripped = body.rstrip()
+    if not stripped.endswith(label):
+        return body, ""
+    without_label = stripped[:-len(label)].rstrip()
+    if not without_label:
+        return body, ""
+    return without_label, label
+
+
 def stt_telegram_message(text: str) -> tuple[str, str | None]:
     if not STT_AI_LABEL:
         return text, None
@@ -963,22 +1194,11 @@ async def ensure_telegram_user_client():
 
             @stt_user_client.on(events.NewMessage)
             async def _on_telegram_user_message(event):
-                if main_loop is None:
-                    return
-                if not telethon_overlay_source(event):
-                    return
-                sender = await event.get_sender()
-                if not is_external_telethon_bot(sender):
-                    return
-                message = getattr(event, "message", None)
-                chat_id = getattr(event, "chat_id", None)
-                message_id = getattr(message, "id", None)
-                payload = await telethon_message_payload(event, sender)
-                if payload is None:
-                    return
-                if mark_message_seen(chat_id, message_id):
-                    return
-                await broadcast(payload)
+                await broadcast_telethon_bot_message(event, replace=False)
+
+            @stt_user_client.on(events.MessageEdited)
+            async def _on_telegram_user_message_edited(event):
+                await broadcast_telethon_bot_message(event, replace=True)
 
             telegram_message_listener_registered = True
             print("[INFO] Telegram message listener enabled", flush=True)
@@ -993,7 +1213,7 @@ async def ensure_stt_user_client():
     return await ensure_telegram_user_client()
 
 
-async def send_stt_by_bot(dest: dict, text: str) -> None:
+async def send_stt_by_bot(dest: dict, text: str, emit_overlay: bool = True) -> None:
     message, parse_mode = stt_telegram_message(text)
     kwargs = {}
     if parse_mode:
@@ -1005,7 +1225,14 @@ async def send_stt_by_bot(dest: dict, text: str) -> None:
         # forum 토픽 / 댓글창 양쪽 모두 정확히 들어감.
         kwargs["reply_to_message_id"] = dest["thread_id"]
         kwargs["allow_sending_without_reply"] = True
-    await asyncio.to_thread(bot.send_message, dest["chat_id"], message, **kwargs)
+    sent = await asyncio.to_thread(bot.send_message, dest["chat_id"], message, **kwargs)
+    seen = mark_message_seen_from_message(sent)
+    if emit_overlay and main_loop is not None and not seen:
+        payload = message_overlay_payload(sent, text)
+        if payload is not None:
+            payload["stt_label"] = stt_label_payload()
+            payload["videochat_alias"] = host_speaker_payload()
+            await broadcast(payload)
 
 
 async def send_stt_by_user(dest: dict, text: str) -> None:
@@ -1019,7 +1246,7 @@ async def send_stt_by_user(dest: dict, text: str) -> None:
     await client.send_message(dest["chat_id"], message, **kwargs)
 
 
-async def dispatch_stt_message(dest: dict, text: str) -> None:
+async def dispatch_stt_message(dest: dict, text: str, emit_overlay: bool = True) -> None:
     if STT_SEND_AS == "user":
         try:
             await send_stt_by_user(dest, text)
@@ -1028,7 +1255,7 @@ async def dispatch_stt_message(dest: dict, text: str) -> None:
             print(f"[STT] user dispatch failed dest={dest}: {exc}", flush=True)
             if not STT_SEND_AS_USER_FALLBACK_BOT:
                 raise
-    await send_stt_by_bot(dest, text)
+    await send_stt_by_bot(dest, text, emit_overlay=emit_overlay)
 
 
 def overlay_send_destinations(targets: list[str] | None = None) -> list[dict]:
@@ -1056,18 +1283,28 @@ def detect_image_mime(data: bytes) -> str | None:
     return None
 
 
-def normalize_photo_name(name: str, mime: str) -> str:
-    clean = (name or "image").replace("\\", "_").replace("/", "_").strip() or "image"
+def detect_video_mime(data: bytes) -> str | None:
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return None
+
+
+def normalize_send_media_name(name: str, mime: str) -> str:
+    clean = (name or "media").replace("\\", "_").replace("/", "_").strip() or "media"
     ext = {
         "image/jpeg": ".jpg",
         "image/png": ".png",
         "image/gif": ".gif",
         "image/webp": ".webp",
-    }.get(mime, ".jpg")
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+    }.get(mime, ".bin")
     if clean.lower().endswith(ext):
         return clean[:120]
     stem = clean.rsplit(".", 1)[0] if "." in clean else clean
-    return f"{stem[:100] or 'image'}{ext}"
+    return f"{stem[:100] or 'media'}{ext}"
 
 
 def telegram_file_suffix(file_path: str, fallback: str) -> str:
@@ -1077,7 +1314,7 @@ def telegram_file_suffix(file_path: str, fallback: str) -> str:
     return fallback
 
 
-def decode_send_photo(value) -> dict | None:
+def decode_send_media(value) -> dict | None:
     if not isinstance(value, dict):
         return None
     raw = str(value.get("data") or "")
@@ -1088,23 +1325,35 @@ def decode_send_photo(value) -> dict | None:
     try:
         data = base64.b64decode(raw, validate=True)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="invalid photo data") from exc
-    max_bytes = max(1, int(TELEGRAM_USER_SEND_MAX_PHOTO_MB * 1024 * 1024))
-    if len(data) > max_bytes:
-        raise HTTPException(status_code=400, detail="photo too large")
-    client_mime = str(value.get("mime") or "")
-    if client_mime and not client_mime.startswith("image/"):
-        raise HTTPException(status_code=400, detail="photo must be an image")
-    mime = detect_image_mime(data)
+        raise HTTPException(status_code=400, detail="invalid media data") from exc
+    client_mime = str(value.get("mime") or "").split(";", 1)[0].lower()
+    if client_mime and not (client_mime.startswith("image/") or client_mime.startswith("video/")):
+        raise HTTPException(status_code=400, detail="media must be an image or video")
+    mime = detect_image_mime(data) or detect_video_mime(data)
     if not mime:
-        raise HTTPException(status_code=400, detail="unsupported image")
-    name = normalize_photo_name(str(value.get("name") or "image"), mime)
+        raise HTTPException(status_code=400, detail="unsupported media")
+    if mime == "image/gif":
+        kind = "animation"
+    elif mime.startswith("video/"):
+        kind = "video"
+    else:
+        kind = "photo"
+    max_mb = TELEGRAM_USER_SEND_MAX_MEDIA_MB if kind == "video" else TELEGRAM_USER_SEND_MAX_PHOTO_MB
+    max_bytes = max(1, int(max_mb * 1024 * 1024))
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400, detail="media too large")
+    name = normalize_send_media_name(str(value.get("name") or "media"), mime)
     return {
+        "kind": kind,
         "bytes": data,
         "name": name,
         "mime": mime,
         "sha256": hashlib.sha256(data).hexdigest(),
     }
+
+
+def decode_send_photo(value) -> dict | None:
+    return decode_send_media(value)
 
 
 def message_ref_payload(message) -> dict:
@@ -1132,14 +1381,72 @@ def message_preview_text(message) -> str:
     return "메시지"
 
 
+def message_quote_text(message) -> str:
+    quote = getattr(message, "quote", None)
+    text = str(getattr(quote, "text", None) or "").replace("\r", "").strip()
+    return text[:160] if text else ""
+
+
+def entity_kind(entity) -> str:
+    value = str(getattr(entity, "type", "") or "")
+    if value:
+        return value
+    name = entity.__class__.__name__
+    if name.startswith("MessageEntity"):
+        name = name[len("MessageEntity"):]
+    mapping = {
+        "Bold": "bold",
+        "Italic": "italic",
+        "Underline": "underline",
+        "Strike": "strikethrough",
+        "StrikeThrough": "strikethrough",
+        "Code": "code",
+        "Pre": "pre",
+        "Spoiler": "spoiler",
+        "TextUrl": "text_link",
+        "Url": "url",
+        "Mention": "mention",
+        "Hashtag": "hashtag",
+        "BotCommand": "bot_command",
+    }
+    return mapping.get(name, name[:1].lower() + name[1:])
+
+
+def text_entities_payload(entities, text: str) -> list[dict]:
+    limit = len(text or "")
+    rows = []
+    for entity in entities or []:
+        try:
+            offset = int(getattr(entity, "offset", 0))
+            length = int(getattr(entity, "length", 0))
+        except (TypeError, ValueError):
+            continue
+        if length <= 0 or offset < 0 or offset >= limit:
+            continue
+        length = min(length, limit - offset)
+        item = {
+            "type": entity_kind(entity),
+            "offset": offset,
+            "length": length,
+        }
+        url = getattr(entity, "url", None)
+        if url:
+            item["url"] = str(url)
+        rows.append(item)
+    rows.sort(key=lambda item: (item["offset"], -item["length"]))
+    return rows
+
+
 def reply_summary_payload(message) -> dict | None:
     reply = getattr(message, "reply_to_message", None)
     if reply is None:
         return None
     profile = message_profile(reply)
+    quote_text = message_quote_text(message)
     return {
         "name": profile.get("name") or "Unknown",
-        "text": message_preview_text(reply),
+        "text": quote_text or message_preview_text(reply),
+        "quote_text": quote_text,
         "message": message_ref_payload(reply),
     }
 
@@ -1159,7 +1466,11 @@ def reply_ref_from_payload(value) -> dict | None:
         thread_id = int(thread_id) if thread_id is not None else None
     except (TypeError, ValueError):
         thread_id = None
-    return {"chat_id": chat_id, "message_id": message_id, "thread_id": thread_id}
+    result = {"chat_id": chat_id, "message_id": message_id, "thread_id": thread_id}
+    quote_text = str(value.get("quote_text") or "").replace("\r", "")
+    if quote_text:
+        result["quote_text"] = quote_text[:1024]
+    return result
 
 
 def overlay_send_dest_for_reply(reply_to: dict) -> dict:
@@ -1167,17 +1478,19 @@ def overlay_send_dest_for_reply(reply_to: dict) -> dict:
         "chat_id": reply_to["chat_id"],
         "thread_id": reply_to.get("thread_id"),
         "reply_to_id": reply_to["message_id"],
+        "quote_text": reply_to.get("quote_text", ""),
         "target": "reply",
     }
 
 
 async def send_plain_by_bot(dest: dict, text: str) -> None:
-    kwargs = {}
-    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
-    if reply_id is not None:
-        kwargs["reply_to_message_id"] = reply_id
-        kwargs["allow_sending_without_reply"] = True
-    await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **kwargs)
+    kwargs, fallback = bot_reply_kwargs(dest)
+    try:
+        await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **kwargs)
+    except Exception:
+        if not fallback:
+            raise
+        await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **fallback)
 
 
 def _named_bytes(data: bytes, filename: str) -> io.BytesIO:
@@ -1186,23 +1499,130 @@ def _named_bytes(data: bytes, filename: str) -> io.BytesIO:
     return fp
 
 
-async def send_photo_by_bot(dest: dict, photo: dict, caption: str) -> None:
-    kwargs = {}
+def quote_text_for_reply(dest: dict) -> str:
+    if not dest.get("reply_to_id"):
+        return ""
+    quote_text = str(dest.get("quote_text") or "").replace("\r", "")
+    return quote_text[:1024] if quote_text.strip() else ""
+
+
+def bot_reply_kwargs(dest: dict) -> tuple[dict, dict | None]:
     reply_id = dest.get("reply_to_id") or dest.get("thread_id")
-    if reply_id is not None:
-        kwargs["reply_to_message_id"] = reply_id
-        kwargs["allow_sending_without_reply"] = True
-    await asyncio.to_thread(
-        bot.send_photo,
-        dest["chat_id"],
-        _named_bytes(photo["bytes"], photo["name"]),
-        caption=caption or None,
-        **kwargs,
-    )
+    if reply_id is None:
+        return {}, None
+    fallback = {
+        "reply_to_message_id": reply_id,
+        "allow_sending_without_reply": True,
+    }
+    quote_text = quote_text_for_reply(dest)
+    if not quote_text:
+        return fallback, None
+    return {
+        "reply_parameters": ReplyParameters(
+            message_id=reply_id,
+            chat_id=dest["chat_id"],
+            allow_sending_without_reply=True,
+            quote=quote_text,
+        )
+    }, fallback
+
+
+def telethon_reply_to(dest: dict):
+    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
+    if reply_id is None:
+        return None
+    from telethon import types
+
+    quote_text = quote_text_for_reply(dest)
+    if quote_text:
+        kwargs = {"quote_text": quote_text}
+        if dest.get("thread_id") and dest.get("thread_id") != reply_id:
+            kwargs["top_msg_id"] = int(dest["thread_id"])
+        return types.InputReplyToMessage(int(reply_id), **kwargs)
+    return types.InputReplyToMessage(int(reply_id))
+
+
+async def send_photo_by_bot(dest: dict, photo: dict, caption: str) -> None:
+    kwargs, fallback = bot_reply_kwargs(dest)
+    try:
+        await asyncio.to_thread(
+            bot.send_photo,
+            dest["chat_id"],
+            _named_bytes(photo["bytes"], photo["name"]),
+            caption=caption or None,
+            **kwargs,
+        )
+    except Exception:
+        if not fallback:
+            raise
+        await asyncio.to_thread(
+            bot.send_photo,
+            dest["chat_id"],
+            _named_bytes(photo["bytes"], photo["name"]),
+            caption=caption or None,
+            **fallback,
+        )
+
+
+async def send_animation_by_bot(dest: dict, media: dict, caption: str) -> None:
+    kwargs, fallback = bot_reply_kwargs(dest)
+    try:
+        await asyncio.to_thread(
+            bot.send_animation,
+            dest["chat_id"],
+            _named_bytes(media["bytes"], media["name"]),
+            caption=caption or None,
+            **kwargs,
+        )
+    except Exception:
+        if not fallback:
+            raise
+        await asyncio.to_thread(
+            bot.send_animation,
+            dest["chat_id"],
+            _named_bytes(media["bytes"], media["name"]),
+            caption=caption or None,
+            **fallback,
+        )
+
+
+async def send_video_by_bot(dest: dict, media: dict, caption: str) -> None:
+    kwargs, fallback = bot_reply_kwargs(dest)
+    try:
+        await asyncio.to_thread(
+            bot.send_video,
+            dest["chat_id"],
+            _named_bytes(media["bytes"], media["name"]),
+            caption=caption or None,
+            supports_streaming=True,
+            **kwargs,
+        )
+    except Exception:
+        if not fallback:
+            raise
+        await asyncio.to_thread(
+            bot.send_video,
+            dest["chat_id"],
+            _named_bytes(media["bytes"], media["name"]),
+            caption=caption or None,
+            supports_streaming=True,
+            **fallback,
+        )
 
 
 async def send_plain_by_user(dest: dict, text: str) -> None:
     client = await ensure_telegram_user_client()
+    reply_to = telethon_reply_to(dest)
+    if reply_to is not None and quote_text_for_reply(dest):
+        from telethon import functions
+
+        entity = await client.get_input_entity(dest["chat_id"])
+        await client(functions.messages.SendMessageRequest(
+            peer=entity,
+            message=text,
+            reply_to=reply_to,
+        ))
+        return
     kwargs = {}
     reply_id = dest.get("reply_to_id") or dest.get("thread_id")
     if reply_id is not None:
@@ -1210,24 +1630,56 @@ async def send_plain_by_user(dest: dict, text: str) -> None:
     await client.send_message(dest["chat_id"], text, **kwargs)
 
 
-async def send_photo_by_user(dest: dict, photo: dict, caption: str) -> None:
+async def send_file_by_user(dest: dict, media: dict, caption: str, *, supports_streaming: bool = False) -> None:
     client = await ensure_telegram_user_client()
+    reply_to = telethon_reply_to(dest)
+    if reply_to is not None and quote_text_for_reply(dest):
+        from telethon import functions
+
+        entity = await client.get_input_entity(dest["chat_id"])
+        parsed_caption, entities = await client._parse_message_text(caption or "", ())
+        _handle, input_media, _image = await client._file_to_media(
+            _named_bytes(media["bytes"], media["name"]),
+            supports_streaming=supports_streaming,
+            mime_type=media.get("mime") or None,
+        )
+        await client(functions.messages.SendMediaRequest(
+            peer=entity,
+            media=input_media,
+            message=parsed_caption or "",
+            entities=entities,
+            reply_to=reply_to,
+        ))
+        return
     kwargs = {}
     reply_id = dest.get("reply_to_id") or dest.get("thread_id")
     if reply_id is not None:
         kwargs["reply_to"] = reply_id
     await client.send_file(
         dest["chat_id"],
-        _named_bytes(photo["bytes"], photo["name"]),
+        _named_bytes(media["bytes"], media["name"]),
         caption=caption or None,
+        supports_streaming=supports_streaming,
         **kwargs,
     )
+
+
+async def send_photo_by_user(dest: dict, photo: dict, caption: str) -> None:
+    await send_file_by_user(dest, photo, caption)
+
+
+async def send_animation_by_user(dest: dict, media: dict, caption: str) -> None:
+    await send_file_by_user(dest, media, caption)
+
+
+async def send_video_by_user(dest: dict, media: dict, caption: str) -> None:
+    await send_file_by_user(dest, media, caption, supports_streaming=media.get("mime") == "video/mp4")
 
 
 async def dispatch_overlay_user_message(
     text: str,
     targets: list[str],
-    photo: dict | None = None,
+    media: dict | None = None,
     reply_to: dict | None = None,
 ) -> list[dict]:
     results = []
@@ -1242,14 +1694,18 @@ async def dispatch_overlay_user_message(
             return [{"dest": dest, "ok": False, "via": "user", "error": str(exc)} for dest in dests]
     if text:
         mark_overlay_send_for_dedupe("text", text, len(dests))
-    if photo:
-        mark_overlay_send_for_dedupe("photo", photo["sha256"], len(dests))
+    if media:
+        mark_overlay_send_for_dedupe(media.get("kind", "media"), media["sha256"], len(dests))
     for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
         try:
-            if photo:
-                await send_photo_by_user(dest, photo, text)
+            if media and media.get("kind") == "video":
+                await send_video_by_user(dest, media, text)
+            elif media and media.get("kind") == "animation":
+                await send_animation_by_user(dest, media, text)
+            elif media:
+                await send_photo_by_user(dest, media, text)
             else:
                 await send_plain_by_user(dest, text)
             results.append({"dest": dest, "ok": True, "via": "user"})
@@ -1259,8 +1715,12 @@ async def dispatch_overlay_user_message(
                 results.append({"dest": dest, "ok": False, "via": "user", "error": str(exc)})
                 continue
             try:
-                if photo:
-                    await send_photo_by_bot(dest, photo, text)
+                if media and media.get("kind") == "video":
+                    await send_video_by_bot(dest, media, text)
+                elif media and media.get("kind") == "animation":
+                    await send_animation_by_bot(dest, media, text)
+                elif media:
+                    await send_photo_by_bot(dest, media, text)
                 else:
                     await send_plain_by_bot(dest, text)
                 results.append({"dest": dest, "ok": True, "via": "bot"})
@@ -1300,37 +1760,46 @@ async def delete_telegram_message(chat_id: int, message_id: int) -> dict:
 
 async def stt_on_text(text: str) -> None:
     host = enrich_profile_level(host_speaker_payload())
-    print(f"[STT] {host['name']}: {text}", flush=True)
+    if STT_SEND_AS == "bot":
+        profile = enrich_profile_level(bot_speaker_payload())
+    else:
+        profile = host
+    print(f"[STT] {profile['name']}: {text}", flush=True)
 
-    color = color_for(VIDEOCHAT_HOST_USER_ID or bot_user_id or 0)
+    color_identity = profile.get("speaker_id") or VIDEOCHAT_HOST_USER_ID or bot_user_id or 0
     try:
-        await broadcast({
-            "type": "text",
-            "name": host["name"],
-            "text": text,
-            "color": color,
-            "speaker_id": host["speaker_id"],
-            "username": host["username"],
-            "is_host": True,
-            "level": host["level"],
-            "level_label": host["level_label"],
-            "stt_label": stt_label_payload(),
-        })
-    except Exception as e:
-        print(f"[STT] overlay broadcast error: {e}", flush=True)
-
+        color_seed = int(str(color_identity).lstrip("-") or "0")
+    except ValueError:
+        color_seed = VIDEOCHAT_HOST_USER_ID or bot_user_id or 0
+    payload = {
+        "type": "text",
+        "name": profile["name"],
+        "text": text,
+        "color": color_for(color_seed),
+        "speaker_id": profile["speaker_id"],
+        "username": profile["username"],
+        "is_host": profile["is_host"],
+        "is_bot": profile.get("is_bot", False),
+        "role": profile.get("role", ""),
+        "roles": profile.get("roles", []),
+        "level": profile["level"],
+        "level_label": profile["level_label"],
+        "stt_label": stt_label_payload(),
+    }
+    if STT_SEND_AS == "bot":
+        payload["videochat_alias"] = host_speaker_payload()
     dests = list(tts_destinations)
     for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
         try:
-            await dispatch_stt_message(dest, text)
+            await dispatch_stt_message(dest, text, emit_overlay=(i == 0))
         except Exception as e:
             print(f"[STT] dispatch error dest={dest}: {e}", flush=True)
 
 
-@bot.message_handler(commands=["tts_on"])
-def cmd_tts_on(message):
+@bot.message_handler(commands=["stt_on"])
+def cmd_stt_on(message):
     if not _is_owner(message):
         return
     emit_text_overlay(message)
@@ -1364,18 +1833,18 @@ def cmd_tts_on(message):
             if dest in tts_destinations:
                 tts_destinations.remove(dest)
             reply_to_with_overlay(message, f"시작 실패: {e}")
-            print(f"[ERROR] tts_on: {e}", flush=True)
+            print(f"[ERROR] stt_on: {e}", flush=True)
             return
 
     if dest["thread_id"] is None:
-        update_state(tts_on=True)
+        update_state(stt_on=True, tts_on=False)
 
-    reply_to_with_overlay(message, f"TTS 시작: {scope} 출력 활성")
-    print(f"[INFO] tts_on dest={dest}", flush=True)
+    reply_to_with_overlay(message, f"STT 시작: {scope} 출력 활성")
+    print(f"[INFO] stt_on dest={dest}", flush=True)
 
 
-@bot.message_handler(commands=["tts_off"])
-def cmd_tts_off(message):
+@bot.message_handler(commands=["stt_off"])
+def cmd_stt_off(message):
     if not _is_owner(message):
         return
     if not (_is_main_chat(message) or _matches_active_thread(message)):
@@ -1385,17 +1854,17 @@ def cmd_tts_off(message):
         return
 
     tts_destinations.clear()
-    update_state(tts_on=False)
+    update_state(stt_on=False, tts_on=False)
 
     if stt_manager.active:
         fut = asyncio.run_coroutine_threadsafe(stt_manager.stop(), main_loop)
         try:
             fut.result(timeout=10)
         except Exception as e:
-            print(f"[ERROR] tts_off stop: {e}", flush=True)
+            print(f"[ERROR] stt_off stop: {e}", flush=True)
 
-    reply_to_with_overlay(message, "TTS 종료 (양쪽 모두 off)")
-    print("[INFO] tts_off", flush=True)
+    reply_to_with_overlay(message, "STT 종료 (양쪽 모두 off)")
+    print("[INFO] stt_off", flush=True)
 
 
 @bot.message_handler(commands=["here_on"])
@@ -1414,7 +1883,7 @@ def cmd_here_on(message):
     global active_thread
     new_thread = (message.chat.id, thread_id)
 
-    # 이전 thread 와 다르면 이전 thread의 TTS 출력 정리
+    # 이전 thread 와 다르면 이전 thread의 STT 출력 정리
     if active_thread is not None and active_thread != new_thread:
         _clear_thread_tts_destinations()
 
@@ -1438,7 +1907,7 @@ def cmd_here_off(message):
 
     _clear_thread_tts_destinations()
 
-    # thread 만 TTS 켜져 있던 상태였다면 STT 자체도 종료
+    # thread 만 STT 켜져 있던 상태였다면 STT 자체도 종료
     if (
         stt_manager is not None
         and stt_manager.active
@@ -1450,12 +1919,217 @@ def cmd_here_off(message):
             fut.result(timeout=10)
         except Exception:
             pass
-        update_state(tts_on=False)
+        update_state(stt_on=False, tts_on=False)
 
     cleared = active_thread
     active_thread = None
     reply_to_with_overlay(message, f"댓글창 해제 (이전: {cleared})")
     print(f"[INFO] here_off (cleared {cleared})", flush=True)
+
+
+def role_command_args(message) -> list[str]:
+    text = str(getattr(message, "text", None) or "")
+    return [part.strip() for part in text.split()[1:] if part.strip()]
+
+
+def profile_from_level_record(record: dict) -> dict:
+    roles = normalize_roles(record.get("roles"))
+    legacy_role = str(record.get("role") or "").strip().lower()
+    if legacy_role and legacy_role not in roles:
+        roles.append(legacy_role)
+    username = str(record.get("username") or "").lstrip("@")
+    name = str(record.get("name") or username or record.get("id") or "Unknown")
+    return {
+        "name": name,
+        "speaker_id": str(record.get("id") or ""),
+        "username": username,
+        "is_host": "king" in roles,
+        "is_bot": "bot" in roles,
+        "role": primary_role(roles),
+        "roles": roles,
+    }
+
+
+def stored_profile_by_username(username: str) -> dict | None:
+    wanted = username.strip().lstrip("@").lower()
+    if not wanted:
+        return None
+    with _levels_lock:
+        for record in _level_store.values():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("username") or "").lstrip("@").lower() == wanted:
+                return profile_from_level_record(record)
+    return None
+
+
+async def telethon_profile_by_username(username: str) -> dict | None:
+    client = await ensure_telegram_user_client()
+    entity = await client.get_entity(username.strip().lstrip("@"))
+    return telethon_profile(entity)
+
+
+def lookup_profile_by_username(username: str) -> dict:
+    username = username.strip().lstrip("@")
+    stored = stored_profile_by_username(username)
+    if stored is not None:
+        return stored
+    if main_loop is not None:
+        try:
+            fut = asyncio.run_coroutine_threadsafe(telethon_profile_by_username(username), main_loop)
+            profile = fut.result(timeout=8)
+            if profile is not None:
+                return profile
+        except Exception as exc:
+            print(f"[WARN] role user lookup failed @{username}: {exc}", flush=True)
+    return {
+        "name": f"@{username}",
+        "speaker_id": "",
+        "username": username,
+        "is_host": False,
+        "is_bot": username.lower() in VIDEOCHAT_BOT_NAMES or username.lower().endswith("bot"),
+    }
+
+
+def role_target_from_message(message, args: list[str]) -> tuple[dict | None, list[str]]:
+    remaining = list(args)
+    if remaining and remaining[0].startswith("@"):
+        return lookup_profile_by_username(remaining.pop(0)), remaining
+    reply = getattr(message, "reply_to_message", None)
+    if reply is not None:
+        return message_profile(reply), remaining
+    return None, remaining
+
+
+def role_target_label(profile: dict) -> str:
+    name = str(profile.get("name") or profile.get("username") or profile.get("speaker_id") or "Unknown")
+    username = str(profile.get("username") or "").lstrip("@")
+    if username and f"@{username}".lower() not in name.lower():
+        return f"{name} (@{username})"
+    return name
+
+
+def ensure_role_record(profile: dict) -> tuple[str, dict]:
+    profile = dict(profile)
+    profile["is_host"] = is_host_profile(profile)
+    profile["is_bot"] = is_bot_profile(profile)
+    profile["roles"] = roles_for_profile(profile)
+    profile["role"] = primary_role(profile["roles"])
+    level_for_profile(profile)
+    key = level_key(
+        str(profile.get("speaker_id") or ""),
+        str(profile.get("username") or "").lstrip("@"),
+        str(profile.get("name") or profile.get("username") or profile.get("speaker_id") or "Unknown"),
+    )
+    with _levels_lock:
+        record = _level_store.get(key)
+        if not isinstance(record, dict):
+            record = {
+                "id": str(profile.get("speaker_id") or ""),
+                "username": str(profile.get("username") or "").lstrip("@"),
+                "name": str(profile.get("name") or profile.get("username") or "Unknown"),
+                "level": 99 if "king" in profile["roles"] else 1,
+                "role": profile["role"],
+                "roles": profile["roles"],
+                "first_seen_at": time.time(),
+                "updated_at": time.time(),
+            }
+            _level_store[key] = record
+            save_level_store()
+        return key, record
+
+
+def set_record_roles(profile: dict, mode: str, role_args: list[str] | None = None) -> tuple[dict, list[str]]:
+    _key, record = ensure_role_record(profile)
+    auto_roles = auto_roles_for_profile(profile_from_level_record(record) | profile)
+    requested = normalize_roles(role_args or [])
+    now = time.time()
+    with _levels_lock:
+        current = normalize_roles(record.get("roles"))
+        if mode == "add":
+            roles = merge_roles(auto_roles, current, requested)
+        elif mode == "remove":
+            removable = set(requested)
+            roles = [role for role in merge_roles(auto_roles, current) if role not in removable or role in auto_roles]
+        elif mode == "reset":
+            roles = auto_roles
+        else:
+            roles = merge_roles(auto_roles, current)
+        record["roles"] = roles
+        record["role"] = primary_role(roles)
+        record["updated_at"] = now
+        if "king" in roles:
+            record["level"] = 99
+        save_level_store()
+        return dict(record), roles
+
+
+def format_roles(roles: list[str]) -> str:
+    return ", ".join(roles) if roles else "(없음)"
+
+
+def role_usage(command: str) -> str:
+    if command == "remove_role":
+        return "사용법: 답글로 /remove_role role1 role2 또는 /remove_role @username role1 role2"
+    if command == "add_role":
+        return "사용법: 답글로 /add_role role1 role2 또는 /add_role @username role1 role2"
+    if command == "reset_role":
+        return "사용법: 답글로 /reset_role 또는 /reset_role @username"
+    return "사용법: 답글로 /check_role 또는 /check_role @username"
+
+
+@bot.message_handler(commands=["check_role"])
+def cmd_check_role(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    profile, _remaining = role_target_from_message(message, role_command_args(message))
+    if profile is None:
+        reply_to_with_overlay(message, role_usage("check_role"))
+        return
+    record, roles = set_record_roles(profile, "check")
+    reply_to_with_overlay(message, f"{role_target_label(profile)} roles: {format_roles(roles)}")
+
+
+@bot.message_handler(commands=["add_role"])
+def cmd_add_role(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    profile, role_args = role_target_from_message(message, role_command_args(message))
+    roles_to_add = normalize_roles(role_args)
+    if profile is None or not roles_to_add:
+        reply_to_with_overlay(message, role_usage("add_role"))
+        return
+    _record, roles = set_record_roles(profile, "add", roles_to_add)
+    reply_to_with_overlay(message, f"{role_target_label(profile)} roles: {format_roles(roles)}")
+
+
+@bot.message_handler(commands=["remove_role"])
+def cmd_remove_role(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    profile, role_args = role_target_from_message(message, role_command_args(message))
+    roles_to_remove = normalize_roles(role_args)
+    if profile is None or not roles_to_remove:
+        reply_to_with_overlay(message, role_usage("remove_role"))
+        return
+    _record, roles = set_record_roles(profile, "remove", roles_to_remove)
+    reply_to_with_overlay(message, f"{role_target_label(profile)} roles: {format_roles(roles)}")
+
+
+@bot.message_handler(commands=["reset_role"])
+def cmd_reset_role(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    profile, _remaining = role_target_from_message(message, role_command_args(message))
+    if profile is None:
+        reply_to_with_overlay(message, role_usage("reset_role"))
+        return
+    _record, roles = set_record_roles(profile, "reset")
+    reply_to_with_overlay(message, f"{role_target_label(profile)} roles 초기화: {format_roles(roles)}")
 
 
 @bot.message_handler(
@@ -1469,28 +2143,35 @@ def on_text(message):
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     text = message.text
+    text, stt_label = split_stt_label_from_text(text, profile)
     if should_skip_overlay_duplicate(profile, "text", text):
         print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
         return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     print(f"{name}: {text}", flush=True)
     if main_loop is not None:
-        asyncio.run_coroutine_threadsafe(
-            broadcast({
+        payload = {
                 "type": "text",
                 "name": name,
                 "text": text,
+                "entities": text_entities_payload(getattr(message, "entities", None), text),
                 "message": message_ref_payload(message),
                 "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
                 "is_host": profile["is_host"],
+                "is_bot": profile.get("is_bot", False),
+                "role": profile.get("role", ""),
+                "roles": profile.get("roles", []),
                 "level": profile["level"],
                 "level_label": profile["level_label"],
-            }),
-            main_loop,
-        )
+            }
+        if stt_label:
+            payload["stt_label"] = stt_label
+            if profile.get("is_bot"):
+                payload["videochat_alias"] = host_speaker_payload()
+        asyncio.run_coroutine_threadsafe(broadcast(payload), main_loop)
 
 
 @bot.message_handler(
@@ -1523,6 +2204,7 @@ def on_photo(message):
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     caption = str(getattr(message, "caption", None) or "").strip()
+    caption_entities = text_entities_payload(getattr(message, "caption_entities", None), caption)
     try:
         photo_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception:
@@ -1540,12 +2222,16 @@ def on_photo(message):
                 "name": name,
                 "url": url,
                 "text": caption,
+                "entities": caption_entities,
                 "message": message_ref_payload(message),
                 "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
                 "is_host": profile["is_host"],
+                "is_bot": profile.get("is_bot", False),
+                "role": profile.get("role", ""),
+                "roles": profile.get("roles", []),
                 "level": profile["level"],
                 "level_label": profile["level_label"],
             }),
@@ -1633,6 +2319,9 @@ def on_sticker(message):
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
                 "is_host": profile["is_host"],
+                "is_bot": profile.get("is_bot", False),
+                "role": profile.get("role", ""),
+                "roles": profile.get("roles", []),
                 "level": profile["level"],
                 "level_label": profile["level_label"],
             }),
@@ -1663,8 +2352,16 @@ def on_animation(message):
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    try:
+        media_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    except Exception:
+        media_hash = getattr(animation, "file_unique_id", "") or target.name
+    if should_skip_overlay_duplicate(profile, "animation", media_hash):
+        print(f"[SEND] duplicate animation overlay echo skipped: {name}", flush=True)
+        return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     caption = str(getattr(message, "caption", None) or "").strip()
+    caption_entities = text_entities_payload(getattr(message, "caption_entities", None), caption)
     url = f"/animations/{target.name}"
     print(f"{name}: [animation] {url}" + (f" {caption}" if caption else ""), flush=True)
     if main_loop is not None:
@@ -1675,12 +2372,76 @@ def on_animation(message):
                 "url": url,
                 "media_type": media_type,
                 "text": caption,
+                "entities": caption_entities,
                 "message": message_ref_payload(message),
                 "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
                 "is_host": profile["is_host"],
+                "is_bot": profile.get("is_bot", False),
+                "role": profile.get("role", ""),
+                "roles": profile.get("roles", []),
+                "level": profile["level"],
+                "level_label": profile["level_label"],
+            }),
+            main_loop,
+        )
+
+
+@bot.message_handler(
+    func=lambda m: _is_overlay_source(m),
+    content_types=["video"],
+)
+def on_video(message):
+    video = getattr(message, "video", None)
+    if video is None:
+        return
+    if mark_message_seen_from_message(message):
+        return
+    try:
+        downloaded = download_animation_display(video)
+        cleanup_animations()
+    except Exception as e:
+        print(f"[WARN] video download failed: {e}", flush=True)
+        return
+    if downloaded is None:
+        return
+
+    target, media_type = downloaded
+    profile = enrich_profile_level(message_profile(message))
+    name = profile["name"]
+    identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    try:
+        media_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+    except Exception:
+        media_hash = getattr(video, "file_unique_id", "") or target.name
+    if should_skip_overlay_duplicate(profile, "animation", media_hash):
+        print(f"[SEND] duplicate video overlay echo skipped: {name}", flush=True)
+        return
+    color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
+    caption = str(getattr(message, "caption", None) or "").strip()
+    caption_entities = text_entities_payload(getattr(message, "caption_entities", None), caption)
+    url = f"/animations/{target.name}"
+    print(f"{name}: [video] {url}" + (f" {caption}" if caption else ""), flush=True)
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            broadcast({
+                "type": "animation",
+                "name": name,
+                "url": url,
+                "media_type": media_type,
+                "text": caption,
+                "entities": caption_entities,
+                "message": message_ref_payload(message),
+                "reply": reply_summary_payload(message),
+                "color": color,
+                "speaker_id": profile["speaker_id"],
+                "username": profile["username"],
+                "is_host": profile["is_host"],
+                "is_bot": profile.get("is_bot", False),
+                "role": profile.get("role", ""),
+                "roles": profile.get("roles", []),
                 "level": profile["level"],
                 "level_label": profile["level_label"],
             }),
@@ -1700,7 +2461,7 @@ def run_bot() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global main_loop, stt_manager, bot_user_id, bot_display_name, stt_user_client
+    global main_loop, stt_manager, bot_user_id, bot_display_name, bot_username, stt_user_client
     main_loop = asyncio.get_running_loop()
     load_user_colors()
     load_level_store()
@@ -1711,6 +2472,7 @@ async def lifespan(app: FastAPI):
     try:
         me = await asyncio.to_thread(bot.get_me)
         bot_user_id = me.id
+        bot_username = me.username or ""
         bot_display_name = me.first_name or me.username or "Bot"
     except Exception as e:
         print(f"[WARN] bot.get_me 실패: {e}", flush=True)
@@ -1736,18 +2498,19 @@ async def lifespan(app: FastAPI):
             print(f"[WARN] Telegram user listener startup skipped: {e}", flush=True)
 
     state = load_state()
-    if state.get("tts_on"):
-        print("[INFO] 이전 세션 상태 복구: tts_on (메인) 자동 재시작", flush=True)
+    if state.get("stt_on") or state.get("tts_on"):
+        print("[INFO] 이전 세션 상태 복구: stt_on (메인) 자동 재시작", flush=True)
         try:
             ok = await stt_manager.start()
             if ok:
                 tts_destinations.append({"chat_id": CHAT_ID, "thread_id": None})
+                update_state(stt_on=True, tts_on=False)
             else:
-                print("[WARN] tts_on 자동 재시작 실패 — 상태 초기화", flush=True)
-                update_state(tts_on=False)
+                print("[WARN] stt_on 자동 재시작 실패 - 상태 초기화", flush=True)
+                update_state(stt_on=False, tts_on=False)
         except Exception as e:
-            print(f"[WARN] tts_on 자동 재시작 예외: {e}", flush=True)
-            update_state(tts_on=False)
+            print(f"[WARN] stt_on 자동 재시작 예외: {e}", flush=True)
+            update_state(stt_on=False, tts_on=False)
 
     yield
 
@@ -1779,6 +2542,7 @@ PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 STICKERS_DIR.mkdir(parents=True, exist_ok=True)
 ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/shared", StaticFiles(directory=str(SHARED_STATIC_DIR)), name="shared")
 app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
 app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
 app.mount("/animations", StaticFiles(directory=str(ANIMATIONS_DIR)), name="animations")
@@ -1801,6 +2565,7 @@ async def get_config():
         "user_send_panel": TELEGRAM_USER_SEND_PANEL,
         "user_send_max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
         "user_send_max_photo_mb": TELEGRAM_USER_SEND_MAX_PHOTO_MB,
+        "user_send_max_media_mb": TELEGRAM_USER_SEND_MAX_MEDIA_MB,
         "user_send_has_here": active_thread is not None,
         "videochat_host_user_id": str(VIDEOCHAT_HOST_USER_ID) if VIDEOCHAT_HOST_USER_ID else "",
         "videochat_host_username": VIDEOCHAT_HOST_USERNAME,
@@ -1821,6 +2586,7 @@ async def api_send_status():
         },
         "max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
         "max_photo_mb": TELEGRAM_USER_SEND_MAX_PHOTO_MB,
+        "max_media_mb": TELEGRAM_USER_SEND_MAX_MEDIA_MB,
     }
 
 
@@ -1853,6 +2619,330 @@ async def api_user_search(request: Request, q: str = ""):
     return {"ok": True, "users": results}
 
 
+def require_local_request(request: Request) -> None:
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+
+
+def validate_proxy_target(raw_url: str) -> urllib.parse.ParseResult:
+    parsed = urllib.parse.urlparse((raw_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="invalid url")
+    host = parsed.hostname.strip().lower()
+    if host in {"localhost"} or host.endswith(".localhost"):
+        raise HTTPException(status_code=400, detail="local target blocked")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="target lookup failed") from exc
+    checked: set[str] = set()
+    for info in infos:
+        address = info[4][0]
+        if address in checked:
+            continue
+        checked.add(address)
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid target address")
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise HTTPException(status_code=400, detail="private target blocked")
+    return parsed
+
+
+def inject_proxy_base(html_text: str, target_url: str) -> str:
+    base = f'<base href="{html.escape(target_url, quote=True)}">'
+    meta = '<meta name="referrer" content="no-referrer">'
+    lower = html_text[:4096].lower()
+    if "<head" in lower:
+        insert_at = html_text.lower().find(">", html_text.lower().find("<head"))
+        if insert_at >= 0:
+            return html_text[:insert_at + 1] + base + meta + html_text[insert_at + 1:]
+    return base + meta + html_text
+
+
+def fetch_proxy_response(target_url: str) -> tuple[bytes, str]:
+    request = urllib.request.Request(
+        target_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as upstream:
+            content_type = upstream.headers.get("content-type", "text/html; charset=utf-8")
+            data = upstream.read(2_500_000)
+    except urllib.error.HTTPError as exc:
+        data = exc.read(256_000)
+        content_type = exc.headers.get("content-type", "text/plain; charset=utf-8")
+        if not data:
+            data = f"upstream returned HTTP {exc.code}".encode("utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"proxy fetch failed: {exc}") from exc
+    if "text/html" in content_type.lower():
+        charset = "utf-8"
+        parsed = content_type.lower().split("charset=", 1)
+        if len(parsed) == 2:
+            charset = parsed[1].split(";", 1)[0].strip() or "utf-8"
+        text = data.decode(charset, errors="replace")
+        data = inject_proxy_base(text, target_url).encode("utf-8")
+        content_type = "text/html; charset=utf-8"
+    return data, content_type
+
+
+X_HOST_SUFFIXES = ("x.com", "twitter.com")
+X_STATUS_RE = re.compile(r"/status(?:es)?/(\d+)", re.IGNORECASE)
+
+
+def is_x_host(host: str | None) -> bool:
+    normalized = (host or "").strip().lower()
+    return any(normalized == suffix or normalized.endswith(f".{suffix}") for suffix in X_HOST_SUFFIXES)
+
+
+def validate_x_preview_target(raw_url: str) -> urllib.parse.ParseResult:
+    parsed = validate_proxy_target(raw_url)
+    if not is_x_host(parsed.hostname):
+        raise HTTPException(status_code=400, detail="not an x url")
+    return parsed
+
+
+def base36_float(value: float) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    integer = int(value)
+    fraction = value - integer
+    if integer == 0:
+        prefix = "0"
+    else:
+        parts = []
+        while integer:
+            integer, mod = divmod(integer, 36)
+            parts.append(digits[mod])
+        prefix = "".join(reversed(parts))
+    suffix = []
+    for _ in range(14):
+        if fraction <= 0:
+            break
+        fraction *= 36
+        digit = int(fraction)
+        suffix.append(digits[digit])
+        fraction -= digit
+    return prefix + (("." + "".join(suffix).rstrip("0")) if suffix else "")
+
+
+def x_status_id(parsed: urllib.parse.ParseResult) -> str:
+    match = X_STATUS_RE.search(parsed.path or "")
+    return match.group(1) if match else ""
+
+
+def x_oembed_payload(target_url: str) -> dict[str, Any]:
+    params = urllib.parse.urlencode({
+        "url": target_url,
+        "omit_script": "1",
+        "theme": "dark",
+        "dnt": "true",
+        "maxwidth": "1200",
+        "maxheight": "720",
+        "chrome": "noheader nofooter noborders transparent",
+    })
+    req = urllib.request.Request(
+        f"https://publish.x.com/oembed?{params}",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=8) as res:
+        return json.loads(res.read(1_000_000).decode("utf-8", errors="replace"))
+
+
+def x_syndication_payload(tweet_id: str) -> dict[str, Any]:
+    token = base36_float((int(tweet_id) / 1_000_000_000_000_000) * math.pi)
+    params = urllib.parse.urlencode({"id": tweet_id, "token": token, "lang": "ko"})
+    req = urllib.request.Request(
+        f"https://cdn.syndication.twimg.com/tweet-result?{params}",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8",
+            "Referer": "https://platform.x.com/",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=8) as res:
+        return json.loads(res.read(1_500_000).decode("utf-8", errors="replace"))
+
+
+def x_card_shell(title: str, body: str, target_url: str) -> str:
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<style>
+html,body{{margin:0;min-height:100%;background:#08111f;color:#eef3ff;font-family:Inter,Arial,sans-serif;}}
+body{{box-sizing:border-box;padding:18px;}}
+.card{{max-width:820px;margin:0 auto;border:1px solid rgba(255,255,255,.13);border-radius:18px;background:linear-gradient(180deg,rgba(23,32,48,.96),rgba(8,13,22,.96));box-shadow:0 22px 60px rgba(0,0,0,.36);overflow:hidden;}}
+.top{{display:flex;gap:12px;align-items:center;padding:18px 18px 8px;}}
+.avatar{{width:48px;height:48px;border-radius:50%;object-fit:cover;background:#1d2938;}}
+.name{{font-weight:900;font-size:18px;line-height:1.15;}}
+.handle,.meta{{color:#9ba8ba;font-size:13px;margin-top:3px;}}
+.text{{padding:10px 18px 16px;white-space:pre-wrap;font-size:18px;line-height:1.45;word-break:break-word;}}
+.media{{display:grid;gap:8px;padding:0 18px 18px;}}
+.media img,.media video{{width:100%;max-height:520px;object-fit:contain;border-radius:14px;background:#02050a;}}
+.media.grid{{grid-template-columns:repeat(2,minmax(0,1fr));}}
+.notice{{padding:18px;font-size:15px;line-height:1.55;color:#d5deec;}}
+.actions{{display:flex;gap:10px;padding:0 18px 18px;}}
+a.button{{display:inline-flex;align-items:center;height:34px;padding:0 13px;border-radius:9px;background:rgba(255,218,112,.16);border:1px solid rgba(255,218,112,.38);color:#ffe38c;font-weight:850;text-decoration:none;}}
+.embed{{padding:12px 14px 18px;}}
+.embed iframe{{max-width:100%!important;}}
+</style>
+</head>
+<body>
+<div class="card">
+{body}
+<div class="actions"><a class="button" href="{html.escape(target_url, quote=True)}" target="_blank" rel="noreferrer">open on X</a></div>
+</div>
+<script async src="https://platform.x.com/widgets.js" charset="utf-8"></script>
+</body>
+</html>"""
+
+
+def render_x_syndication_card(data: dict[str, Any], target_url: str) -> str:
+    if data.get("__typename") == "TweetTombstone":
+        text = (((data.get("tombstone") or {}).get("text") or {}).get("text") or "This post is unavailable.")
+        return x_card_shell("X post", f'<div class="notice">{html.escape(text)}</div>', target_url)
+    user = data.get("user") or {}
+    name = html.escape(str(user.get("name") or "X user"))
+    handle = html.escape(str(user.get("screen_name") or ""))
+    avatar = html.escape(str(user.get("profile_image_url_https") or ""), quote=True)
+    text = html.escape(str(data.get("text") or "")).replace("https://t.co/", "https://t.co/")
+    created_at = html.escape(str(data.get("created_at") or ""))
+    media_parts = []
+    for photo in data.get("photos") or []:
+        src = photo.get("url") or photo.get("media_url_https")
+        if src:
+            media_parts.append(f'<img src="{html.escape(str(src), quote=True)}" alt="">')
+    video = data.get("video") or {}
+    if video:
+        poster = html.escape(str(video.get("poster") or ""), quote=True)
+        variants = [
+            variant for variant in video.get("variants") or []
+            if "mp4" in str(variant.get("type") or "") and variant.get("src")
+        ]
+        src = html.escape(str((variants[-1] if variants else {}).get("src") or ""), quote=True)
+        if src:
+            media_parts.append(f'<video controls playsinline poster="{poster}"><source src="{src}" type="video/mp4"></video>')
+        elif poster:
+            media_parts.append(f'<img src="{poster}" alt="">')
+    media_class = "media grid" if len(media_parts) > 1 else "media"
+    avatar_html = f'<img class="avatar" src="{avatar}" alt="">' if avatar else '<div class="avatar"></div>'
+    body = (
+        '<div class="top">'
+        f'{avatar_html}<div><div class="name">{name}</div>'
+        f'<div class="handle">@{handle}</div><div class="meta">{created_at}</div></div></div>'
+        f'<div class="text">{text}</div>'
+        + (f'<div class="{media_class}">{"".join(media_parts)}</div>' if media_parts else "")
+    )
+    return x_card_shell("X post", body, target_url)
+
+
+def render_x_oembed_card(payload: dict[str, Any], target_url: str) -> str:
+    embed_html = str(payload.get("html") or "")
+    if not embed_html:
+        raise ValueError("empty oembed html")
+    return x_card_shell("X embed", f'<div class="embed">{embed_html}</div>', target_url)
+
+
+def render_x_fallback_card(parsed: urllib.parse.ParseResult, target_url: str, error: str = "") -> str:
+    if (parsed.path or "").strip("/") == "search":
+        query = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+        detail = f"검색어: {query}" if query else "X 검색 페이지"
+        message = (
+            "이 링크는 X 검색 페이지입니다. 검색 결과 목록은 X 웹앱 내부 API에서 받아오기 때문에 "
+            "내부 미리보기에서는 검색어만 표시합니다."
+        )
+    else:
+        detail = target_url
+        message = "X가 이 링크에 대해 내부 표시 가능한 내용을 반환하지 않았습니다."
+        if error:
+            message += f" ({error})"
+    body = (
+        f'<div class="notice"><strong>{html.escape(message)}</strong><br>'
+        f'{html.escape(detail)}</div>'
+    )
+    return x_card_shell("X preview", body, target_url)
+
+
+def build_x_preview_html(target_url: str) -> str:
+    parsed = validate_x_preview_target(target_url)
+    normalized = urllib.parse.urlunparse(parsed)
+    if (parsed.path or "").strip("/") == "search":
+        return render_x_fallback_card(parsed, normalized)
+    tweet_id = x_status_id(parsed)
+    if tweet_id:
+        try:
+            return render_x_syndication_card(x_syndication_payload(tweet_id), normalized)
+        except Exception:
+            pass
+    try:
+        return render_x_oembed_card(x_oembed_payload(normalized), normalized)
+    except Exception as exc:
+        return render_x_fallback_card(parsed, normalized, str(exc))
+
+
+@app.get("/api/link/proxy")
+async def api_link_proxy(request: Request, url: str = ""):
+    require_local_request(request)
+    parsed = validate_proxy_target(url)
+    target_url = urllib.parse.urlunparse(parsed)
+    data, content_type = await asyncio.to_thread(fetch_proxy_response, target_url)
+    return Response(
+        data,
+        headers={
+            "Content-Type": content_type,
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+@app.get("/api/link/x-preview")
+async def api_link_x_preview(request: Request, url: str = ""):
+    require_local_request(request)
+    html_doc = await asyncio.to_thread(build_x_preview_html, url)
+    return HTMLResponse(
+        html_doc,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 @app.post("/api/send")
 async def api_send_message(request: Request):
     if not TELEGRAM_USER_SEND_ENABLED:
@@ -1866,9 +2956,9 @@ async def api_send_message(request: Request):
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
     text = str(payload.get("text") or "").strip()
-    photo = decode_send_photo(payload.get("photo"))
+    media = decode_send_media(payload.get("media") or payload.get("photo"))
     reply_to = reply_ref_from_payload(payload.get("reply_to"))
-    if not text and not photo:
+    if not text and not media:
         raise HTTPException(status_code=400, detail="empty message")
     if len(text) > TELEGRAM_USER_SEND_MAX_CHARS:
         raise HTTPException(status_code=400, detail="text too long")
@@ -1879,7 +2969,7 @@ async def api_send_message(request: Request):
     if not targets and not reply_to:
         raise HTTPException(status_code=400, detail="no targets selected")
 
-    results = await dispatch_overlay_user_message(text, targets, photo, reply_to)
+    results = await dispatch_overlay_user_message(text, targets, media, reply_to)
     ok = [r for r in results if r.get("ok")]
     if not ok:
         raise HTTPException(status_code=502, detail={"message": "send failed", "results": results})
