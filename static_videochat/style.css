@@ -635,11 +635,54 @@ body::before {
   font-weight: 650;
 }
 
+.reply-quote {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  max-width: min(100%, 320px);
+  margin: 4px 0 7px;
+  padding: 7px 9px 7px 11px;
+  border-left: 4px solid rgba(255, 214, 106, 0.78);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 16px rgba(255, 214, 106, 0.06);
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.reply-name {
+  color: #ffe38c;
+  font-size: 0.74em;
+  font-weight: 900;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-text {
+  color: rgba(255,255,255,0.74);
+  font-size: 0.74em;
+  font-weight: 650;
+  line-height: 1.18;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-line.photo {
   display: flex;
   flex-direction: column;
   gap: 6px;
   align-items: flex-start;
+}
+
+.chat-line.jump-highlight {
+  box-shadow:
+    0 0 0 2px rgba(255, 226, 105, 0.62),
+    0 0 26px rgba(255, 226, 105, 0.2),
+    inset 0 0 26px rgba(255, 226, 105, 0.06);
 }
 
 .chat-line.photo .chat-header::after {
@@ -649,7 +692,8 @@ body::before {
 }
 
 .chat-line.photo img,
-.chat-line.photo video {
+.chat-line.photo video,
+.chat-line.photo .lottie-sticker {
   display: block;
   max-width: 260px;
   max-height: 180px;
@@ -661,7 +705,10 @@ body::before {
 }
 
 .chat-line.sticker img,
-.chat-line.sticker video {
+.chat-line.sticker video,
+.chat-line.sticker .lottie-sticker {
+  width: 150px;
+  height: 150px;
   max-width: 150px;
   max-height: 150px;
 }
@@ -738,8 +785,14 @@ body::before {
   padding: calc(7px * var(--bubble-ui-scale, 1));
 }
 
+.avatar .bubble .reply-quote {
+  max-width: calc(190px * var(--bubble-ui-scale, 1));
+  margin-top: 0;
+}
+
 .avatar .bubble.photo img,
-.avatar .bubble.photo video {
+.avatar .bubble.photo video,
+.avatar .bubble.photo .lottie-sticker {
   display: block;
   max-width: calc(170px * var(--bubble-ui-scale, 1));
   max-height: calc(112px * var(--bubble-ui-scale, 1));
@@ -751,7 +804,10 @@ body::before {
 }
 
 .avatar .bubble.sticker img,
-.avatar .bubble.sticker video {
+.avatar .bubble.sticker video,
+.avatar .bubble.sticker .lottie-sticker {
+  width: calc(118px * var(--bubble-ui-scale, 1));
+  height: calc(118px * var(--bubble-ui-scale, 1));
   max-width: calc(118px * var(--bubble-ui-scale, 1));
   max-height: calc(118px * var(--bubble-ui-scale, 1));
 }

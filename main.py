@@ -91,8 +91,10 @@ STATE_FILE = DATA_DIR / "state.json"
 VIDEOCHAT_LEVELS_FILE = DATA_DIR / "videochat_levels.json"
 PHOTOS_DIR = DATA_DIR / "photos"
 STICKERS_DIR = DATA_DIR / "stickers"
+ANIMATIONS_DIR = DATA_DIR / "animations"
 MAX_PHOTOS = 10
 MAX_STICKERS = 30
+MAX_ANIMATIONS = 20
 
 # 어두운 반투명 배경에서 가독성 좋은 색만 추려낸 팔레트
 USER_COLOR_PALETTE = [
@@ -437,6 +439,10 @@ def cleanup_photos() -> None:
 
 def cleanup_stickers() -> None:
     cleanup_media_dir(STICKERS_DIR, MAX_STICKERS, "sticker")
+
+
+def cleanup_animations() -> None:
+    cleanup_media_dir(ANIMATIONS_DIR, MAX_ANIMATIONS, "animation")
 
 
 def display_name(user) -> str:
@@ -816,10 +822,75 @@ def decode_send_photo(value) -> dict | None:
     }
 
 
+def message_ref_payload(message) -> dict:
+    return {
+        "chat_id": str(getattr(getattr(message, "chat", None), "id", "")),
+        "message_id": getattr(message, "message_id", None),
+        "thread_id": getattr(message, "message_thread_id", None),
+    }
+
+
+def message_preview_text(message) -> str:
+    text = str(getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if text:
+        return text[:160]
+    if getattr(message, "photo", None):
+        return "사진"
+    if getattr(message, "sticker", None):
+        return "스티커"
+    if getattr(message, "animation", None):
+        return "GIF"
+    if getattr(message, "video", None):
+        return "영상"
+    if getattr(message, "document", None):
+        return "파일"
+    return "메시지"
+
+
+def reply_summary_payload(message) -> dict | None:
+    reply = getattr(message, "reply_to_message", None)
+    if reply is None:
+        return None
+    profile = message_profile(reply)
+    return {
+        "name": profile.get("name") or "Unknown",
+        "text": message_preview_text(reply),
+        "message": message_ref_payload(reply),
+    }
+
+
+def reply_ref_from_payload(value) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        chat_id = int(str(value.get("chat_id") or "0"))
+        message_id = int(str(value.get("message_id") or "0"))
+    except ValueError:
+        return None
+    if chat_id == 0 or message_id <= 0:
+        return None
+    thread_id = value.get("thread_id")
+    try:
+        thread_id = int(thread_id) if thread_id is not None else None
+    except (TypeError, ValueError):
+        thread_id = None
+    return {"chat_id": chat_id, "message_id": message_id, "thread_id": thread_id}
+
+
+def overlay_send_dest_for_reply(reply_to: dict) -> dict:
+    return {
+        "chat_id": reply_to["chat_id"],
+        "thread_id": reply_to.get("thread_id"),
+        "reply_to_id": reply_to["message_id"],
+        "target": "reply",
+    }
+
+
 async def send_plain_by_bot(dest: dict, text: str) -> None:
     kwargs = {}
-    if dest.get("thread_id") is not None:
-        kwargs["reply_to_message_id"] = dest["thread_id"]
+    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
+    if reply_id is not None:
+        kwargs["reply_to_message_id"] = reply_id
         kwargs["allow_sending_without_reply"] = True
     await asyncio.to_thread(bot.send_message, dest["chat_id"], text, **kwargs)
 
@@ -832,8 +903,9 @@ def _named_bytes(data: bytes, filename: str) -> io.BytesIO:
 
 async def send_photo_by_bot(dest: dict, photo: dict, caption: str) -> None:
     kwargs = {}
-    if dest.get("thread_id") is not None:
-        kwargs["reply_to_message_id"] = dest["thread_id"]
+    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
+    if reply_id is not None:
+        kwargs["reply_to_message_id"] = reply_id
         kwargs["allow_sending_without_reply"] = True
     await asyncio.to_thread(
         bot.send_photo,
@@ -847,16 +919,18 @@ async def send_photo_by_bot(dest: dict, photo: dict, caption: str) -> None:
 async def send_plain_by_user(dest: dict, text: str) -> None:
     client = await ensure_telegram_user_client()
     kwargs = {}
-    if dest.get("thread_id") is not None:
-        kwargs["reply_to"] = dest["thread_id"]
+    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
+    if reply_id is not None:
+        kwargs["reply_to"] = reply_id
     await client.send_message(dest["chat_id"], text, **kwargs)
 
 
 async def send_photo_by_user(dest: dict, photo: dict, caption: str) -> None:
     client = await ensure_telegram_user_client()
     kwargs = {}
-    if dest.get("thread_id") is not None:
-        kwargs["reply_to"] = dest["thread_id"]
+    reply_id = dest.get("reply_to_id") or dest.get("thread_id")
+    if reply_id is not None:
+        kwargs["reply_to"] = reply_id
     await client.send_file(
         dest["chat_id"],
         _named_bytes(photo["bytes"], photo["name"]),
@@ -865,9 +939,14 @@ async def send_photo_by_user(dest: dict, photo: dict, caption: str) -> None:
     )
 
 
-async def dispatch_overlay_user_message(text: str, targets: list[str], photo: dict | None = None) -> list[dict]:
+async def dispatch_overlay_user_message(
+    text: str,
+    targets: list[str],
+    photo: dict | None = None,
+    reply_to: dict | None = None,
+) -> list[dict]:
     results = []
-    dests = overlay_send_destinations(targets)
+    dests = [overlay_send_dest_for_reply(reply_to)] if reply_to else overlay_send_destinations(targets)
     if not dests:
         return [{"ok": False, "error": "no selected destinations"}]
     try:
@@ -903,6 +982,35 @@ async def dispatch_overlay_user_message(text: str, targets: list[str], photo: di
             except Exception as bot_exc:
                 results.append({"dest": dest, "ok": False, "via": "bot", "error": str(bot_exc)})
     return results
+
+
+async def notify_owner_delete_failed(chat_id: int, message_id: int, error: str) -> None:
+    if OWNER_ID == 0:
+        return
+    try:
+        await asyncio.to_thread(
+            bot.send_message,
+            OWNER_ID,
+            f"삭제 불가: chat_id={chat_id}, message_id={message_id}\n{error}",
+        )
+    except Exception as exc:
+        print(f"[WARN] delete failure notice failed: {exc}", flush=True)
+
+
+async def delete_telegram_message(chat_id: int, message_id: int) -> dict:
+    try:
+        await asyncio.to_thread(bot.delete_message, chat_id, message_id)
+        return {"ok": True, "via": "bot"}
+    except Exception as bot_exc:
+        bot_error = str(bot_exc)
+        try:
+            client = await ensure_telegram_user_client()
+            await client.delete_messages(chat_id, [message_id])
+            return {"ok": True, "via": "user", "bot_error": bot_error}
+        except Exception as user_exc:
+            error = f"bot: {bot_error}; user: {user_exc}"
+            await notify_owner_delete_failed(chat_id, message_id, error)
+            return {"ok": False, "error": error}
 
 
 async def stt_on_text(text: str) -> None:
@@ -1081,6 +1189,8 @@ def on_text(message):
                 "type": "text",
                 "name": name,
                 "text": text,
+                "message": message_ref_payload(message),
+                "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -1137,6 +1247,8 @@ def on_photo(message):
                 "name": name,
                 "url": url,
                 "text": caption,
+                "message": message_ref_payload(message),
+                "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -1146,13 +1258,6 @@ def on_photo(message):
             }),
             main_loop,
         )
-
-
-def sticker_thumb(message_sticker):
-    return (
-        getattr(message_sticker, "thumbnail", None)
-        or getattr(message_sticker, "thumb", None)
-    )
 
 
 def download_sticker_display(message_sticker) -> tuple[Path, str] | None:
@@ -1168,20 +1273,29 @@ def download_sticker_display(message_sticker) -> tuple[Path, str] | None:
     )
     is_tgs = suffix == ".tgs" or getattr(message_sticker, "is_animated", False)
     if is_tgs and not getattr(message_sticker, "is_video", False):
-        thumb = sticker_thumb(message_sticker)
-        if thumb is None:
-            return None
-        thumb_info = bot.get_file(thumb.file_id)
-        thumb_suffix = telegram_file_suffix(getattr(thumb_info, "file_path", ""), ".jpg")
-        target = STICKERS_DIR / f"{unique_id}_thumb{thumb_suffix}"
-        if not target.exists():
-            target.write_bytes(bot.download_file(thumb_info.file_path))
-        return target, "image"
-
+        suffix = ".tgs"
     target = STICKERS_DIR / f"{unique_id}{suffix}"
     if not target.exists():
         target.write_bytes(bot.download_file(file_path))
-    media_type = "video" if suffix == ".webm" or getattr(message_sticker, "is_video", False) else "image"
+    if is_tgs and not getattr(message_sticker, "is_video", False):
+        media_type = "tgs"
+    else:
+        media_type = "video" if suffix == ".webm" or getattr(message_sticker, "is_video", False) else "image"
+    return target, media_type
+
+
+def download_animation_display(animation) -> tuple[Path, str] | None:
+    ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    unique_id = getattr(animation, "file_unique_id", None) or hashlib.sha256(
+        str(getattr(animation, "file_id", "")).encode("utf-8")
+    ).hexdigest()[:24]
+    info = bot.get_file(animation.file_id)
+    file_path = getattr(info, "file_path", "") or ""
+    suffix = telegram_file_suffix(file_path, ".mp4")
+    target = ANIMATIONS_DIR / f"{unique_id}{suffix}"
+    if not target.exists():
+        target.write_bytes(bot.download_file(file_path))
+    media_type = "image" if suffix == ".gif" else "video"
     return target, media_type
 
 
@@ -1209,8 +1323,7 @@ def on_sticker(message):
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     url = f"/stickers/{target.name}"
-    emoji = str(getattr(sticker, "emoji", None) or "").strip()
-    print(f"{name}: [sticker] {url}" + (f" {emoji}" if emoji else ""), flush=True)
+    print(f"{name}: [sticker] {url}", flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
             broadcast({
@@ -1218,7 +1331,55 @@ def on_sticker(message):
                 "name": name,
                 "url": url,
                 "media_type": media_type,
-                "text": emoji,
+                "text": "",
+                "message": message_ref_payload(message),
+                "reply": reply_summary_payload(message),
+                "color": color,
+                "speaker_id": profile["speaker_id"],
+                "username": profile["username"],
+                "is_host": profile["is_host"],
+                "level": profile["level"],
+                "level_label": profile["level_label"],
+            }),
+            main_loop,
+        )
+
+
+@bot.message_handler(
+    func=lambda m: _is_overlay_source(m),
+    content_types=["animation"],
+)
+def on_animation(message):
+    animation = getattr(message, "animation", None)
+    if animation is None:
+        return
+    try:
+        downloaded = download_animation_display(animation)
+        cleanup_animations()
+    except Exception as e:
+        print(f"[WARN] animation download failed: {e}", flush=True)
+        return
+    if downloaded is None:
+        return
+
+    target, media_type = downloaded
+    profile = enrich_profile_level(message_profile(message))
+    name = profile["name"]
+    identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
+    caption = str(getattr(message, "caption", None) or "").strip()
+    url = f"/animations/{target.name}"
+    print(f"{name}: [animation] {url}" + (f" {caption}" if caption else ""), flush=True)
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(
+            broadcast({
+                "type": "animation",
+                "name": name,
+                "url": url,
+                "media_type": media_type,
+                "text": caption,
+                "message": message_ref_payload(message),
+                "reply": reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -1313,9 +1474,11 @@ _INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
 app = FastAPI(lifespan=lifespan)
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 STICKERS_DIR.mkdir(parents=True, exist_ok=True)
+ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
 app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
+app.mount("/animations", StaticFiles(directory=str(ANIMATIONS_DIR)), name="animations")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1358,6 +1521,35 @@ async def api_send_status():
     }
 
 
+@app.get("/api/users/search")
+async def api_user_search(request: Request, q: str = ""):
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    query = (q or "").strip().lstrip("@")
+    if len(query) < 1:
+        return {"ok": True, "users": []}
+    try:
+        client = await ensure_telegram_user_client()
+        users = await client.get_participants(CHAT_ID, search=query, limit=12)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"user search failed: {exc}") from exc
+    results = []
+    for user in users:
+        if getattr(user, "bot", False):
+            continue
+        username = (getattr(user, "username", None) or "").strip()
+        name = display_name(user)
+        results.append({
+            "id": str(user.id),
+            "name": name,
+            "username": username,
+            "insert": f"@{username}" if username else name,
+            "can_tag": bool(username),
+        })
+    return {"ok": True, "users": results}
+
+
 @app.post("/api/send")
 async def api_send_message(request: Request):
     if not TELEGRAM_USER_SEND_ENABLED:
@@ -1372,6 +1564,7 @@ async def api_send_message(request: Request):
 
     text = str(payload.get("text") or "").strip()
     photo = decode_send_photo(payload.get("photo"))
+    reply_to = reply_ref_from_payload(payload.get("reply_to"))
     if not text and not photo:
         raise HTTPException(status_code=400, detail="empty message")
     if len(text) > TELEGRAM_USER_SEND_MAX_CHARS:
@@ -1380,14 +1573,38 @@ async def api_send_message(request: Request):
     if not isinstance(raw_targets, list):
         raw_targets = []
     targets = [str(x) for x in raw_targets if str(x) in {"main", "here"}]
-    if not targets:
+    if not targets and not reply_to:
         raise HTTPException(status_code=400, detail="no targets selected")
 
-    results = await dispatch_overlay_user_message(text, targets, photo)
+    results = await dispatch_overlay_user_message(text, targets, photo, reply_to)
     ok = [r for r in results if r.get("ok")]
     if not ok:
         raise HTTPException(status_code=502, detail={"message": "send failed", "results": results})
     return {"ok": True, "sent": len(ok), "results": results}
+
+
+@app.post("/api/message/delete")
+async def api_delete_message(request: Request):
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    try:
+        payload = await request.json()
+        chat_id = int(str(payload.get("chat_id") or "0"))
+        message_id = int(str(payload.get("message_id") or "0"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid message reference") from exc
+    if chat_id == 0 or message_id <= 0:
+        raise HTTPException(status_code=400, detail="invalid message reference")
+    result = await delete_telegram_message(chat_id, message_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result)
+    if main_loop is not None:
+        await broadcast({
+            "type": "delete",
+            "message": {"chat_id": str(chat_id), "message_id": message_id},
+        })
+    return result
 
 
 @app.websocket("/ws")

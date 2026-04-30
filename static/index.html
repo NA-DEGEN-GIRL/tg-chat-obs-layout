@@ -8,6 +8,10 @@
 <body>
   <div id="chat"></div>
   <form id="send-panel" hidden>
+    <div id="chat-tools" aria-label="채팅 표시 설정">
+      <button id="font-down" type="button" title="채팅 글자 작게">A-</button>
+      <button id="font-up" type="button" title="채팅 글자 크게">A+</button>
+    </div>
     <div id="send-targets" aria-label="전송 대상">
       <button class="send-target active" data-target="main" type="button">main</button>
       <button class="send-target" data-target="here" type="button" disabled>here</button>
@@ -26,6 +30,11 @@
     </label>
     <button id="send-button" type="submit" disabled>send</button>
   </form>
+  <div id="message-menu" hidden>
+    <button id="menu-reply" type="button">답장</button>
+    <button id="menu-delete" type="button">삭제</button>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
   <script src="/static/app.js?v={{CB}}"></script>
 </body>
 </html>

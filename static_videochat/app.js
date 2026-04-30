@@ -1407,7 +1407,11 @@
   function showSpeech(data) {
     if (!data) return;
     const type = data.type || "text";
-    const isMedia = type === "photo" || type === "sticker";
+    if (type === "delete") {
+      removeChatLineByRef(data.message);
+      return;
+    }
+    const isMedia = type === "photo" || type === "sticker" || type === "animation";
     if (type !== "text" && !isMedia) return;
     if (type === "text" && typeof data.text !== "string") return;
     if (isMedia && !data.url) return;
@@ -1418,8 +1422,15 @@
     if (el) {
       const bubble = el.querySelector(".bubble");
       bubble.replaceChildren();
+      if (data.message?.chat_id && data.message?.message_id) {
+        el.dataset.bubbleMessageKey = `${data.message.chat_id}:${data.message.message_id}`;
+      } else {
+        delete el.dataset.bubbleMessageKey;
+      }
       bubble.classList.toggle("photo", isMedia);
       bubble.classList.toggle("sticker", type === "sticker");
+      const bubbleQuote = createReplyQuote(data.reply);
+      if (bubbleQuote) bubble.appendChild(bubbleQuote);
       if (isMedia) {
         bubble.appendChild(createMediaElement(data));
         if (typeof data.text === "string" && data.text.trim()) {
@@ -1445,7 +1456,34 @@
     }
   }
 
+  async function loadTgsSticker(container, url) {
+    try {
+      if (!window.lottie || !window.DecompressionStream) {
+        container.textContent = "sticker";
+        return;
+      }
+      const compressed = await fetch(url).then((r) => r.arrayBuffer());
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+      const json = await new Response(stream).text();
+      window.lottie.loadAnimation({
+        container,
+        renderer: "svg",
+        loop: true,
+        autoplay: true,
+        animationData: JSON.parse(json),
+      });
+    } catch (_) {
+      container.textContent = "sticker";
+    }
+  }
+
   function createMediaElement(data) {
+    if (data.media_type === "tgs") {
+      const box = document.createElement("div");
+      box.className = "lottie-sticker";
+      loadTgsSticker(box, data.url);
+      return box;
+    }
     const media = document.createElement(data.media_type === "video" ? "video" : "img");
     media.src = data.url;
     if (media.tagName === "VIDEO") {
@@ -1460,11 +1498,61 @@
     return media;
   }
 
+  function createReplyQuote(reply) {
+    if (!reply || (!reply.name && !reply.text)) return null;
+    const quote = document.createElement("div");
+    quote.className = "reply-quote";
+    if (reply.message?.chat_id && reply.message?.message_id) {
+      quote.dataset.replyTargetKey = `${reply.message.chat_id}:${reply.message.message_id}`;
+      quote.title = "인용 메시지로 이동";
+    }
+    const name = document.createElement("span");
+    name.className = "reply-name";
+    name.textContent = reply.name || "Unknown";
+    const text = document.createElement("span");
+    text.className = "reply-text";
+    text.textContent = reply.text || "메시지";
+    quote.append(name, text);
+    quote.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      focusChatLineByKey(quote.dataset.replyTargetKey);
+    });
+    return quote;
+  }
+
+  function removeChatLineByRef(ref) {
+    if (!ref?.chat_id || !ref?.message_id) return;
+    const key = `${ref.chat_id}:${ref.message_id}`;
+    for (const el of Array.from(chatLog?.querySelectorAll(".chat-line[data-message-key]") || [])) {
+      if (el.dataset.messageKey === key) el.remove();
+    }
+    for (const el of Array.from(participantLayer?.querySelectorAll(".avatar[data-bubble-message-key]") || [])) {
+      if (el.dataset.bubbleMessageKey !== key) continue;
+      el.classList.remove("speaking");
+      delete el.dataset.bubbleMessageKey;
+      const bubble = el.querySelector(".bubble");
+      if (bubble) {
+        bubble.replaceChildren();
+        bubble.classList.remove("photo", "sticker");
+      }
+    }
+  }
+
+  function focusChatLineByKey(key) {
+    if (!key || !chatLog) return;
+    const target = chatLog.querySelector(`.chat-line[data-message-key="${CSS.escape(key)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    target.classList.remove("jump-highlight");
+    requestAnimationFrame(() => target.classList.add("jump-highlight"));
+    setTimeout(() => target.classList.remove("jump-highlight"), 1400);
+  }
+
   function addChatLine(data, isParticipant) {
     if (!chatLog) return;
     const name = String(data.name || data.username || "미참여");
     const type = data.type || "text";
-    const isMedia = type === "photo" || type === "sticker";
+    const isMedia = type === "photo" || type === "sticker" || type === "animation";
     const participantKey = speakerKey(data);
     const participant = participantKey ? state.participants.get(participantKey) : null;
     const isHost = !!(participant?.is_host || data.is_host);
@@ -1475,6 +1563,9 @@
     const tier = Number.isFinite(levelValue) ? levelTier(levelValue, isHost) : null;
     const item = document.createElement("div");
     item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
+    if (data.message?.chat_id && data.message?.message_id) {
+      item.dataset.messageKey = `${data.message.chat_id}:${data.message.message_id}`;
+    }
     item.style.setProperty("--speaker-color", speechColor(data, participantKey));
     if (tier) {
       item.style.setProperty("--level-color", tier.color);
@@ -1499,6 +1590,8 @@
       header.append(level);
     }
     item.append(header);
+    const quote = createReplyQuote(data.reply);
+    if (quote) item.appendChild(quote);
     if (isMedia) {
       item.appendChild(createMediaElement(data));
       if (typeof data.text === "string" && data.text.trim()) {
