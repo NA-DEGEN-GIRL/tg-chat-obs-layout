@@ -248,6 +248,12 @@ body.send-panel-visible #chat {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+.msg-photo .photo-caption {
+  max-width: 360px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }

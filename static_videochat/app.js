@@ -1423,6 +1423,12 @@
         img.alt = "";
         img.decoding = "async";
         bubble.appendChild(img);
+        if (typeof data.text === "string" && data.text.trim()) {
+          const caption = document.createElement("span");
+          caption.className = "photo-caption";
+          caption.textContent = data.text;
+          bubble.appendChild(caption);
+        }
       } else {
         bubble.textContent = data.text;
       }
@@ -1483,6 +1489,12 @@
       img.alt = "";
       img.decoding = "async";
       item.appendChild(img);
+      if (typeof data.text === "string" && data.text.trim()) {
+        const msg = document.createElement("span");
+        msg.className = "chat-text photo-caption";
+        msg.textContent = data.text;
+        item.appendChild(msg);
+      }
     } else {
       const msg = document.createElement("span");
       msg.className = "chat-text";
@@ -1516,6 +1528,7 @@
         type: "photo",
         ...base,
         url: urls.length ? urls[(hashString(base.name || base.username || "photo") + 1) % urls.length] : fallbackPhotoUrl(),
+        text: "사진 캡션 테스트입니다.",
       };
     }
     return { type: "text", ...base, text: debug.text };

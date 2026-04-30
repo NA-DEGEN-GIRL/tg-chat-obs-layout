@@ -1052,6 +1052,7 @@ def on_text(message):
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
+    caption = str(getattr(message, "caption", None) or "").strip()
     text = message.text
     if should_skip_overlay_duplicate(profile, "text", text):
         print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
@@ -1111,13 +1112,14 @@ def on_photo(message):
         return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     url = f"/photos/{file_unique_id}.jpg"
-    print(f"{name}: [photo] {url}", flush=True)
+    print(f"{name}: [photo] {url}" + (f" {caption}" if caption else ""), flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
             broadcast({
                 "type": "photo",
                 "name": name,
                 "url": url,
+                "text": caption,
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],

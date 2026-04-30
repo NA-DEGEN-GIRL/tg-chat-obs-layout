@@ -659,6 +659,11 @@ body::before {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
+.chat-line.photo .photo-caption {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .avatar {
   position: absolute;
   width: 104px;
@@ -735,6 +740,14 @@ body::before {
   border-radius: 10px;
   object-fit: contain;
   box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+
+.avatar .bubble.photo .photo-caption {
+  display: block;
+  max-width: calc(170px * var(--bubble-ui-scale, 1));
+  margin-top: calc(6px * var(--bubble-ui-scale, 1));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .avatar .identity-card {

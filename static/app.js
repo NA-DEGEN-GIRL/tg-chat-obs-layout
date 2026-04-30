@@ -189,6 +189,12 @@
       img.alt = "";
       img.decoding = "async";
       el.appendChild(img);
+      if (typeof data.text === "string" && data.text.trim()) {
+        const text = document.createElement("span");
+        text.className = "text photo-caption";
+        text.textContent = data.text;
+        el.appendChild(text);
+      }
     } else {
       if (typeof data.text !== "string") return;
       const text = document.createElement("span");
