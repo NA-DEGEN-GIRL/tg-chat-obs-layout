@@ -769,6 +769,7 @@ body::before {
   opacity: 0;
   transform: translateY(10px);
   transition: opacity 0.6s ease, transform 0.6s ease;
+  overflow: hidden;
 }
 
 .chat-line.incall {
@@ -798,22 +799,37 @@ body::before {
 
 .chat-line.delete-out {
   max-height: 0 !important;
-  margin-top: -8px;
-  margin-bottom: -8px;
+  margin-top: -6px;
+  margin-bottom: -6px;
   padding-top: 0;
   padding-bottom: 0;
   opacity: 0 !important;
-  transform: translateX(18px) scale(0.96);
-  filter: blur(2px);
+  transform: translateY(-8px) scale(0.985);
+  filter: blur(3px) saturate(0.75);
   overflow: hidden;
   pointer-events: none;
+  animation: chat-line-dissolve 560ms ease forwards;
   transition:
-    opacity 0.34s ease,
-    transform 0.34s ease,
-    filter 0.34s ease,
-    max-height 0.52s ease,
-    margin 0.52s ease,
-    padding 0.52s ease;
+    opacity 0.42s ease,
+    transform 0.42s ease,
+    filter 0.42s ease,
+    max-height 0.6s ease,
+    margin 0.6s ease,
+    padding 0.6s ease;
+}
+
+.chat-line.delete-out::after {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 14% 30%, rgba(255,255,255,0.34) 0 1px, transparent 2px),
+    radial-gradient(circle at 36% 68%, rgba(255,226,105,0.24) 0 1px, transparent 2px),
+    radial-gradient(circle at 58% 40%, rgba(255,255,255,0.22) 0 1px, transparent 2px),
+    radial-gradient(circle at 82% 72%, rgba(255,226,105,0.18) 0 1px, transparent 2px);
+  opacity: 0;
+  animation: chat-dust-fade 560ms ease forwards;
 }
 
 .chat-header {
@@ -823,6 +839,17 @@ body::before {
   max-width: 100%;
   min-width: 0;
   vertical-align: baseline;
+}
+
+@keyframes chat-line-dissolve {
+  0% { clip-path: inset(0 0 0 0 round 14px); }
+  100% { clip-path: inset(0 0 100% 0 round 14px); }
+}
+
+@keyframes chat-dust-fade {
+  0% { opacity: 0; transform: translateY(0) scale(0.98); }
+  28% { opacity: 0.68; }
+  100% { opacity: 0; transform: translateY(-18px) scale(1.06); }
 }
 
 .chat-name {

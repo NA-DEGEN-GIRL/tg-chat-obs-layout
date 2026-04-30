@@ -323,6 +323,24 @@
     }, 180);
   }
 
+  function moveMentionSelection(delta) {
+    const items = Array.from(mentionMenu.querySelectorAll(".mention-item:not(:disabled)"));
+    if (!items.length) return false;
+    state.mentionSelected = (state.mentionSelected + delta + items.length) % items.length;
+    for (const item of mentionMenu.querySelectorAll(".mention-item")) {
+      item.classList.remove("active");
+    }
+    items[state.mentionSelected].classList.add("active");
+    return true;
+  }
+
+  function chooseSelectedMention() {
+    const items = Array.from(mentionMenu.querySelectorAll(".mention-item:not(:disabled)"));
+    if (!items.length) return false;
+    items[Math.min(state.mentionSelected, items.length - 1)].dispatchEvent(new MouseEvent("mousedown"));
+    return true;
+  }
+
   function storageGet(key, fallback) {
     try {
       const value = localStorage.getItem(key);
@@ -825,12 +843,18 @@
     });
     chatSendText?.addEventListener("keydown", (ev) => {
       if (!mentionMenu.hidden && ev.key === "Enter") {
-        const item = mentionMenu.querySelector(".mention-item:not(:disabled)");
-        if (item) {
+        if (chooseSelectedMention()) {
           ev.preventDefault();
-          item.dispatchEvent(new MouseEvent("mousedown"));
           return;
         }
+      }
+      if (!mentionMenu.hidden && ev.key === "ArrowDown" && moveMentionSelection(1)) {
+        ev.preventDefault();
+        return;
+      }
+      if (!mentionMenu.hidden && ev.key === "ArrowUp" && moveMentionSelection(-1)) {
+        ev.preventDefault();
+        return;
       }
       if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
@@ -884,6 +908,19 @@
       hideChatMessageMenu();
       hideMentionMenu();
     });
+  }
+
+  function isEditableTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest("input, textarea, select, button, [contenteditable='true'], #chat-panel");
+  }
+
+  function blurEditableFocus() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable='true']")) {
+      active.blur();
+    }
+    hideMentionMenu();
   }
 
   function toastMessageParts(template, name, fallback) {
@@ -2128,9 +2165,9 @@
     scene.add(tuftGroup);
 
     const stars = new THREE.Group();
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 150; i++) {
       const star = new THREE.Mesh(
-        new THREE.SphereGeometry(0.012 + Math.random() * 0.012, 8, 6),
+        new THREE.SphereGeometry(0.009 + Math.random() * 0.014, 8, 6),
         new THREE.MeshBasicMaterial({
           color: 0xe8f1ff,
           transparent: true,
@@ -2140,8 +2177,8 @@
         })
       );
       const a = Math.random() * Math.PI * 2;
-      const r = 24 + Math.random() * 9;
-      star.position.set(Math.cos(a) * r, 5.8 + Math.random() * 7.0, Math.sin(a) * r);
+      const r = 20 + Math.random() * 18;
+      star.position.set(Math.cos(a) * r, 4.8 + Math.random() * 10.0, Math.sin(a) * r);
       star.renderOrder = -10;
       stars.add(star);
     }
@@ -2158,10 +2195,13 @@
       const yaw = state.view.yaw || 0;
       const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      const side = (Math.random() - 0.5) * 18;
+      const depth = -16 - Math.random() * 11;
       line.position.copy(state.view.target)
-        .addScaledVector(forward, -18)
-        .addScaledVector(right, 3.5 + Math.random() * 2.2);
-      line.position.y = 7.2 + Math.random() * 2.5;
+        .addScaledVector(forward, depth)
+        .addScaledVector(right, side);
+      line.position.y = 6.4 + Math.random() * 4.6;
+      line.rotation.z = -0.08 + (Math.random() - 0.5) * 0.22;
       line.userData.life = 1;
       line.renderOrder = -9;
       meteors.push(line);
@@ -2217,6 +2257,10 @@
     state.cameraUpdate = updateCamera;
 
     window.addEventListener("keydown", (ev) => {
+      if (isEditableTarget(ev.target)) {
+        state.keys.clear();
+        return;
+      }
       const key = ev.key.toLowerCase();
       if (ev.shiftKey && ["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
         const step = ev.ctrlKey ? 3 : 18;
@@ -2238,6 +2282,10 @@
     });
 
     window.addEventListener("keyup", (ev) => {
+      if (isEditableTarget(ev.target)) {
+        state.keys.delete(ev.key.toLowerCase());
+        return;
+      }
       const key = ev.key.toLowerCase();
       if (key === "q" || key === "e" || key === "a" || key === "d" || key === "w" || key === "s") {
         state.keys.delete(key);
@@ -2246,6 +2294,7 @@
     });
 
     window.addEventListener("wheel", (ev) => {
+      if (isEditableTarget(ev.target)) return;
       const pitch = Math.atan2(state.view.height - state.view.target.y, state.view.distance);
       state.view.distance = Math.min(13, Math.max(4.8, state.view.distance + ev.deltaY * 0.004));
       state.view.height = clamp(state.view.target.y + Math.tan(pitch) * state.view.distance, 1.4, 8);
@@ -2279,6 +2328,19 @@
       state.view.target.addScaledVector(forward, -dy * scale);
       updateCamera();
       saveCameraSettings();
+    });
+
+    window.addEventListener("mousedown", (ev) => {
+      if (ev.button === 1 && !isEditableTarget(ev.target)) {
+        blurEditableFocus();
+      }
+    });
+
+    window.addEventListener("auxclick", (ev) => {
+      if (ev.button === 1 && !isEditableTarget(ev.target)) {
+        blurEditableFocus();
+        ev.preventDefault();
+      }
     });
 
     function resize() {
@@ -2315,12 +2377,12 @@
       stars.children.forEach((s, i) => {
         s.material.opacity = 0.48 + Math.sin(t * 0.0015 + i) * 0.22;
       });
-      if (Math.random() < 0.004) spawnMeteor();
+      if (Math.random() < 0.011) spawnMeteor();
       for (let i = meteors.length - 1; i >= 0; i--) {
         const m = meteors[i];
-        m.position.x -= 0.045;
-        m.position.y -= 0.012;
-        m.userData.life -= 0.012;
+        m.position.x -= 0.052;
+        m.position.y -= 0.016;
+        m.userData.life -= 0.014;
         m.material.opacity = Math.max(0, m.userData.life);
         if (m.userData.life <= 0) {
           scene.remove(m);

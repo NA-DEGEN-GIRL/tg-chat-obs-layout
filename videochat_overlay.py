@@ -22,6 +22,9 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static_videochat"
 AVATARS_DIR = BASE_DIR / "data" / "telethon" / "profile_photos"
+PHOTOS_DIR = BASE_DIR / "data" / "photos"
+STICKERS_DIR = BASE_DIR / "data" / "stickers"
+ANIMATIONS_DIR = BASE_DIR / "data" / "animations"
 LEVELS_FILE = BASE_DIR / "data" / "videochat_levels.json"
 
 WEB_HOST = os.getenv("VIDEOCHAT_WEB_HOST", "127.0.0.1")
@@ -527,8 +530,14 @@ _INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
 )
 
 app = FastAPI(lifespan=lifespan)
+PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+STICKERS_DIR.mkdir(parents=True, exist_ok=True)
+ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/avatars", StaticFiles(directory=str(AVATARS_DIR)), name="avatars")
+app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
+app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
+app.mount("/animations", StaticFiles(directory=str(ANIMATIONS_DIR)), name="animations")
 
 
 @app.get("/", response_class=HTMLResponse)
