@@ -770,6 +770,7 @@ body::before {
   transform: translateY(10px);
   transition: opacity 0.6s ease, transform 0.6s ease;
   overflow: hidden;
+  pointer-events: auto;
 }
 
 .chat-line.incall {

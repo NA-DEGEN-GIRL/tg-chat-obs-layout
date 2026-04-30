@@ -246,10 +246,18 @@
   function showChatMessageMenu(ev, data, el) {
     if (!chatMessageMenu || !data?.message?.chat_id || !data?.message?.message_id) return;
     ev.preventDefault();
+    ev.stopPropagation();
     state.menuTarget = { data, el };
     chatMessageMenu.hidden = false;
     chatMessageMenu.style.left = `${Math.min(ev.clientX, window.innerWidth - 112)}px`;
     chatMessageMenu.style.top = `${Math.min(ev.clientY, window.innerHeight - 76)}px`;
+  }
+
+  function showChatMessageMenuFromEvent(ev) {
+    const line = ev.target instanceof Element ? ev.target.closest(".chat-line[data-message-key]") : null;
+    if (!line || !line._chatData) return false;
+    showChatMessageMenu(ev, line._chatData, line);
+    return true;
   }
 
   function hideMentionMenu() {
@@ -908,6 +916,14 @@
       hideChatMessageMenu();
       hideMentionMenu();
     });
+    chatLog?.addEventListener("contextmenu", (ev) => {
+      showChatMessageMenuFromEvent(ev);
+    }, true);
+    chatLog?.addEventListener("mousedown", (ev) => {
+      if (ev.button === 2 && showChatMessageMenuFromEvent(ev)) {
+        ev.preventDefault();
+      }
+    }, true);
   }
 
   function isEditableTarget(target) {
@@ -1888,6 +1904,7 @@
     item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
     if (data.message?.chat_id && data.message?.message_id) {
       item.dataset.messageKey = `${data.message.chat_id}:${data.message.message_id}`;
+      item._chatData = data;
       item.addEventListener("contextmenu", (ev) => showChatMessageMenu(ev, data, item));
     }
     item.style.setProperty("--speaker-color", speechColor(data, participantKey));
@@ -2165,7 +2182,7 @@
     scene.add(tuftGroup);
 
     const stars = new THREE.Group();
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 230; i++) {
       const star = new THREE.Mesh(
         new THREE.SphereGeometry(0.009 + Math.random() * 0.014, 8, 6),
         new THREE.MeshBasicMaterial({
@@ -2177,8 +2194,8 @@
         })
       );
       const a = Math.random() * Math.PI * 2;
-      const r = 20 + Math.random() * 18;
-      star.position.set(Math.cos(a) * r, 4.8 + Math.random() * 10.0, Math.sin(a) * r);
+      const r = 18 + Math.random() * 24;
+      star.position.set(Math.cos(a) * r, 4.6 + Math.random() * 13.0, Math.sin(a) * r);
       star.renderOrder = -10;
       stars.add(star);
     }
@@ -2195,13 +2212,23 @@
       const yaw = state.view.yaw || 0;
       const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
       const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-      const side = (Math.random() - 0.5) * 18;
-      const depth = -16 - Math.random() * 11;
-      line.position.copy(state.view.target)
-        .addScaledVector(forward, depth)
-        .addScaledVector(right, side);
-      line.position.y = 6.4 + Math.random() * 4.6;
-      line.rotation.z = -0.08 + (Math.random() - 0.5) * 0.22;
+      if (Math.random() < 0.55) {
+        const side = (Math.random() - 0.5) * 24;
+        const depth = -14 - Math.random() * 16;
+        line.position.copy(state.view.target)
+          .addScaledVector(forward, depth)
+          .addScaledVector(right, side);
+      } else {
+        const a = Math.random() * Math.PI * 2;
+        const r = 16 + Math.random() * 18;
+        line.position.set(
+          state.view.target.x + Math.cos(a) * r,
+          0,
+          state.view.target.z + Math.sin(a) * r
+        );
+      }
+      line.position.y = 5.4 + Math.random() * 8.4;
+      line.rotation.z = -0.12 + (Math.random() - 0.5) * 0.32;
       line.userData.life = 1;
       line.renderOrder = -9;
       meteors.push(line);
@@ -2304,6 +2331,10 @@
 
     window.addEventListener("mousedown", (ev) => {
       if (ev.button !== 1) return;
+      if (isEditableTarget(ev.target)) {
+        blurEditableFocus();
+        return;
+      }
       ev.preventDefault();
       state.view.dragging = true;
       state.view.dragLast = { x: ev.clientX, y: ev.clientY };
@@ -2330,16 +2361,10 @@
       saveCameraSettings();
     });
 
-    window.addEventListener("mousedown", (ev) => {
-      if (ev.button === 1 && !isEditableTarget(ev.target)) {
-        blurEditableFocus();
-      }
-    });
-
     window.addEventListener("auxclick", (ev) => {
-      if (ev.button === 1 && !isEditableTarget(ev.target)) {
+      if (ev.button === 1) {
         blurEditableFocus();
-        ev.preventDefault();
+        if (!isEditableTarget(ev.target)) ev.preventDefault();
       }
     });
 
