@@ -1,9 +1,9 @@
 import asyncio
+import colorsys
 import getpass
 import html
 import json
 import os
-import random
 import sys
 import threading
 import time
@@ -80,10 +80,12 @@ MAX_PHOTOS = 10
 
 # 어두운 반투명 배경에서 가독성 좋은 색만 추려낸 팔레트
 USER_COLOR_PALETTE = [
-    "#FF7676", "#FF9F5C", "#FFD166", "#C8E66B", "#72D978",
-    "#5EE3C1", "#5EBFE3", "#7D9EFF", "#A88CFF", "#DF8CFF",
-    "#FF8CD1", "#FFA3B8", "#F08A5D", "#E0C074", "#B5D46C",
-    "#6FDB9C", "#6FDBD4", "#6FA7DB", "#9B8FD4", "#D49BC9",
+    "#FF5C7A", "#35D9A8", "#6AA8FF", "#FFD166", "#C77DFF",
+    "#FF8A3D", "#5DE2E7", "#B8E986", "#FF6FD8", "#A0B5FF",
+    "#F4A261", "#4ADE80", "#F472B6", "#22D3EE", "#FACC15",
+    "#A78BFA", "#FB7185", "#2DD4BF", "#60A5FA", "#C4E538",
+    "#FB923C", "#E879F9", "#34D399", "#93C5FD", "#FDE68A",
+    "#D946EF", "#F87171", "#10B981", "#38BDF8", "#EAB308",
 ]
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -148,11 +150,85 @@ _levels_lock = threading.Lock()
 _level_store: dict[str, dict[str, Any]] = {}
 
 
+def _hex_rgb(color: str) -> tuple[int, int, int] | None:
+    value = str(color or "").strip()
+    if not value.startswith("#") or len(value) != 7:
+        return None
+    try:
+        return (
+            int(value[1:3], 16),
+            int(value[3:5], 16),
+            int(value[5:7], 16),
+        )
+    except ValueError:
+        return None
+
+
+def _rgb_distance(a: str, b: str) -> float:
+    ar = _hex_rgb(a)
+    br = _hex_rgb(b)
+    if ar is None or br is None:
+        return 999.0 if a != b else 0.0
+    return sum((x - y) ** 2 for x, y in zip(ar, br)) ** 0.5
+
+
+def _generated_user_color(index: int) -> str:
+    hue = ((index * 137.508) + 23) % 360
+    saturation = 0.72 if index % 2 else 0.84
+    lightness = 0.66 if index % 3 else 0.72
+    r, g, b = colorsys.hls_to_rgb(hue / 360, lightness, saturation)
+    return f"#{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
+
+
+def _stable_hash(value: str) -> int:
+    h = 2166136261
+    for ch in str(value):
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def _next_user_color(key: str, used: set[str]) -> str:
+    for color in USER_COLOR_PALETTE:
+        if color not in used and all(_rgb_distance(color, other) >= 72 for other in used):
+            return color
+    for color in USER_COLOR_PALETTE:
+        if color not in used:
+            return color
+
+    seed = _stable_hash(key)
+    for i in range(len(used), len(used) + 720):
+        color = _generated_user_color(i + seed % 37)
+        if color not in used and all(_rgb_distance(color, other) >= 48 for other in used):
+            return color
+    i = len(used)
+    while True:
+        color = _generated_user_color(i + seed)
+        if color not in used:
+            return color
+        i += 1
+
+
+def normalize_user_colors() -> bool:
+    used: set[str] = set()
+    changed = False
+    for key in sorted(_user_colors, key=lambda x: (not x.lstrip("-").isdigit(), x)):
+        color = str(_user_colors.get(key) or "").strip()
+        if not color or color in used:
+            color = _next_user_color(key, used)
+            _user_colors[key] = color
+            changed = True
+        used.add(color)
+    return changed
+
+
 def load_user_colors() -> None:
     global _user_colors
     try:
         if COLORS_FILE.exists():
             _user_colors = json.loads(COLORS_FILE.read_text(encoding="utf-8"))
+            if normalize_user_colors():
+                save_user_colors()
     except Exception as e:
         print(f"[WARN] user_colors.json 로드 실패: {e}", flush=True)
         _user_colors = {}
@@ -173,7 +249,7 @@ def color_for(user_id: int) -> str:
     key = str(user_id)
     with _colors_lock:
         if key not in _user_colors:
-            _user_colors[key] = random.choice(USER_COLOR_PALETTE)
+            _user_colors[key] = _next_user_color(key, set(_user_colors.values()))
             save_user_colors()
         return _user_colors[key]
 
