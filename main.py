@@ -158,6 +158,7 @@ bot_display_name: str = "Bot"
 stt_user_client = None
 telegram_user_sender_id: str = ""
 telegram_delete_listener_registered = False
+telegram_message_listener_registered = False
 
 # 활성 댓글창 (한 번에 하나만). (chat_id, message_thread_id)
 active_thread: tuple[int, int] | None = None
@@ -171,6 +172,9 @@ _level_store: dict[str, dict[str, Any]] = {}
 _send_dedupe_lock = threading.Lock()
 _send_dedupe: dict[tuple[str, str, str], dict[str, float | int]] = {}
 SEND_DEDUPE_TTL_SEC = 8.0
+_seen_message_lock = threading.Lock()
+_seen_message_ids: dict[tuple[str, int], float] = {}
+SEEN_MESSAGE_TTL_SEC = 300.0
 
 
 def _hex_rgb(color: str) -> tuple[int, int, int] | None:
@@ -559,6 +563,33 @@ def _is_overlay_source(message) -> bool:
     return _is_main_chat(message) or _is_level_chat(message) or _matches_active_thread(message)
 
 
+def mark_message_seen(chat_id, message_id) -> bool:
+    if chat_id is None or message_id is None:
+        return False
+    key = (str(chat_id), int(message_id))
+    now = time.monotonic()
+    with _seen_message_lock:
+        expired = [k for k, ts in _seen_message_ids.items() if now - ts > SEEN_MESSAGE_TTL_SEC]
+        for k in expired:
+            _seen_message_ids.pop(k, None)
+        if key in _seen_message_ids:
+            return True
+        _seen_message_ids[key] = now
+        return False
+
+
+def mark_message_seen_from_message(message) -> bool:
+    return mark_message_seen(
+        getattr(getattr(message, "chat", None), "id", None),
+        getattr(message, "message_id", None),
+    )
+
+
+def mark_message_seen_from_payload(payload: dict) -> bool:
+    message = payload.get("message") or {}
+    return mark_message_seen(message.get("chat_id"), message.get("message_id"))
+
+
 def _clear_thread_tts_destinations() -> None:
     """thread 출력 목적지 제거. 메인 목적지는 유지."""
     tts_destinations[:] = [d for d in tts_destinations if d.get("thread_id") is None]
@@ -606,6 +637,8 @@ def should_skip_overlay_duplicate(profile: dict, kind: str, marker: str) -> bool
 def emit_text_overlay(message, text: str | None = None) -> None:
     if main_loop is None:
         return
+    if mark_message_seen_from_message(message):
+        return
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
@@ -635,6 +668,174 @@ def reply_to_with_overlay(message, text: str):
     sent = bot.reply_to(message, text)
     emit_text_overlay(sent, text)
     return sent
+
+
+def telethon_display_name(sender) -> str:
+    if sender is None:
+        return "Unknown"
+    first = getattr(sender, "first_name", None) or ""
+    last = getattr(sender, "last_name", None) or ""
+    name = f"{first} {last}".strip()
+    if name:
+        return name
+    return getattr(sender, "title", None) or getattr(sender, "username", None) or "Unknown"
+
+
+def telethon_profile(sender) -> dict:
+    if sender is None:
+        return {"name": "Unknown", "speaker_id": "", "username": ""}
+    username = (getattr(sender, "username", None) or "").strip()
+    sender_id = str(getattr(sender, "id", "") or "")
+    if (
+        (bot_user_id is not None and sender_id == str(bot_user_id))
+        or (username and username.lower() in VIDEOCHAT_BOT_NAMES)
+    ):
+        return host_speaker_payload()
+    return {
+        "name": telethon_display_name(sender),
+        "speaker_id": sender_id,
+        "username": username,
+    }
+
+
+def telethon_reply_summary(reply) -> dict | None:
+    if reply is None:
+        return None
+    sender = getattr(reply, "sender", None)
+    profile = telethon_profile(sender)
+    text = str(getattr(reply, "message", None) or getattr(reply, "text", None) or "").strip()
+    if not text:
+        if getattr(reply, "photo", None):
+            text = "사진"
+        elif getattr(reply, "sticker", None):
+            text = "스티커"
+        elif getattr(reply, "gif", None) or getattr(reply, "document", None):
+            text = "GIF/파일"
+        else:
+            text = "메시지"
+    return {
+        "name": profile.get("name") or "Unknown",
+        "text": text[:160],
+        "message": {
+            "chat_id": str(getattr(reply, "chat_id", "") or ""),
+            "message_id": getattr(reply, "id", None),
+            "thread_id": getattr(reply, "reply_to_msg_id", None),
+        },
+    }
+
+
+def is_external_telethon_bot(sender) -> bool:
+    if sender is None or not bool(getattr(sender, "bot", False)):
+        return False
+    sender_id = str(getattr(sender, "id", "") or "")
+    if bot_user_id is not None and sender_id == str(bot_user_id):
+        return False
+    return True
+
+
+async def download_telethon_photo(event, message) -> str:
+    chat_id = str(getattr(event, "chat_id", "") or "")
+    message_id = str(getattr(message, "id", "") or "")
+    if not chat_id or not message_id:
+        return ""
+    digest = hashlib.sha256(f"telethon-photo:{chat_id}:{message_id}".encode("utf-8")).hexdigest()[:24]
+    PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    for existing in PHOTOS_DIR.glob(f"telethon_{digest}.*"):
+        if existing.is_file():
+            return f"/photos/{existing.name}"
+    try:
+        saved = await event.client.download_media(message, file=str(PHOTOS_DIR / f"telethon_{digest}"))
+    except Exception as exc:
+        print(f"[WARN] telethon photo download failed: {exc}", flush=True)
+        return ""
+    if not saved:
+        return ""
+    path = Path(saved)
+    cleanup_photos()
+    return f"/photos/{path.name}"
+
+
+async def telethon_message_payload(event, sender=None) -> dict | None:
+    msg = getattr(event, "message", None)
+    if msg is None:
+        return None
+    chat_id = getattr(event, "chat_id", None)
+    message_id = getattr(msg, "id", None)
+    text = str(getattr(msg, "message", None) or getattr(msg, "text", None) or "").strip()
+    has_photo = bool(getattr(msg, "photo", None))
+    if not text and not has_photo:
+        return None
+    if sender is None:
+        sender = await event.get_sender()
+    profile = enrich_profile_level(telethon_profile(sender))
+    identity_id = int(profile["speaker_id"]) if str(profile["speaker_id"]).lstrip("-").isdigit() else 0
+    reply = None
+    try:
+        reply = await msg.get_reply_message()
+    except Exception:
+        reply = None
+    common = {
+        "name": profile["name"],
+        "message": {
+            "chat_id": str(chat_id or ""),
+            "message_id": message_id,
+            "thread_id": getattr(msg, "reply_to_msg_id", None),
+        },
+        "reply": telethon_reply_summary(reply),
+        "color": color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0],
+        "speaker_id": profile["speaker_id"],
+        "username": profile["username"],
+        "is_host": profile["is_host"],
+        "level": profile["level"],
+        "level_label": profile["level_label"],
+    }
+    if has_photo:
+        url = await download_telethon_photo(event, msg)
+        if url:
+            return {
+                "type": "photo",
+                "url": url,
+                "text": text,
+                **common,
+            }
+        if not text:
+            return None
+    return {
+        "type": "text",
+        "text": text,
+        **common,
+    }
+
+
+def telethon_thread_id(message) -> int | None:
+    reply_to = getattr(message, "reply_to", None)
+    if reply_to is None:
+        return None
+    for attr in ("reply_to_top_id", "reply_to_msg_id"):
+        value = getattr(reply_to, attr, None)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def telethon_overlay_source(event) -> bool:
+    chat_id = getattr(event, "chat_id", None)
+    try:
+        chat_id_int = int(chat_id)
+    except (TypeError, ValueError):
+        return False
+    if chat_id_int == CHAT_ID:
+        return True
+    if VIDEOCHAT_LEVEL_CHAT_ID != 0 and chat_id_int == VIDEOCHAT_LEVEL_CHAT_ID:
+        return True
+    at = active_thread
+    if at is None or chat_id_int != at[0]:
+        return False
+    return telethon_thread_id(getattr(event, "message", None)) == at[1]
 
 
 @bot.message_handler(commands=["stream_on"])
@@ -702,7 +903,7 @@ def stt_telegram_message(text: str) -> tuple[str, str | None]:
 
 
 async def ensure_telegram_user_client():
-    global stt_user_client, telegram_user_sender_id, telegram_delete_listener_registered
+    global stt_user_client, telegram_user_sender_id, telegram_delete_listener_registered, telegram_message_listener_registered
     if stt_user_client is not None and stt_user_client.is_connected():
         return stt_user_client
     if not TD_API_ID or not TD_API_HASH:
@@ -756,6 +957,33 @@ async def ensure_telegram_user_client():
             print("[INFO] Telegram delete listener enabled", flush=True)
         except Exception as exc:
             print(f"[WARN] Telegram delete listener setup failed: {exc}", flush=True)
+    if not telegram_message_listener_registered:
+        try:
+            from telethon import events
+
+            @stt_user_client.on(events.NewMessage)
+            async def _on_telegram_user_message(event):
+                if main_loop is None:
+                    return
+                if not telethon_overlay_source(event):
+                    return
+                sender = await event.get_sender()
+                if not is_external_telethon_bot(sender):
+                    return
+                message = getattr(event, "message", None)
+                chat_id = getattr(event, "chat_id", None)
+                message_id = getattr(message, "id", None)
+                payload = await telethon_message_payload(event, sender)
+                if payload is None:
+                    return
+                if mark_message_seen(chat_id, message_id):
+                    return
+                await broadcast(payload)
+
+            telegram_message_listener_registered = True
+            print("[INFO] Telegram message listener enabled", flush=True)
+        except Exception as exc:
+            print(f"[WARN] Telegram message listener setup failed: {exc}", flush=True)
     return stt_user_client
 
 
@@ -1235,6 +1463,8 @@ def cmd_here_off(message):
     content_types=["text"],
 )
 def on_text(message):
+    if mark_message_seen_from_message(message):
+        return
     profile = enrich_profile_level(message_profile(message))
     name = profile["name"]
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
@@ -1269,6 +1499,8 @@ def on_text(message):
 )
 def on_photo(message):
     if not message.photo:
+        return
+    if mark_message_seen_from_message(message):
         return
     chosen = max(
         message.photo,
@@ -1368,6 +1600,8 @@ def on_sticker(message):
     sticker = getattr(message, "sticker", None)
     if sticker is None:
         return
+    if mark_message_seen_from_message(message):
+        return
     try:
         downloaded = download_sticker_display(sticker)
         cleanup_stickers()
@@ -1413,6 +1647,8 @@ def on_sticker(message):
 def on_animation(message):
     animation = getattr(message, "animation", None)
     if animation is None:
+        return
+    if mark_message_seen_from_message(message):
         return
     try:
         downloaded = download_animation_display(animation)

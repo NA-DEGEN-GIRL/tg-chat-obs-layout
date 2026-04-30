@@ -72,6 +72,8 @@ camera_state: dict = {
 }
 watcher_task: asyncio.Task | None = None
 level_store: dict[str, dict] = {}
+resolved_videochat_entity = None
+invite_flood_wait_until = 0.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -370,31 +372,51 @@ async def set_camera_state(payload: dict) -> dict | None:
 
 
 async def resolve_call(client, link: str):
-    from telethon.errors import UserAlreadyParticipantError
+    global invite_flood_wait_until, resolved_videochat_entity
+    from telethon.errors import FloodWaitError, UserAlreadyParticipantError
     from telethon.tl import functions
 
     invite_hash = link_to_invite_hash(link)
     if invite_hash:
-        print("[videochat] checking private invite link", flush=True)
-        invite = await client(functions.messages.CheckChatInviteRequest(invite_hash))
-        entity = getattr(invite, "chat", None)
-        if entity is None:
-            title = getattr(invite, "title", "(unknown)")
-            count = getattr(invite, "participants_count", None)
-            print(
-                f"[videochat] invite visible but account is not a member: "
-                f"title={title!r} participants={count}",
-                flush=True,
-            )
-            return None
-        try:
-            entity = await client.get_entity(entity)
-        except UserAlreadyParticipantError:
-            pass
+        if resolved_videochat_entity is not None:
+            entity = resolved_videochat_entity
+        else:
+            now = time.time()
+            if now < invite_flood_wait_until:
+                wait_left = int(invite_flood_wait_until - now)
+                print(f"[videochat] private invite check is rate-limited; retry in {wait_left}s", flush=True)
+                return None
+            print("[videochat] checking private invite link", flush=True)
+            try:
+                invite = await client(functions.messages.CheckChatInviteRequest(invite_hash))
+            except FloodWaitError as exc:
+                seconds = max(5, int(getattr(exc, "seconds", 60) or 60))
+                invite_flood_wait_until = time.time() + seconds
+                print(f"[videochat] private invite check rate-limited for {seconds}s", flush=True)
+                return None
+            entity = getattr(invite, "chat", None)
+            if entity is None:
+                title = getattr(invite, "title", "(unknown)")
+                count = getattr(invite, "participants_count", None)
+                print(
+                    f"[videochat] invite visible but account is not a member: "
+                    f"title={title!r} participants={count}",
+                    flush=True,
+                )
+                return None
+            try:
+                entity = await client.get_entity(entity)
+            except UserAlreadyParticipantError:
+                pass
+            resolved_videochat_entity = entity
     else:
-        username = link_to_username(link)
-        print(f"[videochat] resolving @{username}", flush=True)
-        entity = await client.get_entity(username)
+        if resolved_videochat_entity is not None:
+            entity = resolved_videochat_entity
+        else:
+            username = link_to_username(link)
+            print(f"[videochat] resolving @{username}", flush=True)
+            entity = await client.get_entity(username)
+            resolved_videochat_entity = entity
 
     full = await client(functions.channels.GetFullChannelRequest(entity))
     call = getattr(full.full_chat, "call", None)

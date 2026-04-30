@@ -437,10 +437,12 @@ body::before {
   gap: 8px;
   align-items: flex-end;
   justify-content: flex-start;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 42px 2px 8px;
   box-sizing: border-box;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 #chat-send-panel {
