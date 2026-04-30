@@ -21,6 +21,7 @@
     userSendEnabled = !!cfg.user_send_enabled;
     if (sendPanel && cfg.user_send_panel && userSendEnabled) {
       sendPanel.hidden = false;
+      document.body.classList.add("send-panel-visible");
     }
     if (sendText && typeof cfg.user_send_max_chars === "number") {
       sendText.maxLength = cfg.user_send_max_chars;

@@ -24,6 +24,11 @@ html, body {
   pointer-events: none;
 }
 
+body.send-panel-visible #chat {
+  bottom: 104px;
+  max-height: calc(100vh - 104px);
+}
+
 #send-panel {
   position: fixed;
   right: 16px;
