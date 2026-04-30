@@ -518,6 +518,10 @@
         ev.preventDefault();
         return;
       }
+      if (ev.key === "Tab" && chooseSelectedMention()) {
+        ev.preventDefault();
+        return;
+      }
     }
     if (ev.key === "Enter" && !ev.shiftKey) {
       ev.preventDefault();

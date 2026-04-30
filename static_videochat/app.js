@@ -856,6 +856,12 @@
           return;
         }
       }
+      if (!mentionMenu.hidden && ev.key === "Tab") {
+        if (chooseSelectedMention()) {
+          ev.preventDefault();
+          return;
+        }
+      }
       if (!mentionMenu.hidden && ev.key === "ArrowDown" && moveMentionSelection(1)) {
         ev.preventDefault();
         return;
