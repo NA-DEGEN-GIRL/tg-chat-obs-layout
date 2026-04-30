@@ -381,6 +381,33 @@ X/Twitter는 전체 웹앱이 iframe과 단순 프록시에서 잘 동작하지 
 - 프로필 사진/채팅 사진 캐시가 올라가지 않았는지
 - STT debug 로그를 공유하지 않았는지
 
+## 레벨 시스템
+
+레벨 시스템은 `VIDEOCHAT_LEVEL_SYSTEM_ENABLED=1`일 때 동작합니다. 기본 규칙은 단계식입니다.
+
+- `Lv. 0`: 아직 조건 미충족
+- `Lv. 1`: 커뮤니티 채팅에서 식별 가능한 메시지를 말함
+- `Lv. 2`: 채팅 조건과 비디오챗 접속 조건을 모두 만족함
+- `Lv. 99`: 방장 고정 레벨
+
+`Lv. 0`에서 비디오챗에 먼저 들어와도 비디오챗만으로는 바로 `Lv. 2`가 되지 않습니다. 이후 채팅 메시지를 보내면 `Lv. 1` 조건과 이미 관찰된 비디오챗 조건을 함께 만족하므로 `Lv. 1`, `Lv. 2` 안내가 순서대로 나갑니다.
+
+관리자 명령:
+
+- `/check_level` 또는 `/check_level @username`: 답글 대상이나 username의 레벨 확인
+- `/level_scan` 또는 `/level_scan 30`: 저장된 레벨 목록 확인
+- `/level_up 숫자` 또는 `/level_up @username 숫자`: 관리자가 레벨을 강제로 증감
+
+자동 레벨업 안내 문구의 사유는 `data/level_reasons.json`에 자동 생성됩니다. 공개 저장소에 예시로 `level_reasons.example.json`이 있으며, 별도 파일을 쓰려면 `.env`에 `LEVEL_REASONS_FILE=...`을 지정합니다. 자동 레벨업과 관리자 강제 변경 메시지는 각각 `LEVEL_UP_TEMPLATE`, `LEVEL_DOWN_TEMPLATE`, `FORCE_LEVEL_UP_TEMPLATE`, `FORCE_LEVEL_DOWN_TEMPLATE`로 바꿀 수 있습니다.
+
+## 웹 전송과 이펙트
+
+9292/9393 채팅 입력창은 텍스트, 사진, MP4/WEBM, 캐시된 스티커, 캐시된 커스텀 이모지 전송을 지원합니다. 스티커와 커스텀 이모지는 먼저 채팅방에서 한 번 수신되어 `data/emoji_cache.json`에 기록된 항목만 선택할 수 있습니다.
+
+`/fire`는 비디오챗에 캐릭터가 있는 사용자가 사용할 때 해당 캐릭터 위치에서 폭죽 이펙트를 발생시킵니다. 과부하를 막기 위해 `VIDEOCHAT_FIRE_USER_COOLDOWN_SEC`, `VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC`가 있으며, 9393 컨트롤 패널에서도 조절할 수 있습니다.
+
+컨트롤 브라우저에서 연 사진/영상 확대창과 내부 링크 브라우저는 WebSocket으로 OBS 브라우저 소스에도 동기화됩니다. OBS 쪽 화면을 직접 조작하기 어려울 때는 일반 Chrome에서 `http://127.0.0.1:9393/?control=1`을 열어 조작하는 방식을 권장합니다.
+
 ## 문제 해결
 
 ### 채팅이 안 보임

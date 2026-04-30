@@ -58,6 +58,51 @@
     }
   }
 
+  async function loadCustomEmoji(container, customEmojiId, fallbackText) {
+    const id = String(customEmojiId || "").trim();
+    if (!id) {
+      container.textContent = fallbackText || "✦";
+      return;
+    }
+    container.classList.add("custom-emoji-loading");
+    container.textContent = "";
+    try {
+      const meta = await fetch(`/api/custom_emoji/${encodeURIComponent(id)}/meta`).then((r) => {
+        if (!r.ok) throw new Error("custom emoji unavailable");
+        return r.json();
+      });
+      if (!meta?.url) throw new Error("custom emoji missing url");
+      container.replaceChildren();
+      container.classList.remove("custom-emoji-loading", "custom-emoji-failed");
+      if (meta.media_type === "tgs") {
+        container.classList.add("lottie-sticker");
+        loadTgsSticker(container, meta.url);
+        return;
+      }
+      const media = document.createElement(meta.media_type === "video" ? "video" : "img");
+      media.src = meta.url;
+      media.className = "chat-custom-emoji-media";
+      if (media.tagName === "VIDEO") {
+        media.autoplay = true;
+        media.loop = true;
+        media.muted = true;
+        media.playsInline = true;
+      } else {
+        media.alt = fallbackText || "";
+        media.decoding = "async";
+      }
+      media.addEventListener("error", () => {
+        container.classList.add("custom-emoji-failed");
+        container.textContent = fallbackText || "✦";
+      }, { once: true });
+      container.appendChild(media);
+    } catch (_) {
+      container.classList.remove("custom-emoji-loading");
+      container.classList.add("custom-emoji-failed");
+      container.textContent = fallbackText || "✦";
+    }
+  }
+
   function createMediaLightbox(id = "media-lightbox") {
     const box = ensureFloatingElement(id);
     let body = box.querySelector(".media-lightbox-body");
@@ -101,7 +146,7 @@
     return { box, body, open, close };
   }
 
-  function createLinkPreview(id = "link-preview") {
+  function createLinkPreview(id = "link-preview", options = {}) {
     const box = ensureFloatingElement(id);
     let toolbar = box.querySelector(".link-preview-toolbar");
     let title = box.querySelector(".link-preview-url");
@@ -137,7 +182,7 @@
       toolbar.append(title, openExternal, proxyButton, closeButton);
       frame = document.createElement("iframe");
       frame.referrerPolicy = "no-referrer";
-      frame.sandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox";
+      frame.sandbox = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
       status = document.createElement("div");
       status.className = "link-preview-status";
       status.hidden = true;
@@ -164,10 +209,50 @@
       }
     }
 
+    if (frame && !frame.dataset.linkPreviewLoadBound) {
+      frame.addEventListener("load", () => {
+        bindFrameScroll();
+        bindFrameMediaSync();
+        if (pendingScrollPayload) {
+          const payload = pendingScrollPayload;
+          pendingScrollPayload = null;
+          setTimeout(() => applyFrameScroll(payload), 80);
+          setTimeout(() => applyFrameScroll(payload), 360);
+        }
+      });
+      frame.dataset.linkPreviewLoadBound = "1";
+    }
+    if (!window.__tgChatCoreLinkPreviewBridgeBound) {
+      window.__tgChatCoreLinkPreviewBridgeBound = true;
+      window.addEventListener("message", (ev) => {
+        const data = ev.data || {};
+        if (data.source !== "tg-link-preview") return;
+        const previews = Array.from(document.querySelectorAll(".link-preview"));
+        for (const preview of previews) {
+          const api = preview.__tgChatCoreApi;
+          if (api && api._bridgeSource === ev.source) {
+            api.applyFrameBridgeMessage(data);
+            return;
+          }
+        }
+        const visible = previews.filter((preview) => !preview.hidden && preview.__tgChatCoreApi);
+        if (visible.length === 1) {
+          visible[0].__tgChatCoreApi.applyFrameBridgeMessage(data);
+        }
+      });
+    }
+
     const stateKey = `${id}.state.v1`;
     let currentUrl = "";
     let currentProxyUrl = "";
     let usingProxy = false;
+    let currentMode = "frame";
+    let scrollRaf = 0;
+    let scrollPollTimer = 0;
+    let lastScrollSignature = "";
+    let applyingRemoteScrollUntil = 0;
+    let pendingScrollPayload = null;
+    let mediaRaf = 0;
 
     function defaultState() {
       const width = Math.min(Math.round(window.innerWidth * 0.86), 1280);
@@ -194,6 +279,11 @@
       } catch (_) {}
     }
 
+    function emit(action, extra = {}) {
+      if (options.silent || !options.onControl) return;
+      options.onControl({ target: "link_preview", action, ...extra });
+    }
+
     function applyState(state) {
       const minWidth = 360;
       const minHeight = 240;
@@ -218,9 +308,18 @@
       return `/api/link/x-preview?url=${encodeURIComponent(url)}`;
     }
 
+    function readablePreviewUrlFor(url) {
+      return `/api/link/readable?url=${encodeURIComponent(url)}`;
+    }
+
     function isXHost(parsed) {
       const host = parsed.hostname.toLowerCase();
       return host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com");
+    }
+
+    function isKnownFrameBlockedHost(parsed) {
+      const host = parsed.hostname.toLowerCase();
+      return host === "defined.fi" || host === "www.defined.fi";
     }
 
     function setPreviewState(url, useProxy) {
@@ -233,6 +332,215 @@
       if (proxyButton) proxyButton.classList.toggle("active", usingProxy);
       if (proxyButton) proxyButton.textContent = usingProxy ? "raw" : "proxy";
       if (proxyButton) proxyButton.title = usingProxy ? "using local proxy" : "retry through local proxy";
+    }
+
+    function isSameRemotePreview(payload) {
+      if (!payload?.url || payload.url !== currentUrl) return false;
+      const mode = payload.mode || "frame";
+      if (mode !== currentMode) return false;
+      if (mode === "frame" && !!payload.useProxy !== !!usingProxy) return false;
+      return true;
+    }
+
+    function sameOriginScrollableMode() {
+      return currentMode === "x-preview" || currentMode === "readable" || (currentMode === "frame" && usingProxy);
+    }
+
+    function frameWindow() {
+      try {
+        return frame?.contentWindow || null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function frameScrollState() {
+      if (!currentUrl || !sameOriginScrollableMode()) return;
+      const win = frameWindow();
+      if (!win) return;
+      try {
+        const doc = win.document;
+        const scroller = doc?.scrollingElement || doc?.documentElement || doc?.body;
+        const scrollX = win.scrollX || scroller?.scrollLeft || doc?.documentElement?.scrollLeft || doc?.body?.scrollLeft || 0;
+        const scrollY = win.scrollY || scroller?.scrollTop || doc?.documentElement?.scrollTop || doc?.body?.scrollTop || 0;
+        return { scrollX, scrollY };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function emitFrameScroll(force = false) {
+      if (Date.now() < applyingRemoteScrollUntil) return;
+      const state = frameScrollState();
+      if (!state) return;
+      const signature = `${Math.round(state.scrollX)}:${Math.round(state.scrollY)}:${currentMode}:${usingProxy ? 1 : 0}:${currentUrl}`;
+      if (!force && signature === lastScrollSignature) return;
+      lastScrollSignature = signature;
+      try {
+        emit("scroll", {
+          url: currentUrl,
+          useProxy: usingProxy,
+          mode: currentMode,
+          scrollX: state.scrollX,
+          scrollY: state.scrollY,
+        });
+      } catch (_) {}
+    }
+
+    function startFrameScrollPoll() {
+      if (scrollPollTimer || !sameOriginScrollableMode()) return;
+      scrollPollTimer = setInterval(() => {
+        if (box.hidden || !sameOriginScrollableMode()) return;
+        emitFrameScroll(false);
+      }, 250);
+    }
+
+    function bindFrameScroll() {
+      if (!sameOriginScrollableMode()) return;
+      const win = frameWindow();
+      if (!win || win.__tgChatCoreScrollBound) return;
+      try {
+        win.__tgChatCoreScrollBound = true;
+        win.addEventListener("scroll", () => {
+          if (scrollRaf) return;
+          scrollRaf = requestAnimationFrame(() => {
+            scrollRaf = 0;
+            emitFrameScroll();
+          });
+        }, { passive: true });
+        const doc = win.document;
+        for (const target of [doc, doc?.documentElement, doc?.body]) {
+          target?.addEventListener?.("scroll", () => emitFrameScroll(), { passive: true });
+        }
+        startFrameScrollPoll();
+      } catch (_) {}
+    }
+
+    function applyFrameScroll(payload) {
+      if (!isSameRemotePreview(payload) || !sameOriginScrollableMode()) return;
+      const win = frameWindow();
+      if (!win) {
+        pendingScrollPayload = payload;
+        return;
+      }
+      try {
+        applyingRemoteScrollUntil = Date.now() + 360;
+        const x = Number(payload.scrollX) || 0;
+        const y = Number(payload.scrollY) || 0;
+        try {
+          win.postMessage({ type: "tg_link_preview_apply_scroll", scrollX: x, scrollY: y }, "*");
+        } catch (_) {}
+        win.scrollTo(x, y);
+        const doc = win.document;
+        const scroller = doc?.scrollingElement || doc?.documentElement || doc?.body;
+        if (scroller) {
+          scroller.scrollLeft = x;
+          scroller.scrollTop = y;
+        }
+      } catch (_) {
+        pendingScrollPayload = payload;
+      }
+    }
+
+    function applyFrameBridgeMessage(data) {
+      if (!data || !sameOriginScrollableMode()) return;
+      if (data.type === "tg_link_preview_scroll") {
+        if (Date.now() < applyingRemoteScrollUntil) return;
+        const scrollX = Number(data.scrollX) || 0;
+        const scrollY = Number(data.scrollY) || 0;
+        const signature = `${Math.round(scrollX)}:${Math.round(scrollY)}:${currentMode}:${usingProxy ? 1 : 0}:${currentUrl}`;
+        if (signature === lastScrollSignature) return;
+        lastScrollSignature = signature;
+        emit("scroll", { url: currentUrl, useProxy: usingProxy, mode: currentMode, scrollX, scrollY });
+        return;
+      }
+      if (data.type === "tg_link_preview_open" && data.href) {
+        try {
+          const next = new URL(String(data.href), currentUrl || location.href);
+          if (["http:", "https:"].includes(next.protocol)) open(next.href, true);
+        } catch (_) {}
+        return;
+      }
+      if (data.type === "tg_link_preview_ready") {
+        bindFrameScroll();
+        bindFrameMediaSync();
+        emitFrameScroll(true);
+      }
+    }
+
+    function frameVideos() {
+      if (!sameOriginScrollableMode()) return [];
+      const win = frameWindow();
+      if (!win?.document) return [];
+      try {
+        return Array.from(win.document.querySelectorAll("video"));
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function emitFrameMediaState(video, index) {
+      if (!currentUrl || !video || index < 0 || !sameOriginScrollableMode()) return;
+      if (mediaRaf) cancelAnimationFrame(mediaRaf);
+      mediaRaf = requestAnimationFrame(() => {
+        mediaRaf = 0;
+        emit("media_state", {
+          url: currentUrl,
+          useProxy: usingProxy,
+          mode: currentMode,
+          mediaIndex: index,
+          currentTime: Number(video.currentTime) || 0,
+          paused: !!video.paused,
+          muted: !!video.muted,
+          volume: Number(video.volume) || 0,
+        });
+      });
+    }
+
+    function bindFrameMediaSync() {
+      const videos = frameVideos();
+      videos.forEach((video, index) => {
+        if (video.__tgChatCoreMediaBound) return;
+        video.__tgChatCoreMediaBound = true;
+        const emit = () => emitFrameMediaState(video, index);
+        video.addEventListener("play", emit);
+        video.addEventListener("pause", emit);
+        video.addEventListener("seeking", emit);
+        video.addEventListener("seeked", emit);
+        video.addEventListener("volumechange", emit);
+        video.addEventListener("timeupdate", () => {
+          if (Math.floor((video.currentTime || 0) * 2) !== video.__tgChatCoreLastHalfSecond) {
+            video.__tgChatCoreLastHalfSecond = Math.floor((video.currentTime || 0) * 2);
+            emit();
+          }
+        });
+      });
+    }
+
+    function applyFrameMediaState(payload) {
+      if (!isSameRemotePreview(payload) || !sameOriginScrollableMode()) return;
+      const videos = frameVideos();
+      const video = videos[Number(payload.mediaIndex) || 0];
+      if (!video) return;
+      try {
+        const nextTime = Number(payload.currentTime);
+        if (Number.isFinite(nextTime) && Math.abs((video.currentTime || 0) - nextTime) > 0.65) {
+          video.currentTime = nextTime;
+        }
+        if (typeof payload.muted === "boolean") video.muted = payload.muted;
+        if (Number.isFinite(Number(payload.volume))) video.volume = Math.max(0, Math.min(1, Number(payload.volume)));
+        if (payload.paused) {
+          video.pause();
+        } else {
+          const playPromise = video.play();
+          if (playPromise?.catch) {
+            playPromise.catch(() => {
+              video.muted = true;
+              try { video.play(); } catch (_) {}
+            });
+          }
+        }
+      } catch (_) {}
     }
 
     function clearStatus() {
@@ -277,36 +585,57 @@
       status.hidden = false;
     }
 
-    function setFrameSource(url, useProxy = false) {
+    function setFrameSource(url, useProxy = false, sync = true) {
       setPreviewState(url, useProxy);
+      currentMode = "frame";
       clearStatus();
       const nextSrc = usingProxy ? currentProxyUrl : currentUrl;
-      frame.sandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox";
+      frame.sandbox = usingProxy
+        ? "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+        : "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox";
       frame.removeAttribute("src");
       requestAnimationFrame(() => {
         frame.src = nextSrc;
       });
+      if (sync) emit("open", { url, useProxy, mode: "frame", state: loadState() });
     }
 
-    function setXPreviewSource(url) {
+    function setXPreviewSource(url, sync = true) {
       setPreviewState(url, false);
+      currentMode = "x-preview";
       clearStatus();
-      frame.sandbox = "allow-scripts allow-popups allow-popups-to-escape-sandbox";
+      frame.sandbox = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox";
       frame.removeAttribute("src");
       requestAnimationFrame(() => {
         frame.src = xPreviewUrlFor(url);
       });
       if (proxyButton) proxyButton.textContent = "proxy";
       if (proxyButton) proxyButton.title = "try full-page local proxy";
+      if (sync) emit("open", { url, useProxy: false, mode: "x-preview", state: loadState() });
     }
 
-    function close() {
+    function setReadablePreviewSource(url, sync = true) {
+      setPreviewState(url, false);
+      currentMode = "readable";
+      clearStatus();
+      frame.sandbox = "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox";
+      frame.removeAttribute("src");
+      requestAnimationFrame(() => {
+        frame.src = readablePreviewUrlFor(url);
+      });
+      if (proxyButton) proxyButton.textContent = "proxy";
+      if (proxyButton) proxyButton.title = "try full-page local proxy";
+      if (sync) emit("open", { url, useProxy: false, mode: "readable", state: loadState() });
+    }
+
+    function close(sync = true) {
       box.hidden = true;
       if (frame) frame.removeAttribute("src");
       clearStatus();
+      if (sync) emit("close");
     }
 
-    function open(url) {
+    function open(url, sync = true) {
       let parsed;
       try {
         parsed = new URL(url);
@@ -319,7 +648,11 @@
       applyState(loadState());
       box.hidden = false;
       if (isXHost(parsed)) {
-        setXPreviewSource(parsed.href);
+        setXPreviewSource(parsed.href, sync);
+        return;
+      }
+      if (isKnownFrameBlockedHost(parsed)) {
+        setReadablePreviewSource(parsed.href, sync);
         return;
       }
       if (isXHost(parsed)) {
@@ -332,7 +665,48 @@
         ]);
         return;
       }
-      setFrameSource(parsed.href, false);
+      setFrameSource(parsed.href, true, sync);
+    }
+
+    function applyRemote(payload) {
+      if (!payload || payload.target !== "link_preview") return;
+      if (payload.action === "close") {
+        close(false);
+        return;
+      }
+      if (payload.action === "layout") {
+        if (payload.state && typeof payload.state === "object") {
+          applyState(payload.state);
+          saveState(payload.state);
+        }
+        return;
+      }
+      if (payload.action === "scroll") {
+        applyFrameScroll(payload);
+        return;
+      }
+      if (payload.action === "media_state") {
+        applyFrameMediaState(payload);
+        return;
+      }
+      if (payload.action !== "open" || !payload.url) return;
+      if (payload.state && typeof payload.state === "object") {
+        applyState(payload.state);
+        saveState(payload.state);
+      }
+      box.hidden = false;
+      title.textContent = payload.url;
+      openExternal.href = payload.url;
+      if (isSameRemotePreview(payload) && frame.getAttribute("src")) {
+        return;
+      }
+      if (payload.mode === "x-preview") {
+        setXPreviewSource(payload.url, false);
+      } else if (payload.mode === "readable") {
+        setReadablePreviewSource(payload.url, false);
+      } else {
+        setFrameSource(payload.url, !!payload.useProxy, false);
+      }
     }
 
     closeButton.onclick = close;
@@ -363,6 +737,9 @@
             height: start.height,
           });
           saveState(state);
+          if (currentUrl) {
+            try { emit("layout", { url: currentUrl, useProxy: usingProxy, mode: currentMode, state }); } catch (_) {}
+          }
         };
         const up = () => {
           toolbar.removeEventListener("pointermove", move);
@@ -392,6 +769,9 @@
             height: start.height + moveEv.clientY - start.y,
           });
           saveState(state);
+          if (currentUrl) {
+            try { emit("layout", { url: currentUrl, useProxy: usingProxy, mode: currentMode, state }); } catch (_) {}
+          }
         };
         const up = () => {
           resizeHandle.removeEventListener("pointermove", move);
@@ -415,7 +795,19 @@
       box.dataset.linkPreviewChromeBound = "1";
     }
 
-    return { box, open, close };
+    box.classList.add("link-preview");
+    const api = {
+      box,
+      open,
+      close,
+      applyRemote,
+      applyFrameBridgeMessage,
+      get _bridgeSource() {
+        return frameWindow();
+      },
+    };
+    box.__tgChatCoreApi = api;
+    return api;
   }
 
   const URL_RE = /(https?:\/\/[^\s<>"']+)/gi;
@@ -508,6 +900,13 @@
         ev.stopPropagation();
         linkPreview.open(href);
       });
+      container.append(el);
+      return;
+    } else if (type === "custom_emoji" && entity.custom_emoji_id) {
+      el = document.createElement("span");
+      el.className = "chat-custom-emoji";
+      el.title = segment;
+      loadCustomEmoji(el, entity.custom_emoji_id, segment);
       container.append(el);
       return;
     }
@@ -787,5 +1186,6 @@
     scrollToBottom,
     keepBottomAfterMediaLoad,
     showFloatingMenu,
+    loadCustomEmoji,
   };
 })();

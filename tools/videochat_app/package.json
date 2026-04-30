@@ -1,0 +1,38 @@
+{
+  "name": "tg-videochat-overlay-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron wrapper for the local 9393 videochat overlay.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "viewer": "electron . -- --viewer",
+    "control": "electron . -- --control",
+    "pack": "electron-builder --dir",
+    "build:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "local.tg-chat-obs-layout.videochat",
+    "productName": "TG 9393 Overlay App",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  }
+}

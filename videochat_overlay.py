@@ -20,6 +20,14 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import level_system as level_core
+
+if os.name == "nt":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        pass
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
@@ -50,6 +58,7 @@ VIDEOCHAT_DOWNLOAD_PHOTOS = os.getenv("VIDEOCHAT_DOWNLOAD_PHOTOS", "1").strip() 
 VIDEOCHAT_DEBUG_SPEECH = os.getenv("VIDEOCHAT_DEBUG_SPEECH", "0").strip() in {
     "1", "true", "True", "yes", "on"
 }
+VIDEOCHAT_LEVEL_SYSTEM_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_LEVEL_SYSTEM_ENABLED"), True)
 TD_API_ID = os.getenv("TD_API_ID", "").strip()
 TD_API_HASH = os.getenv("TD_API_HASH", "").strip()
 TD_PHONE = os.getenv("TD_PHONE", "").strip()
@@ -83,6 +92,13 @@ overlay_settings_state: dict = {
 watcher_task: asyncio.Task | None = None
 level_store: dict[str, dict] = {}
 level_store_mtime = 0.0
+level_system = level_core.LevelStore(
+    LEVELS_FILE,
+    enabled=VIDEOCHAT_LEVEL_SYSTEM_ENABLED,
+    minimum=0,
+    maximum=99,
+)
+pending_level_notifications: list[dict] = []
 resolved_videochat_entity = None
 invite_flood_wait_until = 0.0
 
@@ -145,113 +161,32 @@ def mock_avatar_urls() -> list[str]:
 
 
 def normalize_roles(value) -> list[str]:
-    if value is None:
-        raw = []
-    elif isinstance(value, str):
-        raw = value.replace(";", ",").split(",")
-    elif isinstance(value, (list, tuple, set)):
-        raw = value
-    else:
-        raw = [str(value)]
-    roles: list[str] = []
-    for item in raw:
-        for part in str(item or "").replace(";", ",").split(","):
-            role = part.strip().lower()
-            if role and role not in roles:
-                roles.append(role)
-    return roles
+    return level_core.normalize_roles(value)
 
 
 def primary_role(roles: list[str]) -> str:
-    return roles[0] if roles else ""
+    return level_core.primary_role(roles)
 
 
 def merge_roles(*role_sets) -> list[str]:
-    roles: list[str] = []
-    for role_set in role_sets:
-        for role in normalize_roles(role_set):
-            if role not in roles:
-                roles.append(role)
-    return roles
+    return level_core.merge_roles(*role_sets)
 
 
 def load_level_store() -> dict[str, dict]:
-    try:
-        raw = json.loads(LEVELS_FILE.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except Exception as exc:
-        print(f"[videochat] failed to load level store: {exc}", flush=True)
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    if isinstance(raw.get("users"), dict):
-        source = raw["users"]
-    else:
-        # Backward-compatible import from the old {"id:123": 1} shape.
-        source = raw
-    users: dict[str, dict] = {}
-    for key, value in source.items():
-        if isinstance(value, dict):
-            record = dict(value)
-            try:
-                record["level"] = max(1, min(99, int(record.get("level", 1))))
-            except (TypeError, ValueError):
-                record["level"] = 1
-            roles = normalize_roles(record.get("roles"))
-            legacy = str(record.get("role") or "").strip().lower()
-            if legacy and legacy not in roles:
-                roles.append(legacy)
-            record["roles"] = roles
-            record["role"] = primary_role(roles)
-        else:
-            try:
-                level = max(1, min(99, int(value)))
-            except (TypeError, ValueError):
-                continue
-            record = {"level": level, "role": "", "roles": []}
-        users[str(key)] = record
-    return users
+    return level_system.load()
 
 
 def reload_level_store_if_changed() -> None:
     global level_store, level_store_mtime
-    try:
-        mtime = LEVELS_FILE.stat().st_mtime
-    except FileNotFoundError:
-        return
-    if mtime <= level_store_mtime:
-        return
-    loaded = load_level_store()
-    if not loaded and level_store:
-        print("[videochat] ignored empty level store reload", flush=True)
-        level_store_mtime = mtime
-        return
-    level_store = loaded
-    level_store_mtime = mtime
+    if level_system.reload_if_changed():
+        level_store = level_system.users
+        level_store_mtime = level_system.mtime
 
 
 def save_level_store() -> None:
-    LEVELS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = LEVELS_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "users": level_store,
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    if LEVELS_FILE.exists() and LEVELS_FILE.stat().st_size > 0:
-        backup = LEVELS_FILE.with_suffix(".bak")
-        backup.write_text(LEVELS_FILE.read_text(encoding="utf-8"), encoding="utf-8")
-    tmp.replace(LEVELS_FILE)
+    level_system.save()
     global level_store_mtime
-    level_store_mtime = LEVELS_FILE.stat().st_mtime
+    level_store_mtime = level_system.mtime
 
 
 def load_overlay_settings_state() -> dict:
@@ -320,76 +255,69 @@ async def set_overlay_settings(payload: dict) -> dict | None:
 
 
 def participant_level_key(user_id: str, username: str, name: str) -> str:
-    if user_id:
-        return f"id:{user_id}"
-    if username:
-        return f"username:{username.lower()}"
-    return f"name:{name}"
+    return level_core.level_key(user_id, username, name)
 
 
-def level_for_participant(user_id: str, username: str, name: str, is_host: bool, explicit_level=None, roles=None) -> int:
+def level_for_participant(
+    user_id: str,
+    username: str,
+    name: str,
+    is_host: bool,
+    explicit_level=None,
+    roles=None,
+    *,
+    collect_notifications: bool = True,
+) -> int:
     key = participant_level_key(user_id, username, name)
     stored = level_store.get(key)
+    old_level = None
+    last_notified_level = None
+    if isinstance(stored, dict):
+        try:
+            old_level = int(stored.get("level", 0) or 0)
+        except (TypeError, ValueError):
+            old_level = None
+        try:
+            last_notified_level = int(stored.get("last_notified_level", 0) or 0)
+        except (TypeError, ValueError):
+            last_notified_level = 0
     stored_roles = normalize_roles(stored.get("roles")) if isinstance(stored, dict) else []
     role_list = merge_roles(stored_roles, roles)
     if is_host:
         role_list = ["king"] + [role for role in role_list if role != "king"]
-    role = primary_role(role_list)
-    now = time.time()
-    changed = False
-    if key not in level_store:
-        if role == "king":
-            level = 99
-        else:
-            try:
-                level = max(1, min(99, int(explicit_level)))
-            except (TypeError, ValueError):
-                level = 1
-        level_store[key] = {
-            "id": user_id,
+    record, _changed = level_system.observe_profile(
+        {
+            "speaker_id": user_id,
             "username": username,
             "name": name,
-            "role": role,
+            "is_host": is_host,
+            "is_bot": "bot" in role_list,
             "roles": role_list,
-            "level": level,
-            "first_seen_at": now,
-            "updated_at": now,
-        }
-        changed = True
-    else:
-        record = level_store[key]
-        if not isinstance(record, dict):
-            record = {"level": 1}
-            level_store[key] = record
-            changed = True
-        updates = {
-            "id": user_id,
-            "username": username,
-            "name": name,
-            "role": role,
-            "roles": role_list,
-        }
-        for field, value in updates.items():
-            if record.get(field) != value:
-                record[field] = value
-                changed = True
-        if "first_seen_at" not in record:
-            record["first_seen_at"] = now
-            changed = True
-        if role == "king":
-            if record.get("level") != 99:
-                record["level"] = 99
-                changed = True
-        else:
-            try:
-                record["level"] = max(1, min(99, int(record.get("level", 1))))
-            except (TypeError, ValueError):
-                record["level"] = 1
-                changed = True
-    if changed:
-        level_store[key]["updated_at"] = now
-        save_level_store()
-    return int(level_store[key].get("level", 1))
+        },
+        source="videochat",
+        explicit_level=explicit_level,
+    )
+    new_level = int(record.get("level", 0) or 0)
+    if (
+        collect_notifications
+        and VIDEOCHAT_LEVEL_SYSTEM_ENABLED
+        and old_level is not None
+        and new_level > old_level
+        and new_level > (last_notified_level or 0)
+        and "bot" not in normalize_roles(record.get("roles"))
+    ):
+        pending_level_notifications.append({
+            "level_key": key,
+            "old_level": old_level,
+            "new_level": new_level,
+            "profile": {
+                "name": record.get("name") or name,
+                "username": record.get("username") or username,
+                "speaker_id": record.get("id") or user_id,
+                "roles": record.get("roles") or [],
+            },
+        })
+    return new_level
 
 
 async def broadcast(payload: dict) -> None:
@@ -405,7 +333,7 @@ async def broadcast(payload: dict) -> None:
             clients.discard(ws)
 
 
-def normalize_participants(items) -> list[dict]:
+def normalize_participants(items, *, collect_notifications: bool = True) -> list[dict]:
     reload_level_store_if_changed()
     rows = []
     for p in items or []:
@@ -431,7 +359,19 @@ def normalize_participants(items) -> list[dict]:
             if is_host:
                 roles = ["king"] + [role for role in roles if role != "king"]
         role = primary_role(roles)
-        level = level_for_participant(user_id, username, name, is_host, p.get("level"), roles=roles)
+        level = level_for_participant(
+            user_id,
+            username,
+            name,
+            is_host,
+            p.get("level"),
+            roles=roles,
+            collect_notifications=collect_notifications,
+        )
+        if VIDEOCHAT_LEVEL_SYSTEM_ENABLED:
+            level_label = "Lv. 99" if is_host else (f"Lv. {level}" if level > 0 else "")
+        else:
+            level_label = ""
         rows.append({
             "id": user_id,
             "name": name,
@@ -441,7 +381,8 @@ def normalize_participants(items) -> list[dict]:
             "screen": bool(p.get("screen")),
             "avatar_url": str(p.get("avatar_url") or ""),
             "level": level,
-            "level_label": str(p.get("level_label") or ""),
+            "level_label": level_label,
+            "level_system_enabled": VIDEOCHAT_LEVEL_SYSTEM_ENABLED,
             "is_host": is_host,
             "role": role,
             "roles": roles,
@@ -472,15 +413,51 @@ async def download_profile_photo(client, user) -> str:
     return str(saved) if saved else ""
 
 
-async def set_videochat_snapshot(participants: list[dict], source: str = "telethon") -> None:
+async def set_videochat_snapshot(participants: list[dict], source: str = "telethon", *, notify_levels: bool = True) -> None:
     global videochat_state
+    pending_level_notifications.clear()
+    normalized = normalize_participants(participants, collect_notifications=notify_levels)
     videochat_state = {
         "type": "videochat_snapshot",
-        "participants": normalize_participants(participants),
+        "participants": normalized,
         "updated_at": time.time(),
         "source": source,
     }
     await broadcast(videochat_state)
+    if notify_levels:
+        await notify_level_changes()
+
+
+async def refresh_videochat_levels(source: str = "level_reload") -> None:
+    level_system.load()
+    await set_videochat_snapshot(videochat_state.get("participants") or [], source=source, notify_levels=False)
+
+
+async def notify_level_changes() -> None:
+    if not pending_level_notifications:
+        return
+    events = list(pending_level_notifications)
+    pending_level_notifications.clear()
+
+    def post_event(event: dict):
+        data = json.dumps(event, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            f"{CHAT_API_BASE}/api/level/notify",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=4) as res:
+            res.read()
+
+    for event in events:
+        try:
+            await asyncio.to_thread(post_event, event)
+            level_key_value = str(event.get("level_key") or "")
+            if level_key_value:
+                level_system.mark_notified_level(level_key_value, int(event.get("new_level", 0) or 0))
+        except Exception as exc:
+            print(f"[videochat] level notify failed: {exc}", flush=True)
 
 
 def normalize_camera_message(payload: dict) -> dict | None:
@@ -537,6 +514,23 @@ async def set_camera_state(payload: dict) -> dict | None:
     return camera_state
 
 
+async def get_full_chat_for_call(client, entity):
+    from telethon.tl import functions, types
+
+    if isinstance(entity, types.Channel):
+        return await client(functions.channels.GetFullChannelRequest(entity)), "ChannelFull.call"
+    if isinstance(entity, types.Chat):
+        return await client(functions.messages.GetFullChatRequest(entity.id)), "ChatFull.call"
+
+    input_peer = await client.get_input_entity(entity)
+    if isinstance(input_peer, types.InputPeerChannel):
+        return await client(functions.channels.GetFullChannelRequest(input_peer)), "ChannelFull.call"
+    if isinstance(input_peer, types.InputPeerChat):
+        return await client(functions.messages.GetFullChatRequest(input_peer.chat_id)), "ChatFull.call"
+
+    raise RuntimeError(f"Unsupported Telegram entity type for videochat: {type(entity).__name__}")
+
+
 async def resolve_call(client, link: str):
     global invite_flood_wait_until, resolved_videochat_entity
     from telethon.errors import FloodWaitError, UserAlreadyParticipantError
@@ -584,10 +578,10 @@ async def resolve_call(client, link: str):
             entity = await client.get_entity(username)
             resolved_videochat_entity = entity
 
-    full = await client(functions.channels.GetFullChannelRequest(entity))
+    full, call_source = await get_full_chat_for_call(client, entity)
     call = getattr(full.full_chat, "call", None)
     if call is None:
-        print("[videochat] no active call/livestream in ChannelFull.call", flush=True)
+        print(f"[videochat] no active call/livestream in {call_source}", flush=True)
         return None
     print(
         f"[videochat] call found: id={getattr(call, 'id', None)} "
@@ -702,7 +696,7 @@ async def lifespan(app: FastAPI):
     level_store = load_level_store()
     overlay_settings_state = load_overlay_settings_state()
     try:
-        level_store_mtime = LEVELS_FILE.stat().st_mtime
+        level_store_mtime = level_system.mtime or LEVELS_FILE.stat().st_mtime
     except FileNotFoundError:
         level_store_mtime = 0.0
     watcher_task = asyncio.create_task(run_telethon_watcher(), name="videochat-telethon-watcher")
@@ -751,6 +745,7 @@ async def get_config():
         "host_name": HOST_NAME,
         "mock_avatar_urls": mock_avatar_urls(),
         "debug_speech": VIDEOCHAT_DEBUG_SPEECH,
+        "level_system_enabled": VIDEOCHAT_LEVEL_SYSTEM_ENABLED,
     }
 
 
@@ -780,6 +775,10 @@ async def proxy_chat_api(method: str, path: str, request: Request) -> JSONRespon
             except Exception:
                 detail = raw or str(exc)
             return exc.code, detail
+        except TimeoutError:
+            return 504, {"ok": False, "detail": "chat API timeout"}
+        except urllib.error.URLError as exc:
+            return 504, {"ok": False, "detail": str(getattr(exc, "reason", exc))}
 
     status, payload = await asyncio.to_thread(run_request)
     return JSONResponse(payload, status_code=status)
@@ -914,6 +913,32 @@ async def api_link_x_preview(request: Request, url: str = ""):
     )
 
 
+@app.get("/api/link/readable")
+async def api_link_readable(request: Request, url: str = ""):
+    require_local_request(request)
+    target = f"{CHAT_API_BASE}/api/link/readable?{urllib.parse.urlencode({'url': url})}"
+
+    def run_request():
+        req = urllib.request.Request(target, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as res:
+                return res.status, res.headers.get("content-type", "text/html; charset=utf-8"), res.read(2_000_000)
+        except urllib.error.HTTPError as exc:
+            data = exc.read(512_000)
+            return exc.code, exc.headers.get("content-type", "text/plain; charset=utf-8"), data
+
+    status, content_type, data = await asyncio.to_thread(run_request)
+    return Response(
+        data,
+        status_code=status,
+        headers={
+            "Content-Type": content_type,
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 @app.get("/api/send/status")
 async def proxy_send_status(request: Request):
     return await proxy_chat_api("GET", "/api/send/status", request)
@@ -924,6 +949,21 @@ async def proxy_user_search(request: Request):
     return await proxy_chat_api("GET", "/api/users/search", request)
 
 
+@app.get("/api/emoji/recent")
+async def proxy_emoji_recent(request: Request):
+    return await proxy_chat_api("GET", "/api/emoji/recent", request)
+
+
+@app.get("/api/custom_emoji/{custom_id}/meta")
+async def proxy_custom_emoji_meta(custom_id: str, request: Request):
+    return await proxy_chat_api("GET", f"/api/custom_emoji/{custom_id}/meta", request)
+
+
+@app.post("/api/sticker/preview")
+async def proxy_sticker_preview(request: Request):
+    return await proxy_chat_api("POST", "/api/sticker/preview", request)
+
+
 @app.post("/api/send")
 async def proxy_send(request: Request):
     return await proxy_chat_api("POST", "/api/send", request)
@@ -932,6 +972,16 @@ async def proxy_send(request: Request):
 @app.post("/api/message/delete")
 async def proxy_delete(request: Request):
     return await proxy_chat_api("POST", "/api/message/delete", request)
+
+
+@app.get("/api/fire/settings")
+async def proxy_fire_settings(request: Request):
+    return await proxy_chat_api("GET", "/api/fire/settings", request)
+
+
+@app.post("/api/fire/settings")
+async def proxy_fire_settings_update(request: Request):
+    return await proxy_chat_api("POST", "/api/fire/settings", request)
 
 
 @app.get("/api/videochat/state")
@@ -967,16 +1017,20 @@ async def post_camera_state(request: Request):
 
 @app.post("/api/videochat/snapshot")
 async def post_videochat_snapshot(request: Request):
-    global videochat_state
     payload = await request.json()
-    videochat_state = {
-        "type": "videochat_snapshot",
-        "participants": normalize_participants(payload.get("participants")),
-        "updated_at": time.time(),
-        "source": payload.get("source", "telethon"),
-    }
-    await broadcast(videochat_state)
+    await set_videochat_snapshot(payload.get("participants"), source=payload.get("source", "telethon"))
     return {"ok": True, "participants": len(videochat_state["participants"])}
+
+
+@app.post("/api/videochat/levels/reload")
+async def post_videochat_levels_reload(request: Request):
+    require_local_request(request)
+    await refresh_videochat_levels()
+    return {
+        "ok": True,
+        "participants": len(videochat_state["participants"]),
+        "snapshot": videochat_state,
+    }
 
 
 @app.websocket("/ws")
@@ -999,6 +1053,8 @@ async def ws_endpoint(ws: WebSocket):
                 continue
             if payload.get("type") == "videochat_overlay_settings":
                 await set_overlay_settings(payload)
+            elif payload.get("type") == "chat_control":
+                await broadcast(payload)
             else:
                 await set_camera_state(payload)
     except WebSocketDisconnect:

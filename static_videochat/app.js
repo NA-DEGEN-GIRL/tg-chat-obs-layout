@@ -7,6 +7,7 @@
   const chatSendText = document.getElementById("chat-send-text");
   const chatSendButton = document.getElementById("chat-send-button");
   const chatSendFile = document.getElementById("chat-send-file");
+  const chatSendEmojiButton = document.getElementById("chat-send-emoji-button");
   const chatSendTargets = Array.from(document.querySelectorAll(".chat-send-target"));
   const chatSendPreview = document.getElementById("chat-send-preview");
   const chatSendPreviewImg = document.getElementById("chat-send-preview-img");
@@ -38,6 +39,8 @@
   const entryEffect = document.getElementById("entry-effect");
   const exitEffect = document.getElementById("exit-effect");
   const lifecycleSec = document.getElementById("lifecycle-sec");
+  const fireUserCooldown = document.getElementById("fire-user-cooldown");
+  const fireGlobalCooldown = document.getElementById("fire-global-cooldown");
   const toastStyle = document.getElementById("toast-style");
   const entryMessageTemplate = document.getElementById("entry-message-template");
   const exitMessageTemplate = document.getElementById("exit-message-template");
@@ -64,6 +67,7 @@
   const CAMERA_SETTINGS_KEY = "videochat.cameraSettings.v1";
   const EFFECT_SETTINGS_KEY = "videochat.effectSettings.v1";
   const TOAST_SETTINGS_KEY = "videochat.toastSettings.v1";
+  const EMOJI_PICKER_POS_KEY = "videochat.emojiPicker.v1";
 
   const state = {
     participants: new Map(),
@@ -84,6 +88,7 @@
       host_name: "",
       mock_avatar_urls: [],
       debug_speech: false,
+      level_system_enabled: true,
     },
     view: {
       yaw: 0,
@@ -115,10 +120,14 @@
     remoteApplying: false,
     clientId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
     cameraUpdate: null,
+    videochatWs: null,
     three: null,
     userSendEnabled: false,
     sendInFlight: false,
     selectedPhoto: null,
+    selectedSticker: null,
+    selectedCustomEmoji: null,
+    customEmojiEntities: [],
     maxPhotoBytes: 8 * 1024 * 1024,
     maxMediaBytes: 50 * 1024 * 1024,
     replyTo: null,
@@ -126,6 +135,13 @@
     mentionToken: null,
     mentionTimer: null,
     mentionSelected: 0,
+    emojiPicker: null,
+    emojiCache: { stickers: [], custom_emoji: [] },
+    emojiCacheLoadedAt: 0,
+    stickerPreviewQueue: [],
+    stickerPreviewActive: 0,
+    emojiPickerDragging: false,
+    emojiPickerSuppressClickUntil: 0,
   };
 
   const DEFAULT_CAMERA_VIEW = {
@@ -149,10 +165,20 @@
 
   function appendRichText(target, text, options = {}) {
     if (window.TgChatCore?.appendRichText) {
-      window.TgChatCore.appendRichText(target, text, options);
+      window.TgChatCore.appendRichText(target, text, richTextOptions(options));
     } else {
       target.textContent = text;
     }
+  }
+
+  let sharedLinkPreview = null;
+  function richTextOptions(options = {}) {
+    if (!sharedLinkPreview && window.TgChatCore?.createLinkPreview) {
+      sharedLinkPreview = window.TgChatCore.createLinkPreview("link-preview", {
+        onControl: (payload) => sendVideochatControlEvent(payload),
+      });
+    }
+    return sharedLinkPreview ? { ...options, linkPreview: sharedLinkPreview } : options;
   }
 
   function selectedTextWithin(el) {
@@ -182,11 +208,16 @@
   state.mockCount = Math.min(120, Math.max(0, Number(params.get("mock_participants") || params.get("mock") || 0) || 0));
   state.mockBaseCount = state.mockCount;
   if (state.mockCount > 0 && params.get("debug_speech") !== "0") state.cfg.debug_speech = true;
-  try {
-    const overlayState = await fetch("/api/videochat/settings").then((r) => r.json());
+    try {
+      const overlayState = await fetch("/api/videochat/settings").then((r) => r.json());
     if (overlayState?.settings && typeof overlayState.settings === "object") {
       state.overlaySettings = adaptOverlaySettings(overlayState.settings);
     }
+  } catch (_) {}
+  try {
+    const fireSettings = await fetch("/api/fire/settings").then((r) => r.json());
+    if (fireUserCooldown && typeof fireSettings.user_cooldown_sec === "number") fireUserCooldown.value = String(fireSettings.user_cooldown_sec);
+    if (fireGlobalCooldown && typeof fireSettings.global_cooldown_sec === "number") fireGlobalCooldown.value = String(fireSettings.global_cooldown_sec);
   } catch (_) {}
 
   function selectedSendTargets() {
@@ -197,7 +228,7 @@
 
   function updateSendButton() {
     if (!chatSendButton || !chatSendText) return;
-    const hasBody = !!chatSendText.value.trim() || !!state.selectedPhoto;
+    const hasBody = !!chatSendText.value.trim() || !!state.selectedPhoto || !!state.selectedSticker || !!state.selectedCustomEmoji;
     chatSendButton.disabled = state.sendInFlight || !state.userSendEnabled || !hasBody || (!state.replyTo && selectedSendTargets().length === 0);
   }
 
@@ -247,16 +278,10 @@
     const reader = new FileReader();
     reader.onload = () => {
       const mime = sendFileMime(file) || "image/jpeg";
+      state.selectedSticker = null;
+      state.selectedCustomEmoji = null;
       state.selectedPhoto = { name: file.name || "image.jpg", mime, data: String(reader.result || "") };
-      if (chatSendPreviewImg) {
-        if (mime.startsWith("image/")) {
-          chatSendPreviewImg.hidden = false;
-          chatSendPreviewImg.src = state.selectedPhoto.data;
-        } else {
-          chatSendPreviewImg.hidden = true;
-          chatSendPreviewImg.removeAttribute("src");
-        }
-      }
+      setSendPreviewMedia({ url: state.selectedPhoto.data, media_type: mime.startsWith("image/") ? "image" : "video" });
       if (chatSendPreviewName) chatSendPreviewName.textContent = state.selectedPhoto.name;
       if (chatSendPreview) chatSendPreview.hidden = false;
       updateSendButton();
@@ -266,6 +291,9 @@
 
   function clearSendPhoto() {
     state.selectedPhoto = null;
+    state.selectedSticker = null;
+    state.selectedCustomEmoji = null;
+    clearSendPreviewMedia();
     if (chatSendPreviewImg) chatSendPreviewImg.removeAttribute("src");
     if (chatSendPreviewImg) chatSendPreviewImg.hidden = false;
     if (chatSendPreviewName) chatSendPreviewName.textContent = "";
@@ -297,7 +325,7 @@
     const res = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, targets, photo, reply_to: replyTo }),
+      body: JSON.stringify({ text, targets, photo, sticker: state.selectedSticker, custom_emoji: state.selectedCustomEmoji, custom_entities: state.customEmojiEntities, reply_to: replyTo }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
@@ -427,6 +455,393 @@
     if (!items.length) return false;
     items[Math.min(state.mentionSelected, items.length - 1)].dispatchEvent(new MouseEvent("mousedown"));
     return true;
+  }
+
+  async function refreshEmojiCache() {
+    if (Date.now() - state.emojiCacheLoadedAt < 60000 && (state.emojiCache.stickers.length || state.emojiCache.custom_emoji.length)) {
+      return;
+    }
+    try {
+      const body = await fetch("/api/emoji/recent").then((r) => r.json());
+      state.emojiCache = {
+        stickers: Array.isArray(body.stickers) ? body.stickers : [],
+        custom_emoji: Array.isArray(body.custom_emoji) ? body.custom_emoji : [],
+      };
+      state.emojiCacheLoadedAt = Date.now();
+    } catch (_) {
+      state.emojiCache = { stickers: [], custom_emoji: [] };
+      state.emojiCacheLoadedAt = 0;
+    }
+  }
+
+  function ensureEmojiPicker() {
+    if (state.emojiPicker) return state.emojiPicker;
+    const picker = document.createElement("div");
+    picker.className = "emoji-picker";
+    picker.hidden = true;
+    picker.innerHTML = '<div class="emoji-picker-head"><span>drag</span><span>recent / sticker / premium</span></div><div class="emoji-picker-grid"></div>';
+    document.body.appendChild(picker);
+    picker.addEventListener("click", (ev) => ev.stopPropagation());
+    picker.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    picker.addEventListener("wheel", (ev) => ev.stopPropagation(), { passive: true });
+    bindEmojiPickerDrag(picker);
+    state.emojiPicker = picker;
+    return picker;
+  }
+
+  function bindEmojiPickerDrag(picker) {
+    const head = picker.querySelector(".emoji-picker-head");
+    if (!head || head.dataset.dragBound) return;
+    head.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const rect = picker.getBoundingClientRect();
+      const start = { x: ev.clientX, y: ev.clientY, left: rect.left, top: rect.top };
+      head.setPointerCapture?.(ev.pointerId);
+      const move = (moveEv) => {
+        state.emojiPickerDragging = true;
+        const left = Math.min(Math.max(8, start.left + moveEv.clientX - start.x), Math.max(8, window.innerWidth - rect.width - 8));
+        const top = Math.min(Math.max(8, start.top + moveEv.clientY - start.y), Math.max(8, window.innerHeight - rect.height - 8));
+        picker.style.left = `${left}px`;
+        picker.style.top = `${top}px`;
+        picker.style.bottom = "auto";
+        try { localStorage.setItem(EMOJI_PICKER_POS_KEY, JSON.stringify({ left, top })); } catch (_) {}
+      };
+      const up = () => {
+        if (state.emojiPickerDragging) state.emojiPickerSuppressClickUntil = Date.now() + 220;
+        state.emojiPickerDragging = false;
+        head.removeEventListener("pointermove", move);
+        head.removeEventListener("pointerup", up);
+        head.removeEventListener("pointercancel", up);
+      };
+      head.addEventListener("pointermove", move);
+      head.addEventListener("pointerup", up);
+      head.addEventListener("pointercancel", up);
+    });
+    head.dataset.dragBound = "1";
+  }
+
+  function stickerSendPayload(item) {
+    return {
+      key: item.key || item.file_unique_id || item.document_id || "",
+      file_unique_id: item.file_unique_id || "",
+      file_id: item.file_id || "",
+      document_id: item.document_id || "",
+      access_hash: item.access_hash || "",
+      file_reference: item.file_reference || "",
+      emoji: item.emoji || "",
+      media_type: item.media_type || "image",
+      source: item.source || "",
+    };
+  }
+
+  function firstEmojiFallback(value) {
+    const text = String(value || "*");
+    try {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+      const first = segmenter.segment(text)[Symbol.iterator]().next().value;
+      return first?.segment || "*";
+    } catch (_) {
+      return Array.from(text)[0] || "*";
+    }
+  }
+
+  function ensureComposerPreview() {
+    let box = document.getElementById("chat-send-rich-preview");
+    if (box || !chatSendText?.parentElement) return box;
+    box = document.createElement("div");
+    box.id = "chat-send-rich-preview";
+    box.className = "composer-rich-preview";
+    box.hidden = true;
+    chatSendText.parentElement.insertBefore(box, chatSendText.nextSibling);
+    return box;
+  }
+
+  function updateComposerPreview() {
+    const box = ensureComposerPreview();
+    if (!box || !chatSendText) return;
+    box.replaceChildren();
+    if (!state.customEmojiEntities.length || !chatSendText.value) {
+      box.hidden = true;
+      return;
+    }
+    appendRichText(box, chatSendText.value, { entities: state.customEmojiEntities });
+    box.hidden = false;
+  }
+
+  function emojiFallbackText(item) {
+    if (item._kind === "custom_emoji") return firstEmojiFallback(item.emoji || "*");
+    if (item.emoji) return item.emoji;
+    return item.source === "telegram_recent" ? "recent" : "sticker";
+  }
+
+  function showEmojiFallback(btn, item) {
+    btn.classList.add("no-preview");
+    if (btn.querySelector(".emoji-picker-fallback")) return;
+    const fallback = document.createElement("span");
+    fallback.className = "emoji-picker-fallback";
+    fallback.textContent = emojiFallbackText(item);
+    btn.appendChild(fallback);
+  }
+
+  async function hydrateStickerPreview(btn, item) {
+    if (!(item.file_id || item.can_send_as_user || item.document_id) || btn.dataset.previewLoading) return;
+    btn.dataset.previewLoading = "1";
+    btn.classList.add("loading-preview");
+    const badge = btn.querySelector(".emoji-picker-badge");
+    if (badge) badge.textContent = "loading";
+    try {
+      const meta = await fetch("/api/sticker/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(stickerSendPayload(item)),
+      }).then((r) => {
+        if (!r.ok) throw new Error("preview unavailable");
+        return r.json();
+      });
+      if (!meta?.url) return;
+      item.url = meta.url;
+      item.media_type = meta.media_type || item.media_type || "image";
+      item.preview_checked = true;
+      const key = item.key || item.file_unique_id || item.document_id;
+      const cached = state.emojiCache.stickers.find((row) => (row.key || row.file_unique_id || row.document_id) === key);
+      if (cached) {
+        cached.url = item.url;
+        cached.media_type = item.media_type;
+        cached.preview_checked = true;
+      }
+      btn.classList.remove("loading-preview", "preview-failed");
+      btn.classList.add("preview-ready");
+      btn.replaceChildren();
+      appendEmojiPreview(btn, item);
+      appendEmojiBadge(btn, item);
+    } catch (_) {
+      btn.dataset.previewFailed = "1";
+      btn.classList.remove("loading-preview");
+      btn.classList.add("preview-failed");
+      const failedBadge = btn.querySelector(".emoji-picker-badge");
+      if (failedBadge) failedBadge.textContent = "no preview";
+    } finally {
+      delete btn.dataset.previewLoading;
+    }
+  }
+
+  function runStickerPreviewQueue() {
+    while (state.stickerPreviewActive < 3 && state.stickerPreviewQueue.length) {
+      const job = state.stickerPreviewQueue.shift();
+      if (!job?.btn || !job.item || !document.contains(job.btn)) continue;
+      delete job.btn.dataset.previewQueued;
+      state.stickerPreviewActive += 1;
+      hydrateStickerPreview(job.btn, job.item).finally(() => {
+        state.stickerPreviewActive = Math.max(0, state.stickerPreviewActive - 1);
+        runStickerPreviewQueue();
+      });
+    }
+  }
+
+  function enqueueStickerPreview(btn, item) {
+    if (!btn || btn.dataset.previewQueued || btn.dataset.previewLoading) return;
+    if (!(item.file_id || item.can_send_as_user || item.document_id)) return;
+    btn.dataset.previewQueued = "1";
+    state.stickerPreviewQueue.push({ btn, item });
+    runStickerPreviewQueue();
+  }
+
+  function appendEmojiBadge(btn, item) {
+    const badge = document.createElement("span");
+    badge.className = "emoji-picker-badge";
+    badge.textContent = item._kind === "sticker" ? (item.source === "telegram_recent" ? "recent" : "sticker") : "premium";
+    btn.appendChild(badge);
+  }
+
+  function appendEmojiPreview(btn, item) {
+    if (item._kind === "custom_emoji") {
+      const preview = document.createElement("span");
+      preview.className = "chat-custom-emoji emoji-picker-custom-preview";
+      btn.appendChild(preview);
+      if (window.TgChatCore?.loadCustomEmoji && item.custom_emoji_id) {
+        window.TgChatCore.loadCustomEmoji(preview, item.custom_emoji_id, firstEmojiFallback(item.emoji || "*"));
+      } else {
+        preview.textContent = firstEmojiFallback(item.emoji || "*");
+      }
+      return;
+    }
+    if (item._kind === "sticker" && item.url && item.media_type === "image") {
+      const img = document.createElement("img");
+      img.src = item.url;
+      img.alt = item.emoji || "sticker";
+      img.addEventListener("error", () => {
+        img.hidden = true;
+        showEmojiFallback(btn, item);
+        if (!item.preview_checked && (item.file_id || item.can_send_as_user || item.document_id)) {
+          item.url = "";
+          enqueueStickerPreview(btn, item);
+        }
+      });
+      btn.appendChild(img);
+      return;
+    }
+    if (item._kind === "sticker" && item.url && item.media_type === "video") {
+      const video = document.createElement("video");
+      video.src = item.url;
+      video.autoplay = true;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.addEventListener("error", () => {
+        video.hidden = true;
+        showEmojiFallback(btn, item);
+        if (!item.preview_checked && (item.file_id || item.can_send_as_user || item.document_id)) {
+          item.url = "";
+          enqueueStickerPreview(btn, item);
+        }
+      });
+      btn.appendChild(video);
+      return;
+    }
+    showEmojiFallback(btn, item);
+    if (item._kind === "sticker" && (item.file_id || item.can_send_as_user || item.document_id)) {
+      setTimeout(() => enqueueStickerPreview(btn, item), 0);
+    }
+  }
+
+  function clearSendPreviewMedia() {
+    chatSendPreview?.querySelector(".chat-send-preview-media")?.remove();
+  }
+
+  function setSendPreviewMedia(item) {
+    clearSendPreviewMedia();
+    if (!chatSendPreviewImg || !chatSendPreview) return;
+    if (item?.media_type === "image" && item.url) {
+      chatSendPreviewImg.hidden = false;
+      chatSendPreviewImg.src = item.url;
+      return;
+    }
+    chatSendPreviewImg.hidden = true;
+    chatSendPreviewImg.removeAttribute("src");
+    if (!item?.url) return;
+    const slot = document.createElement("div");
+    slot.className = "chat-send-preview-media";
+    slot.appendChild(createMediaElement({ url: item.url, media_type: item.media_type || "image" }));
+    chatSendPreview.insertBefore(slot, chatSendPreviewName || chatSendPreviewClear || null);
+  }
+
+  function selectSticker(item) {
+    state.selectedPhoto = null;
+    state.selectedCustomEmoji = null;
+    state.selectedSticker = stickerSendPayload(item);
+    setSendPreviewMedia(item);
+    if (chatSendPreviewName) chatSendPreviewName.textContent = item.emoji ? `sticker ${item.emoji}` : "sticker";
+    if (chatSendPreview) chatSendPreview.hidden = false;
+    updateSendButton();
+  }
+
+  function selectCustomEmoji(item) {
+    if (!chatSendText || !item.custom_emoji_id) return;
+    const emoji = firstEmojiFallback(item.emoji || "*");
+    const start = chatSendText.selectionStart ?? chatSendText.value.length;
+    const end = chatSendText.selectionEnd ?? start;
+    chatSendText.value = chatSendText.value.slice(0, start) + emoji + chatSendText.value.slice(end);
+    state.customEmojiEntities = state.customEmojiEntities
+      .filter((entity) => entity.offset < start || entity.offset >= end)
+      .map((entity) => entity.offset >= end ? { ...entity, offset: entity.offset + emoji.length - (end - start) } : entity);
+    state.customEmojiEntities.push({ type: "custom_emoji", offset: start, length: emoji.length, custom_emoji_id: String(item.custom_emoji_id), emoji });
+    const pos = start + emoji.length;
+    chatSendText.setSelectionRange(pos, pos);
+    chatSendText.focus();
+    updateComposerPreview();
+    updateSendButton();
+  }
+
+  function reconcileCustomEmojiEntities() {
+    if (!chatSendText || !state.customEmojiEntities.length) return;
+    const value = chatSendText.value;
+    state.customEmojiEntities = state.customEmojiEntities.filter((entity) => {
+      const offset = Number(entity.offset);
+      const length = Number(entity.length);
+      if (!Number.isFinite(offset) || !Number.isFinite(length) || offset < 0 || length <= 0) return false;
+      return value.slice(offset, offset + length) === (entity.emoji || value.slice(offset, offset + length));
+    });
+    updateComposerPreview();
+  }
+
+  function positionEmojiPicker() {
+    const picker = state.emojiPicker;
+    if (!picker || !chatSendEmojiButton) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(EMOJI_PICKER_POS_KEY) || "null");
+      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+        picker.style.left = `${Math.min(Math.max(8, saved.left), Math.max(8, window.innerWidth - 568))}px`;
+        picker.style.top = `${Math.min(Math.max(8, saved.top), Math.max(8, window.innerHeight - 120))}px`;
+        picker.style.bottom = "auto";
+        return;
+      }
+    } catch (_) {}
+    const rect = chatSendEmojiButton.getBoundingClientRect();
+    picker.style.left = `${Math.min(Math.max(8, rect.left), window.innerWidth - 568)}px`;
+    picker.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 8)}px`;
+    picker.style.top = "auto";
+  }
+
+  async function showEmojiPicker() {
+    const picker = ensureEmojiPicker();
+    await refreshEmojiCache();
+    const grid = picker.querySelector(".emoji-picker-grid");
+    grid.replaceChildren();
+    const stickerItems = state.emojiCache.stickers.map((item) => ({ ...item, _kind: "sticker" }));
+    const recentItems = stickerItems.filter((item) => item.source === "telegram_recent");
+    const cachedItems = stickerItems.filter((item) => item.source !== "telegram_recent");
+    const premiumItems = state.emojiCache.custom_emoji.map((item) => ({ ...item, _kind: "custom_emoji" }));
+    const items = [...recentItems, ...cachedItems, ...premiumItems];
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "emoji-picker-empty";
+      empty.textContent = "채팅에서 받은 스티커나 premium emoji가 아직 없습니다.";
+      grid.appendChild(empty);
+    }
+    const appendSection = (title, sectionItems) => {
+      if (!sectionItems.length) return;
+      const section = document.createElement("div");
+      section.className = "emoji-picker-section";
+      section.textContent = title;
+      grid.appendChild(section);
+      for (const item of sectionItems) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `emoji-picker-item ${item._kind === "sticker" ? "sticker" : "premium-emoji"}`;
+      const canSend = item._kind === "custom_emoji" || item.can_send_as_user || item.can_send_as_bot || item.file_id || item.document_id;
+      btn.disabled = !canSend;
+      btn.classList.toggle("disabled", !canSend);
+      btn.title = item._kind === "sticker"
+        ? (item.source === "telegram_recent" ? "Telegram recent sticker" : "cached sticker")
+        : "premium custom emoji";
+      if (!canSend) btn.title += " (preview only)";
+      appendEmojiPreview(btn, item);
+      appendEmojiBadge(btn, item);
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (btn.disabled) return;
+        if (item._kind === "sticker") {
+          selectSticker(item);
+          picker.hidden = true;
+        } else {
+          selectCustomEmoji(item);
+        }
+      });
+      grid.appendChild(btn);
+      }
+    };
+    appendSection("Telegram recent", recentItems);
+    appendSection("Cached stickers", cachedItems);
+    appendSection("Premium emoji", premiumItems);
+    positionEmojiPicker();
+    picker.hidden = false;
+  }
+
+  function hideEmojiPicker(force = false) {
+    if (!force && Date.now() < state.emojiPickerSuppressClickUntil) return;
+    if (state.emojiPicker) state.emojiPicker.hidden = true;
   }
 
   function storageGet(key, fallback) {
@@ -1005,6 +1420,22 @@
       saveEffectSettings();
     });
     lifecycleSec?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    async function saveFireCooldown() {
+      try {
+        await fetch("/api/fire/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_cooldown_sec: Number(fireUserCooldown?.value || 0),
+            global_cooldown_sec: Number(fireGlobalCooldown?.value || 0),
+          }),
+        });
+      } catch (_) {}
+    }
+    fireUserCooldown?.addEventListener("change", saveFireCooldown);
+    fireGlobalCooldown?.addEventListener("change", saveFireCooldown);
+    fireUserCooldown?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    fireGlobalCooldown?.addEventListener("keydown", (ev) => ev.stopPropagation());
   }
 
   function showEventToast(text, kind = "enter", color = "") {
@@ -1042,6 +1473,9 @@
       });
     }
     chatSendText?.addEventListener("input", () => {
+      if (!chatSendText.value) state.customEmojiEntities = [];
+      else reconcileCustomEmojiEntities();
+      updateComposerPreview();
       updateSendButton();
       scheduleMentionSearch();
     });
@@ -1072,6 +1506,12 @@
       }
     });
     chatSendFile?.addEventListener("change", () => setSendPhoto(chatSendFile.files?.[0]));
+    chatSendEmojiButton?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (Date.now() < state.emojiPickerSuppressClickUntil) return;
+      if (state.emojiPicker && !state.emojiPicker.hidden) hideEmojiPicker(true);
+      else showEmojiPicker();
+    });
     chatSendPreviewClear?.addEventListener("click", clearSendPhoto);
     chatReplyPreviewClear?.addEventListener("click", clearSendReply);
     chatSendPanel?.addEventListener("dragover", (ev) => ev.preventDefault());
@@ -1090,14 +1530,16 @@
     chatSendPanel?.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       if (state.sendInFlight) return;
-      const text = (chatSendText?.value || "").trim();
+      const text = chatSendText?.value || "";
       const targets = selectedSendTargets();
-      if ((!text && !state.selectedPhoto) || (!state.replyTo && !targets.length)) return;
+      if ((!text.trim() && !state.selectedPhoto && !state.selectedSticker && !state.selectedCustomEmoji) || (!state.replyTo && !targets.length)) return;
       state.sendInFlight = true;
       updateSendButton();
       try {
         await sendOverlayMessage(text, targets, state.selectedPhoto, state.replyTo);
         chatSendText.value = "";
+        state.customEmojiEntities = [];
+        updateComposerPreview();
         clearSendPhoto();
         clearSendReply();
       } finally {
@@ -1124,6 +1566,7 @@
     document.addEventListener("click", () => {
       hideChatMessageMenu();
       hideMentionMenu();
+      hideEmojiPicker(true);
     });
     chatLog?.addEventListener("contextmenu", (ev) => {
       showChatMessageMenuFromEvent(ev);
@@ -1265,6 +1708,7 @@
     });
     window.addEventListener("resize", () => {
       applyToastSettings();
+      positionEmojiPicker();
       saveToastSettings();
     });
   }
@@ -1846,6 +2290,11 @@
     flare.visible = false;
     group.add(flare);
 
+    group.traverse((obj) => {
+      if (obj.material?.color && !obj.material.userData.originalColor) {
+        obj.material.userData.originalColor = obj.material.color.clone();
+      }
+    });
     state.three.scene.add(group);
     state.characters.set(key, group);
     return group;
@@ -2001,10 +2450,11 @@
       el.classList.toggle("role-girl", hasRole(p, "girl"));
       el.classList.toggle("has-photo", !!p.avatar_url);
       el.classList.toggle("no-photo", !p.avatar_url);
-      const levelValue = p.is_host ? 99 : Number(p.level || 1);
-      const hasLevelValue = p.is_host || Number.isFinite(levelValue);
+      const levelsEnabled = p.level_system_enabled !== false && state.cfg.level_system_enabled !== false;
+      const levelValue = levelsEnabled ? (p.is_host ? 99 : Number(p.level || 0)) : NaN;
+      const hasLevelValue = levelsEnabled && (p.is_host || Number.isFinite(levelValue));
       const tier = levelTier(levelValue, !!p.is_host);
-      const levelText = String(p.level_label || (hasLevelValue ? `Lv. ${levelValue}` : "")).trim();
+      const levelText = levelsEnabled ? String(p.level_label || (hasLevelValue ? `Lv. ${levelValue}` : "")).trim() : "";
       el.classList.toggle("has-level", !!levelText);
       el.style.setProperty("--level-color", tier?.color || "rgba(255,255,255,0.72)");
       el.style.setProperty("--level-glow", tier?.glow || "rgba(255,255,255,0.12)");
@@ -2246,6 +2696,9 @@
     const chatKey = speakerKey(data, false);
     const key = speakerKey(data, true);
     addChatLine(data, !!chatKey);
+    if (type === "text" && String(data.text || "").trim().toLowerCase() === "/fire") {
+      return;
+    }
     const el = key ? state.elements.get(key) : null;
     const char = key ? state.characters.get(key) : null;
     if (el) {
@@ -2293,15 +2746,24 @@
     }
   }
 
-  function closeMediaLightbox() {
-    mediaLightbox.hidden = true;
-    mediaLightboxBody.replaceChildren();
+  function sendVideochatControlEvent(payload) {
+    try {
+      if (state.videochatWs?.readyState === WebSocket.OPEN) {
+        state.videochatWs.send(JSON.stringify({ type: "chat_control", client_id: state.clientId, ...payload }));
+      }
+    } catch (_) {}
   }
 
-  function openMediaLightbox(media) {
-    if (!media?.src) return;
-    const full = document.createElement(media.tagName === "VIDEO" ? "video" : "img");
-    full.src = media.src;
+  function closeMediaLightbox(sync = true) {
+    mediaLightbox.hidden = true;
+    mediaLightboxBody.replaceChildren();
+    if (sync) sendVideochatControlEvent({ action: "media_lightbox_close" });
+  }
+
+  function openMediaLightboxSource(src, tagName = "IMG", sync = true) {
+    if (!src) return;
+    const full = document.createElement(String(tagName).toUpperCase() === "VIDEO" ? "video" : "img");
+    full.src = src;
     if (full.tagName === "VIDEO") {
       full.controls = true;
       full.autoplay = true;
@@ -2314,6 +2776,12 @@
     }
     mediaLightboxBody.replaceChildren(full);
     mediaLightbox.hidden = false;
+    if (sync) sendVideochatControlEvent({ action: "media_lightbox_open", src, tag: full.tagName });
+  }
+
+  function openMediaLightbox(media, sync = true) {
+    if (!media?.src) return;
+    openMediaLightboxSource(media.src, media.tagName, sync);
   }
 
   mediaLightbox.addEventListener("click", closeMediaLightbox);
@@ -2326,9 +2794,12 @@
   }
 
   function scrollChatLogToBottom() {
-    requestAnimationFrame(() => {
+    const settle = () => {
+      chatLog.scrollTop = chatLog.scrollHeight;
       chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "auto" });
-    });
+    };
+    requestAnimationFrame(settle);
+    setTimeout(settle, 50);
   }
 
   function keepChatLogBottomAfterMediaLoad(media, shouldStickToBottom) {
@@ -2339,6 +2810,8 @@
     media.addEventListener("loadeddata", settle, { once: true });
     setTimeout(settle, 120);
     setTimeout(settle, 500);
+    setTimeout(settle, 1000);
+    setTimeout(settle, 1800);
   }
 
   function createMediaElement(data) {
@@ -2427,10 +2900,11 @@
     const participant = participantKey ? state.participants.get(participantKey) : null;
     const isHost = !!(participant?.is_host || data.is_host);
     const isBot = !!data.is_bot && !isHost;
+    const levelsEnabled = state.cfg.level_system_enabled !== false;
     const explicitLevel = Number(data.level);
     const levelValue = isBot ? null : (participant
-      ? (participant.is_host ? 99 : Number(participant.level || data.level || 1))
-      : (isHost ? 99 : (Number.isFinite(explicitLevel) ? explicitLevel : 1)));
+      ? (levelsEnabled ? (participant.is_host ? 99 : Number(participant.level || data.level || 0)) : NaN)
+      : (levelsEnabled ? (isHost ? 99 : (Number.isFinite(explicitLevel) ? explicitLevel : 0)) : NaN));
     const tier = Number.isFinite(levelValue) ? levelTier(levelValue, isHost) : null;
     const item = document.createElement("div");
     item.className = `chat-line ${isParticipant ? "incall" : "offcall"}${isMedia ? ` photo ${type}` : ""}`;
@@ -2542,6 +3016,16 @@
     return Math.min(max, Math.max(min, value));
   }
 
+  function easeInOut(value) {
+    const t = clamp(value, 0, 1);
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function easeOutCubic(value) {
+    const t = clamp(value, 0, 1);
+    return 1 - Math.pow(1 - t, 3);
+  }
+
   function angleFromPayload(data, key, keyDeg) {
     const deg = asFiniteNumber(data?.[keyDeg]);
     if (deg != null) return deg * Math.PI / 180;
@@ -2640,15 +3124,352 @@
     saveCameraSettings();
   }
 
+  function makeFireworkMaterial(color, opacity = 1) {
+    return new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending,
+    });
+  }
+
+  function spawnFireworkBurst(effect, origin, color, count, power, delay = 0) {
+    const birth = performance.now() + delay;
+    for (let i = 0; i < count; i++) {
+      const sparkColor = color.clone().lerp(new THREE.Color(0xffffff), Math.random() * 0.28);
+      if (Math.random() < 0.18) sparkColor.lerp(new THREE.Color(0xfff2a6), 0.45);
+      const spark = new THREE.Mesh(effect.sparkGeo, makeFireworkMaterial(sparkColor, 0.96));
+      spark.position.copy(origin);
+      const theta = Math.random() * Math.PI * 2;
+      const vertical = Math.random() * 2 - 0.42;
+      const flat = Math.sqrt(Math.max(0.12, 1 - Math.min(0.95, vertical * vertical * 0.42)));
+      const speed = power * (0.58 + Math.random() * 0.72);
+      spark.userData.origin = origin.clone();
+      spark.userData.velocity = new THREE.Vector3(
+        Math.cos(theta) * flat * speed,
+        vertical * speed + 0.18,
+        Math.sin(theta) * flat * speed
+      );
+      spark.userData.birth = birth;
+      spark.userData.life = 680 + Math.random() * 520;
+      spark.userData.gravity = 0.92 + Math.random() * 0.32;
+      spark.userData.twinkle = Math.random() * Math.PI * 2;
+      spark.userData.baseScale = 0.75 + Math.random() * 0.75;
+      spark.visible = delay <= 0;
+      effect.group.add(spark);
+      effect.particles.push(spark);
+    }
+  }
+
+  function spawnLevelParticles(effect, color, count, isDown) {
+    for (let i = 0; i < count; i++) {
+      const sparkColor = color.clone().lerp(new THREE.Color(0xffffff), Math.random() * 0.36);
+      const spark = new THREE.Mesh(effect.sparkGeo, makeFireworkMaterial(sparkColor, 0.95));
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 0.16 + Math.random() * 0.44;
+      const y = 0.15 + Math.random() * 0.45;
+      spark.position.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius);
+      spark.userData.vel = new THREE.Vector3(
+        Math.cos(angle) * (0.25 + Math.random() * 0.42),
+        (isDown ? -0.15 : 0.62) + Math.random() * 0.62,
+        Math.sin(angle) * (0.25 + Math.random() * 0.42)
+      );
+      effect.group.add(spark);
+      effect.particles.push(spark);
+    }
+  }
+
+  function updateLevelEffect(effect, now, tick) {
+    const age = now - effect.start;
+    const progress = clamp(age / (effect.duration || effect.life || 1), 0, 1);
+    const out = easeOutCubic(progress);
+    const pulse = Math.sin(progress * Math.PI);
+    const isDown = effect.kind === "down";
+    if (effect.beam) {
+      effect.beam.visible = true;
+      effect.beam.scale.set(1 + pulse * 0.12, 1, 1 + pulse * 0.12);
+      effect.beam.material.opacity = pulse * (isDown ? 0.22 : 0.36);
+    }
+    if (effect.ring) {
+      effect.ring.scale.setScalar(1 + out * 2.15);
+      effect.ring.material.opacity = (1 - progress) * 0.68;
+    }
+    for (const spark of effect.particles) {
+      spark.position.addScaledVector(spark.userData.vel, 0.018);
+      spark.material.opacity = Math.max(0, 1 - progress) * 0.9;
+    }
+  }
+
+  function levelCharacterMotion(group, now) {
+    const start = group.userData.levelEffectStart || 0;
+    const kind = group.userData.levelEffectKind;
+    const age = now - start;
+    if (!kind || age > 1050) {
+      return { active: false, kind: "", offsetY: 0, scale: 1, tiltZ: 0, pulse: 0 };
+    }
+    const t = clamp(age / 1050, 0, 1);
+    const pulse = Math.sin(t * Math.PI);
+    if (kind === "down") {
+      return {
+        active: true,
+        kind,
+        offsetY: 0,
+        scale: 1 - pulse * 0.045,
+        tiltZ: Math.sin(t * Math.PI * 16) * (1 - t) * 0.055,
+        pulse,
+      };
+    }
+    return {
+      active: true,
+      kind,
+      offsetY: pulse * 0.28,
+      scale: 1 + pulse * 0.07,
+      tiltZ: 0,
+      pulse,
+    };
+  }
+
+  function triggerLevelEffect(data) {
+    if (!state.three?.scene || !window.THREE) return;
+    const key = speakerKey(data, true) || speakerKey(data);
+    if (!key) return;
+    const char = state.characters.get(key);
+    if (!char) return;
+    const participant = state.participants.get(key);
+    const nextLevel = Number(data.new_level);
+    if (participant && Number.isFinite(nextLevel)) {
+      participant.level = nextLevel;
+      participant.level_label = data.level_label || (participant.is_host ? "Lv. 99" : `Lv. ${nextLevel}`);
+      renderParticipants();
+    }
+    const origin = (char.userData.target || char.position).clone();
+    const upward = String(data.direction || "").toLowerCase() !== "down" && Number(data.new_level || 0) >= Number(data.old_level || 0);
+    const color = upward ? new THREE.Color(0xffd45c) : new THREE.Color(0x7fb6ff);
+    const group = new THREE.Group();
+    group.position.copy(origin);
+    const effects = state.three.effects || [];
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const effect = effects[i];
+      if (effect.type === "level" && effect.key === key) {
+        effect.group?.parent?.remove(effect.group);
+        effects.splice(i, 1);
+      }
+    }
+
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.52, 0.52, 2.6, 48, 1, true),
+      makeFireworkMaterial(color.clone().lerp(new THREE.Color(0xffffff), 0.45), upward ? 0.28 : 0.18)
+    );
+    beam.material.side = THREE.DoubleSide;
+    beam.position.y = 1.25;
+    group.add(beam);
+
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.48, 0.018, 8, 80),
+      makeFireworkMaterial(color, 0.72)
+    );
+    ring.material.side = THREE.DoubleSide;
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.05;
+    group.add(ring);
+
+    const start = performance.now();
+    const effect = {
+      type: "level",
+      key,
+      kind: upward ? "up" : "down",
+      direction: upward ? "up" : "down",
+      mode: "beam",
+      group,
+      particles: [],
+      sparkGeo: new THREE.SphereGeometry(0.025, 8, 6),
+      beam,
+      ring,
+      start,
+      duration: upward ? 1350 : 1050,
+      life: upward ? 1350 : 1050,
+      variant: upward ? "level-up-beam" : "level-down",
+    };
+    spawnLevelParticles(effect, color, 42, !upward);
+    state.three.scene.add(group);
+    state.three.effects = state.three.effects || [];
+    state.three.effects.push(effect);
+    char.userData.levelEffectStart = start;
+    char.userData.levelEffectKind = upward ? "up" : "down";
+    while (state.three.effects.length > 8) {
+      const old = state.three.effects.shift();
+      old?.group?.parent?.remove(old.group);
+    }
+
+    const el = state.elements.get(key);
+    if (el) {
+      el.classList.remove("level-pop", "level-drop");
+      void el.offsetWidth;
+      el.classList.add(upward ? "level-pop" : "level-drop");
+      setTimeout(() => el.classList.remove("level-pop", "level-drop"), upward ? 650 : 560);
+    }
+  }
+
+  function updateFireworksEffect(effect, now, tick) {
+    const age = now - effect.start;
+    if (effect.variant === "orbit-pop") {
+      const climb = easeInOut(clamp(age / 940, 0, 1));
+      for (const orb of effect.orbs || []) {
+        const angle = orb.phase + age * 0.0084;
+        const radius = orb.radius * (1 - climb * 0.42);
+        orb.mesh.position.set(
+          Math.cos(angle) * radius,
+          1.05 + climb * 2.35 + Math.sin(age * 0.009 + orb.phase) * 0.075,
+          Math.sin(angle) * radius
+        );
+        orb.mesh.scale.setScalar(1 + Math.sin(age * 0.02 + orb.phase) * 0.22);
+        orb.material.opacity = 0.92 * (1 - Math.max(0, climb - 0.86) / 0.14);
+      }
+      while (effect.popStep < effect.popTimes.length && age >= effect.popTimes[effect.popStep]) {
+        const step = effect.popStep;
+        const theta = step * Math.PI * 0.72 + 0.35;
+        const origin = new THREE.Vector3(
+          Math.cos(theta) * (0.2 + step * 0.14),
+          3.18 + step * 0.28,
+          Math.sin(theta) * (0.2 + step * 0.14)
+        );
+        const color = effect.baseColor.clone().offsetHSL(step * 0.085, 0.16, 0.08);
+        spawnFireworkBurst(effect, origin, color, 118 + step * 24, 1.95 + step * 0.24);
+        spawnFireworkBurst(effect, origin.clone().add(new THREE.Vector3(0, 0.08, 0)), color.clone().lerp(new THREE.Color(0xffffff), 0.28), 48, 1.05, 110);
+        effect.popStep += 1;
+      }
+      if (age > effect.popTimes[effect.popTimes.length - 1] + 220) {
+        for (const orb of effect.orbs || []) {
+          orb.mesh.visible = false;
+        }
+      }
+    } else {
+      for (const rocket of effect.rockets) {
+        const local = age - rocket.delay;
+        if (local < 0) {
+          rocket.mesh.visible = false;
+          continue;
+        }
+        if (local < rocket.riseMs) {
+          const phase = clamp(local / rocket.riseMs, 0, 1);
+          const eased = Math.pow(phase, 1.55);
+          rocket.mesh.visible = true;
+          rocket.mesh.position.lerpVectors(rocket.start, rocket.end, eased);
+          rocket.mesh.scale.setScalar(0.82 + eased * 0.42);
+          rocket.trailMaterial.opacity = (0.32 + phase * 0.48) * (1 - Math.max(0, phase - 0.86) / 0.14);
+          rocket.headMaterial.opacity = 0.72 + Math.sin(tick * 0.038 + rocket.twinkle) * 0.22;
+          continue;
+        }
+        rocket.mesh.visible = false;
+        if (!rocket.spawned) {
+          rocket.spawned = true;
+          spawnFireworkBurst(effect, rocket.end, rocket.color, 44, 1.45);
+          for (let i = 0; i < 2; i++) {
+            const theta = rocket.twinkle + i * Math.PI + Math.random() * 0.45;
+            const popOrigin = rocket.end.clone().add(new THREE.Vector3(
+              Math.cos(theta) * (0.22 + Math.random() * 0.24),
+              -0.05 + Math.random() * 0.22,
+              Math.sin(theta) * (0.22 + Math.random() * 0.24)
+            ));
+            spawnFireworkBurst(effect, popOrigin, rocket.color.clone().lerp(new THREE.Color(0xfff0a8), 0.24), 16, 0.86, 120 + i * 155);
+          }
+        }
+      }
+    }
+
+    for (const spark of effect.particles) {
+      const local = now - spark.userData.birth;
+      if (local < 0) {
+        spark.visible = false;
+        continue;
+      }
+      spark.visible = true;
+      const progress = clamp(local / spark.userData.life, 0, 1);
+      const sec = local / 1000;
+      const v = spark.userData.velocity;
+      spark.position.set(
+        spark.userData.origin.x + v.x * sec,
+        spark.userData.origin.y + v.y * sec - spark.userData.gravity * sec * sec,
+        spark.userData.origin.z + v.z * sec
+      );
+      const pulse = 0.8 + Math.sin(tick * 0.045 + spark.userData.twinkle) * 0.22;
+      spark.scale.setScalar(spark.userData.baseScale * (1 + progress * 0.9));
+      spark.material.opacity = Math.max(0, Math.pow(1 - progress, 1.45) * pulse);
+    }
+  }
+
+  function triggerFireworks(data) {
+    if (!state.three?.scene || !window.THREE) return;
+    const key = speakerKey(data, true) || speakerKey(data);
+    if (!key) return;
+    const char = state.characters.get(key);
+    if (!char) return;
+    const now = performance.now();
+    char.userData.fireHopStart = now;
+    char.userData.fireHopUntil = now + 1300;
+    const origin = (char.userData.target || char.position).clone();
+    const group = new THREE.Group();
+    group.position.copy(origin);
+    const participant = state.participants.get(key);
+    const baseColor = new THREE.Color(data.color || (participant ? participantColor(participant) : "#ffd66b"));
+    const sparkGeo = new THREE.SphereGeometry(0.032, 8, 6);
+    const orbGeo = new THREE.SphereGeometry(0.062, 12, 8);
+    const orbs = [];
+    for (let i = 0; i < 5; i++) {
+      const orbColor = baseColor.clone().offsetHSL(i * 0.062, 0.12, 0.05);
+      const material = makeFireworkMaterial(orbColor, 0.92);
+      const mesh = new THREE.Mesh(orbGeo, material);
+      group.add(mesh);
+      orbs.push({ mesh, material, phase: i * Math.PI * 0.4, radius: 0.54 + i * 0.034 });
+    }
+    const popTimes = [980, 1480, 1980];
+    state.three.scene.add(group);
+    state.three.effects = state.three.effects || [];
+    state.three.effects.push({
+      type: "fireworks",
+      variant: "orbit-pop",
+      group,
+      rockets: [],
+      orbs,
+      particles: [],
+      sparkGeo,
+      baseColor,
+      popTimes,
+      popStep: 0,
+      start: performance.now(),
+      life: popTimes[popTimes.length - 1] + 1450,
+    });
+    while (state.three.effects.length > 8) {
+      const old = state.three.effects.shift();
+      old?.group?.parent?.remove(old.group);
+    }
+  }
+
   function connectVideochat() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
+    state.videochatWs = ws;
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
         if (data.type === "videochat_snapshot" && state.mockCount <= 0) setSnapshot(data);
         if (data.type === "videochat_camera" || data.type === "camera") applyCameraControl(data);
         if (data.type === "videochat_overlay_settings") applyOverlaySettings(data.settings, data.client_id);
+        if (data.type === "chat_control") {
+          if (data.client_id === state.clientId) return;
+          if (data.action === "media_lightbox_open") openMediaLightboxSource(data.src, data.tag || "IMG", false);
+          if (data.action === "media_lightbox_close") closeMediaLightbox(false);
+          if (data.target === "link_preview") {
+            if (!sharedLinkPreview && window.TgChatCore?.createLinkPreview) {
+              sharedLinkPreview = window.TgChatCore.createLinkPreview("link-preview", {
+                onControl: (payload) => sendVideochatControlEvent(payload),
+              });
+            }
+            sharedLinkPreview?.applyRemote?.(data);
+          }
+        }
       } catch (_) {}
     };
     ws.onclose = () => setTimeout(connectVideochat, 1500);
@@ -2658,7 +3479,29 @@
   function connectChatSpeech() {
     const ws = new WebSocket(state.cfg.chat_ws_url);
     ws.onmessage = (ev) => {
-      try { showSpeech(JSON.parse(ev.data)); } catch (_) {}
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === "videochat_effect" && data.effect === "fireworks") {
+          triggerFireworks(data);
+          return;
+        }
+        if (data.type === "videochat_effect" && data.effect === "level") {
+          triggerLevelEffect(data);
+          return;
+        }
+        if (data.type === "videochat_levels_updated") {
+          fetch("/api/videochat/levels/reload", { method: "POST" })
+            .then((r) => r.json())
+            .then((payload) => {
+              if (payload?.snapshot?.type === "videochat_snapshot") {
+                setSnapshot(payload.snapshot);
+              }
+            })
+            .catch(() => {});
+          return;
+        }
+        showSpeech(data);
+      } catch (_) {}
     };
     ws.onclose = () => setTimeout(connectChatSpeech, 1500);
     ws.onerror = () => { try { ws.close(); } catch (_) {} };
@@ -2807,7 +3650,7 @@
     glow.position.z = 0.25;
     scene.add(glow);
 
-    state.three = { renderer, scene, camera, fireLight };
+    state.three = { renderer, scene, camera, fireLight, effects: [] };
 
     function updateCamera() {
       const v = state.view;
@@ -2950,8 +3793,34 @@
           meteors.splice(i, 1);
         }
       }
+      const effects = state.three.effects || [];
+      for (let i = effects.length - 1; i >= 0; i--) {
+        const effect = effects[i];
+        const age = now - effect.start;
+        const progress = clamp(age / effect.life, 0, 1);
+        const sec = age / 1000;
+        if (effect.type === "fireworks") {
+          updateFireworksEffect(effect, now, t);
+        } else if (effect.type === "level") {
+          updateLevelEffect(effect, now, t);
+        } else {
+          for (const spark of effect.particles) {
+            const v = spark.userData.velocity;
+            spark.position.set(v.x * sec, v.y * sec - 0.62 * sec * sec, v.z * sec);
+            spark.scale.setScalar(1 + progress * 0.85);
+            spark.material.opacity = Math.max(0, (1 - progress) * (0.72 + Math.sin(t * 0.02 + spark.userData.twinkle) * 0.2));
+          }
+        }
+        if (progress >= 1) {
+          scene.remove(effect.group);
+          effects.splice(i, 1);
+        }
+      }
       for (const group of state.characters.values()) {
         const speaking = (group.userData.speakingUntil || 0) > now;
+        const fireHopping = (group.userData.fireHopUntil || 0) > now;
+        const levelMotion = levelCharacterMotion(group, now);
+        const characterActive = speaking || fireHopping;
         if (group.userData.leavingUntil) {
           const start = group.userData.leavingStartedAt || now;
           const progress = clamp((now - start) / Math.max(1, group.userData.leavingUntil - start), 0, 1);
@@ -3031,9 +3900,10 @@
             const settleAlpha = now < (state.layoutSettlingUntil || 0) ? 0.045 : 0.18;
             group.position.lerp(target, settleAlpha);
           }
-          const bob = Math.sin(t * 0.003 + hashString(group.userData.key)) * 0.018 + (speaking ? Math.sin(t * 0.02) * 0.035 : 0);
-          group.position.y = (enteringDropY ?? 0) + hop + bob;
-          group.scale.setScalar(characterScale(state.participants.size, speaking));
+          const bob = Math.sin(t * 0.003 + hashString(group.userData.key)) * 0.018 + (characterActive ? Math.sin(t * 0.02) * 0.035 : 0);
+          group.position.y = (enteringDropY ?? 0) + hop + bob + levelMotion.offsetY;
+          group.rotation.z = levelMotion.tiltZ;
+          group.scale.setScalar(characterScale(state.participants.size, characterActive) * levelMotion.scale);
           group.traverse((obj) => {
             if (!obj.material) return;
             if (obj.userData.isGroundShadow) {
@@ -3100,9 +3970,18 @@
           }
           if (obj.material.opacity !== 1) obj.material.opacity = 1;
           if ("emissiveIntensity" in obj.material) obj.material.emissiveIntensity = 0;
+          if (levelMotion.active) {
+            if (levelMotion.kind === "down" && obj.material.color && obj.material.userData.originalColor) {
+              obj.material.color.copy(obj.material.userData.originalColor).lerp(new THREE.Color(0x7fb6ff), levelMotion.pulse * 0.32);
+            } else if (levelMotion.kind !== "down" && obj.material.emissive) {
+              obj.material.emissive.setHex(0xffd45c);
+              obj.material.emissiveIntensity = levelMotion.pulse * 0.16;
+            }
+          }
         });
         if (!stillEntering) {
-          group.scale.setScalar(characterScale(state.participants.size, speaking));
+          group.scale.setScalar(characterScale(state.participants.size, characterActive) * levelMotion.scale);
+          group.rotation.z = levelMotion.tiltZ;
         }
       }
       renderer.render(scene, camera);

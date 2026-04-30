@@ -59,6 +59,9 @@
 - `data/photos/`: Telegram 사진 캐시. 현재 최신 10개 유지
 - `data/telethon/`: Telethon 로그인 세션
 - `data/telethon/profile_photos/`: Telethon watcher가 내려받은 참가자 프로필 사진 캐시
+- `data/emoji_cache.json`: 최근 수신한 스티커/커스텀 이모지 전송 선택지 캐시
+- `data/level_reasons.json`: 레벨별 자동 안내 사유. 예시는 `level_reasons.example.json`
+- `data/videochat_levels.json`: 사용자 레벨, role 목록, 마지막 알림 레벨, 채팅/비디오챗 관찰 시각
 
 `data/`, `.env`, `.venv/`, 로그, 캐시는 커밋 대상이 아니다.
 
@@ -103,6 +106,11 @@ Telethon video chat watcher:
 - `VIDEOCHAT_HOST_NAME`: 호스트 표시 이름. 기본 예시는 `Host`
 - `VIDEOCHAT_HOST_AVATAR_FILE`: mock 테스트에서 호스트에게 우선 배정할 프로필 사진 파일명. 없으면 비워둔다.
 - `VIDEOCHAT_LEVEL_CHAT_ID`: 레벨/프로필 정보를 수집할 채팅방 ID. 기본 `0`이면 별도 수집 없음.
+- `VIDEOCHAT_LEVEL_SYSTEM_ENABLED`: `1`이면 레벨 시스템 사용.
+- `LEVEL_REASONS_FILE`: 레벨별 자동 안내 사유 JSON 경로. 비우면 `data/level_reasons.json`.
+- `LEVEL_UP_TEMPLATE`, `LEVEL_DOWN_TEMPLATE`: 자동 레벨 변동 안내 문구.
+- `FORCE_LEVEL_UP_TEMPLATE`, `FORCE_LEVEL_DOWN_TEMPLATE`: `/level_up` 안내 문구.
+- `VIDEOCHAT_FIRE_USER_COOLDOWN_SEC`, `VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC`: `/fire` 폭죽 이펙트 쿨다운.
 - `VIDEOCHAT_WATCH_ENABLED`: `1`이면 `videochat_overlay.py`가 Telethon watcher를 내장 실행
 - `VIDEOCHAT_WATCH_INTERVAL`: 참가자 목록 polling 간격 초. 기본 `2`, 코드에서 최소 `1.5`초로 제한
 - `VIDEOCHAT_DOWNLOAD_PHOTOS`: `1`이면 참가자 프로필 사진을 `data/telethon/profile_photos/`에 캐시
@@ -116,6 +124,13 @@ Telethon video chat watcher:
 - `VIDEOCHAT_HOST_USERNAME`, `VIDEOCHAT_HOST_USER_ID`, `VIDEOCHAT_HOST_AVATAR_FILE`은 기본 빈 값으로 둔다.
 - `VIDEOCHAT_HOST_NAME`은 예시용 `Host` 정도만 허용한다.
 - `VIDEOCHAT_LEVEL_CHAT_ID` 기본값은 `0`으로 둔다.
+
+레벨 규칙:
+- Lv. 0은 기본값.
+- Lv. 1은 커뮤니티 채팅에서 식별 가능한 메시지를 말했을 때만 자동 부여.
+- Lv. 2는 채팅 조건과 비디오챗 접속 조건을 모두 만족할 때 자동 부여. 비디오챗을 먼저 관찰한 Lv. 0 사용자가 이후 채팅하면 Lv. 1/Lv. 2 안내를 순서대로 보낸다.
+- Host/king은 Lv. 99 고정, bot은 레벨 배지 대신 Bot 배지를 쓴다.
+- 자동 레벨업 안내는 `last_notified_level`을 저장해서 서버 재시작/재조회 때 같은 레벨 안내를 반복하지 않는다.
 
 ## 실행 명령
 

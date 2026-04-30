@@ -60,5 +60,11 @@ chrome-debug-profile*/
 # Local TDLib binaries
 vendor/tdlib/*.dll
 
+# Node / Electron
+node_modules/
+npm-debug.log*
+tools/**/dist/
+tools/**/out/
+
 # ─── OS ───
 desktop.ini

@@ -216,6 +216,24 @@ body.send-panel-visible #chat {
   object-fit: cover;
 }
 
+.send-preview-media {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.send-preview-media img,
+.send-preview-media video,
+.send-preview-media .lottie-sticker {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
 #send-preview-name {
   min-width: 0;
   color: rgba(245, 247, 251, 0.78);
@@ -224,6 +242,27 @@ body.send-panel-visible #chat {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-rich-preview {
+  min-height: 30px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(245, 247, 251, 0.86);
+  font: 800 14px/1.35 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.composer-rich-preview[hidden] {
+  display: none;
+}
+
+.composer-rich-preview .chat-custom-emoji {
+  width: 1.55em;
+  height: 1.55em;
+  vertical-align: -0.35em;
 }
 
 #send-preview-clear,
@@ -256,6 +295,21 @@ body.send-panel-visible #chat {
   color: #141821;
   font: 900 13px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
   cursor: pointer;
+}
+
+#send-emoji-button {
+  flex: 0 0 34px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(245, 247, 251, 0.86);
+  font: 900 17px/1 'Segoe UI Emoji', 'Pretendard', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+#send-emoji-button:hover {
+  background: rgba(255, 209, 102, 0.18);
+  color: #ffe38c;
 }
 
 #send-button:disabled {

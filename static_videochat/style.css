@@ -554,6 +554,7 @@ body::after {
 .chat-send-target,
 #chat-send-button,
 #chat-send-file-button,
+#chat-send-emoji-button,
 #chat-send-preview-clear,
 #chat-reply-preview-clear,
 #chat-message-menu button {
@@ -633,6 +634,24 @@ body::after {
   object-fit: cover;
 }
 
+.chat-send-preview-media {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.chat-send-preview-media img,
+.chat-send-preview-media video,
+.chat-send-preview-media .lottie-sticker {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
 #chat-send-preview-name,
 #chat-reply-preview-label {
   min-width: 0;
@@ -641,10 +660,37 @@ body::after {
   white-space: nowrap;
 }
 
-#chat-send-file-button {
+.composer-rich-preview {
+  min-height: 28px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.18);
+  color: rgba(255,255,255,0.86);
+  font: 800 13px/1.35 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.composer-rich-preview[hidden] {
+  display: none;
+}
+
+.composer-rich-preview .chat-custom-emoji {
+  width: 1.55em;
+  height: 1.55em;
+  vertical-align: -0.35em;
+}
+
+#chat-send-file-button,
+#chat-send-emoji-button {
   flex: 0 0 32px;
   display: grid;
   place-items: center;
+}
+
+#chat-send-emoji-button {
+  font-family: 'Segoe UI Emoji', 'Pretendard', system-ui, sans-serif;
+  font-size: 17px;
 }
 
 #chat-send-button {

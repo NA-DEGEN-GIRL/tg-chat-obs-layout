@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Level FX Lab</title>
+  <link rel="stylesheet" href="/static/level_fx_lab.css">
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="label">
+    <div class="name">NA</div>
+    <div id="level">Lv. 1</div>
+  </div>
+  <div id="hud">
+    <div class="title">Level FX Lab</div>
+    <div class="row">
+      <button id="up-beam" type="button">level up: beam</button>
+      <button id="up-rings" type="button">level up: rings</button>
+      <button id="down-dust" type="button">level down</button>
+    </div>
+    <div class="row">
+      <button id="fire-rocket" type="button">fire: rocket</button>
+      <button id="fire-fountain" type="button">fire: fountain</button>
+      <button id="fire-ring" type="button">fire: ring burst</button>
+      <button id="fire-orbit" type="button">fire: orbit pop</button>
+      <button id="fire-orbit-finale" type="button">fire: orbit finale</button>
+    </div>
+    <div class="row">
+      <label>orbit pop gap
+        <input id="orbit-pop-gap" type="number" min="0.15" max="1.5" step="0.05" value="0.5">
+        sec
+      </label>
+    </div>
+    <div class="row">
+      <button id="reset" type="button">reset</button>
+      <label><input id="loop" type="checkbox"> loop</label>
+    </div>
+    <p>W/S pitch, Q/E yaw, wheel zoom, middle drag pan.</p>
+  </div>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="/static/level_fx_lab.js"></script>
+</body>
+</html>
