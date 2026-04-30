@@ -572,10 +572,17 @@
       }
     }
 
+    const shouldStickToBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 48;
     chat.appendChild(el);
 
     while (chat.children.length > MAX_MESSAGES) {
       chat.removeChild(chat.firstChild);
+    }
+
+    if (shouldStickToBottom) {
+      requestAnimationFrame(() => {
+        chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+      });
     }
 
     if (fadeAfterSec >= 0) {

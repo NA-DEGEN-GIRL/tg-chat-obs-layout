@@ -1899,11 +1899,17 @@
         item.appendChild(label);
       }
     }
+    const shouldStickToBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 48;
     chatLog.appendChild(item);
     while (chatLog.children.length > MAX_CHAT_LINES) {
       chatLog.removeChild(chatLog.firstChild);
     }
     requestAnimationFrame(() => item.classList.add("show"));
+    if (shouldStickToBottom) {
+      requestAnimationFrame(() => {
+        chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "smooth" });
+      });
+    }
     const fadeSec = state.chatSettings ? state.chatSettings.fadeSec : -1;
     if (fadeSec >= 0) {
       setTimeout(() => {
