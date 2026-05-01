@@ -36,6 +36,10 @@
   const avatarSizeUp = document.getElementById("avatar-size-up");
   const bubbleSizeDown = document.getElementById("bubble-size-down");
   const bubbleSizeUp = document.getElementById("bubble-size-up");
+  const avatarHeadGap = document.getElementById("avatar-head-gap");
+  const bubbleCardGap = document.getElementById("bubble-card-gap");
+  const subaccountToggle = document.getElementById("subaccount-toggle");
+  const subaccountAutoToggle = document.getElementById("subaccount-auto-toggle");
   const entryEffect = document.getElementById("entry-effect");
   const exitEffect = document.getElementById("exit-effect");
   const lifecycleSec = document.getElementById("lifecycle-sec");
@@ -44,6 +48,8 @@
   const toastStyle = document.getElementById("toast-style");
   const entryMessageTemplate = document.getElementById("entry-message-template");
   const exitMessageTemplate = document.getElementById("exit-message-template");
+  const levelUpMessageTemplate = document.getElementById("level-up-message-template");
+  const levelDownMessageTemplate = document.getElementById("level-down-message-template");
   const toastSizeDown = document.getElementById("toast-size-down");
   const toastSizeUp = document.getElementById("toast-size-up");
   const toastHandle = document.getElementById("toast-handle");
@@ -98,6 +104,33 @@
   const streamViewerClose = streamPreviewViewer.querySelector("#stream-viewer-close");
   const streamViewerBody = streamPreviewViewer.querySelector("#stream-viewer-body");
   const streamViewerResize = streamPreviewViewer.querySelector("#stream-viewer-resize");
+  const widgetControls = document.createElement("div");
+  widgetControls.id = "widget-controls";
+  widgetControls.innerHTML = `
+    <button id="widget-controls-drag" type="button" title="move widget menu">M</button>
+    <button id="widget-add-price" type="button" title="show price widget">price</button>
+    <button id="widget-add-memo" type="button" title="add memo widget">memo</button>
+    <button id="widget-add-character-move" type="button" title="move characters">이동</button>
+    <button id="widget-add-mini-jail" type="button" title="manage dwarf characters">난쟁이</button>
+    <button id="widget-add-real-jail" type="button" title="manage cage characters">케이지</button>
+    <button id="widget-add-game" type="button" title="show internal game widget">game</button>
+    <button id="widget-add-electron-browser" type="button" title="show native web widget">web</button>
+    <button id="widget-add-youtube" type="button" title="show YouTube widget">youtube</button>
+  `;
+  document.body.appendChild(widgetControls);
+  const widgetControlsDrag = widgetControls.querySelector("#widget-controls-drag");
+  const widgetAddPrice = widgetControls.querySelector("#widget-add-price");
+  const widgetAddMemo = widgetControls.querySelector("#widget-add-memo");
+  const widgetAddCharacterMove = widgetControls.querySelector("#widget-add-character-move");
+  const widgetAddBrowser = widgetControls.querySelector("#widget-add-browser");
+  const widgetAddMiniJail = widgetControls.querySelector("#widget-add-mini-jail");
+  const widgetAddRealJail = widgetControls.querySelector("#widget-add-real-jail");
+  const widgetAddGame = widgetControls.querySelector("#widget-add-game");
+  const widgetAddElectronBrowser = widgetControls.querySelector("#widget-add-electron-browser");
+  const widgetAddYoutube = widgetControls.querySelector("#widget-add-youtube");
+  const widgetLayer = document.createElement("div");
+  widgetLayer.id = "widget-layer";
+  document.body.appendChild(widgetLayer);
   const CHAT_SETTINGS_KEY = "videochat.chatPanelSettings.v2";
   const TOPIC_SETTINGS_KEY = "videochat.topicSettings.v1";
   const AVATAR_SETTINGS_KEY = "videochat.avatarSettings.v1";
@@ -105,10 +138,31 @@
   const EFFECT_SETTINGS_KEY = "videochat.effectSettings.v1";
   const TOAST_SETTINGS_KEY = "videochat.toastSettings.v1";
   const STREAM_PREVIEW_SETTINGS_KEY = "videochat.streamPreviewSettings.v1";
+  const WIDGET_SETTINGS_KEY = "videochat.widgetSettings.v1";
   const EMOJI_PICKER_POS_KEY = "videochat.emojiPicker.v1";
   const STREAM_PREVIEW_MJPEG_RECYCLE_MS = 4 * 60 * 1000;
   const STREAM_PREVIEW_MJPEG_RETRY_MIN_MS = 1200;
   const STREAM_PREVIEW_MJPEG_RETRY_MAX_MS = 10000;
+  const PRICE_REFRESH_MS = 45 * 1000;
+  const LEVEL_UP_TEMPLATE_DEFAULT = "{name} 레벨 업 Lv. {old_level} → {new_level} · {reason}";
+  const LEVEL_DOWN_TEMPLATE_DEFAULT = "{name} 레벨 다운 Lv. {old_level} → {new_level}";
+  const CAMERA_DISTANCE_MIN = 2.2;
+  const CAMERA_DISTANCE_MAX = 34;
+  const CAMERA_HEIGHT_MIN = 0.2;
+  const CAMERA_HEIGHT_MAX = 16;
+  const CAMERA_PITCH_MIN = -10 * Math.PI / 180;
+  const CAMERA_PITCH_MAX = 78 * Math.PI / 180;
+  const CAMERA_FOV_MIN = 18;
+  const CAMERA_FOV_MAX = 90;
+  const CHEER_DEFAULT_SEC = 5;
+  const CHEER_MAX_SEC = 600;
+  const CAMPFIRE_CENTER = { x: 0, z: 0.25 };
+  const WORLD_BOUNDS = {
+    xMin: -7.2,
+    xMax: 7.2,
+    zMin: CAMPFIRE_CENTER.z - 4.55,
+    zMax: CAMPFIRE_CENTER.z + 4.55,
+  };
 
   const state = {
     participants: new Map(),
@@ -156,6 +210,7 @@
     effectSettings: null,
     toastSettings: null,
     streamPreviewSettings: null,
+    widgetSettings: null,
     streamPreviewSignature: "",
     overlaySettings: {},
     overlaySettingsPushTimer: null,
@@ -185,6 +240,40 @@
     stickerPreviewActive: 0,
     emojiPickerDragging: false,
     emojiPickerSuppressClickUntil: 0,
+    priceWidgetTimer: 0,
+    priceWidgetLoading: false,
+    priceWidgetData: null,
+    youtubeSearchLoading: false,
+      youtubeSearchResults: [],
+      youtubeSearchError: "",
+      gameRomList: [],
+      gameRomLoading: false,
+      gameRomLoaded: false,
+      gameLogs: [],
+      gameButtonTimers: new Map(),
+      gameWidgetSaveTimer: 0,
+    gameLocalOverrideUntil: 0,
+    gameLocalClosedAt: 0,
+    gameClosePending: null,
+    gameCloseTimer: 0,
+    gameVoteBuffer: null,
+    electronBrowserBridgeBound: false,
+    electronBrowserLogs: [],
+    electronNativeViewsSuppressedForDrag: false,
+    widgetDragDepth: 0,
+    widgetInteractionDepth: 0,
+    widgetRenderPending: false,
+    prisonScaleAdjusting: false,
+    prisonTransformAdjusting: false,
+    prisonWidgetRefreshPending: false,
+    prisonPlaceMode: false,
+    prisonTransformRenderFrame: 0,
+    characterMoveAdjusting: false,
+    characterPlaceMode: false,
+    characterDriveMode: false,
+    characterDriveKey: "",
+    characterDriveLastT: 0,
+    characterDriveLastSave: 0,
   };
 
   const DEFAULT_CAMERA_VIEW = {
@@ -215,7 +304,10 @@
   }
 
   let sharedLinkPreview = null;
+  let sharedElectronLinkPreview = null;
   function richTextOptions(options = {}) {
+    const electronPreview = electronBrowserLinkPreview();
+    if (electronPreview) return { ...options, linkPreview: electronPreview };
     if (!sharedLinkPreview && window.TgChatCore?.createLinkPreview) {
       sharedLinkPreview = window.TgChatCore.createLinkPreview("link-preview", {
         onControl: (payload) => sendVideochatControlEvent(payload),
@@ -937,6 +1029,11 @@
     const sx = current.w / sourceW;
     const sy = current.h / sourceH;
     const sm = Math.min(sx, sy);
+    const sameLayoutClass = Math.abs(sx - 1) < 0.12 && Math.abs(sy - 1) < 0.12;
+    if (sameLayoutClass) {
+      out.viewport = current;
+      return out;
+    }
     if (out.chat) {
       out.chat.x = scaleValue(out.chat.x, sx);
       out.chat.y = scaleValue(out.chat.y, sy);
@@ -949,6 +1046,10 @@
       out.topic.y = scaleValue(out.topic.y, sy);
       out.topic.w = scaleValue(out.topic.w, sx);
       out.topic.fontSize = scaleValue(out.topic.fontSize, sm);
+    }
+    if (out.avatar) {
+      out.avatar.headGapPx = scaleValue(out.avatar.headGapPx, sm);
+      out.avatar.bubbleGapPx = scaleValue(out.avatar.bubbleGapPx, sm);
     }
     if (out.toast) {
       out.toast.x = scaleValue(out.toast.x, sx);
@@ -965,6 +1066,68 @@
         out.streamPreview.viewer.y = scaleValue(out.streamPreview.viewer.y, sy);
         out.streamPreview.viewer.w = scaleValue(out.streamPreview.viewer.w, sx);
         out.streamPreview.viewer.h = scaleValue(out.streamPreview.viewer.h, sy);
+      }
+    }
+    if (out.widgets) {
+      if (out.widgets.controls) {
+        out.widgets.controls.x = scaleValue(out.widgets.controls.x, sx);
+        out.widgets.controls.y = scaleValue(out.widgets.controls.y, sy);
+      }
+      if (out.widgets.price) {
+        out.widgets.price.x = scaleValue(out.widgets.price.x, sx);
+        out.widgets.price.y = scaleValue(out.widgets.price.y, sy);
+        out.widgets.price.w = scaleValue(out.widgets.price.w, sx);
+        out.widgets.price.h = scaleValue(out.widgets.price.h, sy);
+      }
+      if (out.widgets.youtube) {
+        out.widgets.youtube.x = scaleValue(out.widgets.youtube.x, sx);
+        out.widgets.youtube.y = scaleValue(out.widgets.youtube.y, sy);
+        out.widgets.youtube.w = scaleValue(out.widgets.youtube.w, sx);
+        out.widgets.youtube.h = scaleValue(out.widgets.youtube.h, sy);
+      }
+      if (out.widgets.electronBrowser) {
+        out.widgets.electronBrowser.x = scaleValue(out.widgets.electronBrowser.x, sx);
+        out.widgets.electronBrowser.y = scaleValue(out.widgets.electronBrowser.y, sy);
+        out.widgets.electronBrowser.w = scaleValue(out.widgets.electronBrowser.w, sx);
+        out.widgets.electronBrowser.h = scaleValue(out.widgets.electronBrowser.h, sy);
+      }
+      if (out.widgets.game) {
+        out.widgets.game.x = scaleValue(out.widgets.game.x, sx);
+        out.widgets.game.y = scaleValue(out.widgets.game.y, sy);
+        out.widgets.game.w = scaleValue(out.widgets.game.w, sx);
+        out.widgets.game.h = scaleValue(out.widgets.game.h, sy);
+      }
+      if (out.widgets.characterMove) {
+        out.widgets.characterMove.x = scaleValue(out.widgets.characterMove.x, sx);
+        out.widgets.characterMove.y = scaleValue(out.widgets.characterMove.y, sy);
+        out.widgets.characterMove.w = scaleValue(out.widgets.characterMove.w, sx);
+        out.widgets.characterMove.h = scaleValue(out.widgets.characterMove.h, sy);
+      }
+      for (const key of ["miniJail", "realJail"]) {
+        if (!out.widgets[key]) continue;
+        out.widgets[key].x = scaleValue(out.widgets[key].x, sx);
+        out.widgets[key].y = scaleValue(out.widgets[key].y, sy);
+        out.widgets[key].w = scaleValue(out.widgets[key].w, sx);
+        out.widgets[key].h = scaleValue(out.widgets[key].h, sy);
+      }
+      if (Array.isArray(out.widgets.memos)) {
+        for (const memo of out.widgets.memos) {
+          if (!memo || typeof memo !== "object") continue;
+          memo.x = scaleValue(memo.x, sx);
+          memo.y = scaleValue(memo.y, sy);
+          memo.w = scaleValue(memo.w, sx);
+          memo.h = scaleValue(memo.h, sy);
+          memo.fontSize = scaleValue(memo.fontSize, sm);
+        }
+      }
+      if (Array.isArray(out.widgets.browsers)) {
+        for (const browser of out.widgets.browsers) {
+          if (!browser || typeof browser !== "object") continue;
+          browser.x = scaleValue(browser.x, sx);
+          browser.y = scaleValue(browser.y, sy);
+          browser.w = scaleValue(browser.w, sx);
+          browser.h = scaleValue(browser.h, sy);
+        }
       }
     }
     if (out.camera) {
@@ -985,6 +1148,7 @@
       effect: state.effectSettings ? { ...state.effectSettings } : loadEffectSettings(),
       toast: state.toastSettings ? { ...state.toastSettings } : loadToastSettings(),
       streamPreview: state.streamPreviewSettings ? cloneSettings(state.streamPreviewSettings) : loadStreamPreviewSettings(),
+      widgets: state.widgetSettings ? cloneSettings(state.widgetSettings) : loadWidgetSettings(),
       camera: {
         yaw: state.view.yaw,
         distance: state.view.distance,
@@ -1269,6 +1433,22 @@
     return keyFor(p);
   }
 
+  function isSubaccountParticipant(p) {
+    return !!(p && typeof p === "object" && p.is_subaccount);
+  }
+
+  function shouldHideSubaccountParticipant(p) {
+    return !!state.avatarSettings?.hideSubaccount && isSubaccountParticipant(p);
+  }
+
+  function displayedParticipants() {
+    return Array.from(state.participants.values()).filter((p) => !shouldHideSubaccountParticipant(p));
+  }
+
+  function displayedParticipantCount() {
+    return displayedParticipants().length;
+  }
+
   function cleanUsername(value) {
     return String(value || "").trim().replace(/^@/, "").toLowerCase();
   }
@@ -1288,7 +1468,7 @@
   }
 
   function streamPreviewRows() {
-    return Array.from(state.participants.values())
+    return displayedParticipants()
       .filter((p) => !!p.video || !!p.screen)
       .sort((a, b) => Number(b.screen || 0) - Number(a.screen || 0) || String(a.name).localeCompare(String(b.name)));
   }
@@ -1700,6 +1880,4134 @@
     });
   }
 
+  function defaultWidgetSettings() {
+    return {
+      controls: {
+        x: 18,
+        y: Math.max(18, window.innerHeight - 64),
+      },
+      price: {
+        x: 18,
+        y: Math.max(18, window.innerHeight - 355),
+        w: 420,
+        h: 245,
+        hidden: false,
+        textScale: 1,
+      },
+      youtube: {
+        x: Math.max(18, window.innerWidth - 650),
+        y: 120,
+        w: 620,
+        h: 410,
+        open: false,
+        hidden: true,
+        query: "",
+        url: "",
+        videoId: "",
+      },
+      electronBrowser: {
+        x: Math.max(18, Math.round(window.innerWidth * 0.5) - 430),
+        y: 96,
+        w: Math.min(860, Math.max(520, window.innerWidth - 80)),
+        h: Math.min(560, Math.max(340, window.innerHeight - 160)),
+        open: false,
+        hidden: true,
+        debug: false,
+        url: "",
+      },
+      game: {
+        x: Math.max(18, Math.round(window.innerWidth * 0.5) - 320),
+        y: 110,
+        w: 720,
+        h: 590,
+        open: false,
+        hidden: true,
+        selected: "pokemon-gold",
+        rom: "pk_gold.gb",
+        groupPlay: true,
+        debug: false,
+        speed: 1,
+        volume: 0.75,
+        layoutDebug: false,
+        manualOpen: false,
+        manualX: null,
+        manualY: null,
+        manualDragged: false,
+        manualCoordMode: "local-guide",
+        manualScale: 1,
+        closedAt: 0,
+        lastCommand: "",
+      },
+      characterMove: {
+        x: Math.max(18, window.innerWidth - 430),
+        y: 170,
+        w: 390,
+        h: 430,
+        open: false,
+        hidden: true,
+        selectedKey: "",
+        placements: {},
+      },
+      miniJail: {
+        x: Math.max(18, window.innerWidth - 430),
+        y: 96,
+        w: 390,
+        h: 460,
+        open: false,
+        hidden: true,
+        scale: 0.45,
+        active: [],
+        pending: [],
+      },
+      realJail: {
+        x: Math.max(18, window.innerWidth - 455),
+        y: 128,
+        w: 410,
+        h: 480,
+        worldX: 5.65,
+        worldZ: CAMPFIRE_CENTER.z,
+        worldYaw: 0,
+        open: false,
+        hidden: true,
+        scale: 0.36,
+        active: [],
+        pending: [],
+        signText: "개집",
+        signColor: "#ffd36a",
+      },
+      memos: [],
+      browsers: [],
+    };
+  }
+
+  function loadWidgetSettings() {
+    try {
+      const base = defaultWidgetSettings();
+      const raw = localStorage.getItem(WIDGET_SETTINGS_KEY);
+      const saved = raw ? JSON.parse(raw) : {};
+      const remote = settingSection("widgets") || {};
+      const merged = Object.assign(base, saved, remote);
+      merged.controls = Object.assign(base.controls, saved.controls || {}, remote.controls || {});
+      merged.price = Object.assign(base.price, saved.price || {}, remote.price || {});
+      merged.youtube = Object.assign(base.youtube, saved.youtube || {}, remote.youtube || {});
+      merged.electronBrowser = normalizeElectronBrowserWidget(Object.assign(base.electronBrowser, saved.electronBrowser || {}, remote.electronBrowser || {}));
+      merged.game = normalizeGameWidget(Object.assign(base.game, saved.game || {}, remote.game || {}));
+      merged.characterMove = normalizeCharacterMoveWidget(Object.assign(base.characterMove, saved.characterMove || {}, remote.characterMove || {}));
+      merged.miniJail = normalizePrisonWidget(Object.assign(base.miniJail, saved.miniJail || {}, remote.miniJail || {}), "mini");
+      merged.realJail = normalizePrisonWidget(Object.assign(base.realJail, saved.realJail || {}, remote.realJail || {}), "real");
+      const memoSource = Array.isArray(remote.memos) ? remote.memos : (Array.isArray(saved.memos) ? saved.memos : []);
+      merged.memos = memoSource.map(normalizeMemoWidget).filter(Boolean);
+      const browserSource = Array.isArray(remote.browsers) ? remote.browsers : (Array.isArray(saved.browsers) ? saved.browsers : []);
+      merged.browsers = browserSource.map(normalizeBrowserWidget).filter(Boolean);
+      return merged;
+    } catch (_) {
+      return defaultWidgetSettings();
+    }
+  }
+
+  function saveWidgetSettings() {
+    if (!state.widgetSettings) return;
+    persistSetting(WIDGET_SETTINGS_KEY, state.widgetSettings);
+  }
+
+  function saveWidgetSettingsSoon(delay = 300) {
+    if (!state.widgetSettings) return;
+    if (state.gameWidgetSaveTimer) window.clearTimeout(state.gameWidgetSaveTimer);
+    state.gameWidgetSaveTimer = window.setTimeout(() => {
+      state.gameWidgetSaveTimer = 0;
+      saveWidgetSettings();
+    }, delay);
+  }
+
+  function applyWidgetControlsPosition() {
+    if (!widgetControls || !state.widgetSettings) return;
+    const controls = state.widgetSettings.controls || {};
+    const pad = 6;
+    const rect = widgetControls.getBoundingClientRect();
+    const w = rect.width || 160;
+    const h = rect.height || 44;
+    controls.x = Math.min(window.innerWidth - w - pad, Math.max(pad, Number(controls.x) || pad));
+    controls.y = Math.min(window.innerHeight - h - pad, Math.max(pad, Number(controls.y) || pad));
+    state.widgetSettings.controls = controls;
+    widgetControls.style.left = `${controls.x}px`;
+    widgetControls.style.top = `${controls.y}px`;
+    widgetControls.style.bottom = "auto";
+  }
+
+  function setupWidgetControlsDrag() {
+    if (!widgetControls) return;
+    let start = null;
+    let suppressClickUntil = 0;
+    widgetControls.addEventListener("click", (ev) => {
+      const dragClick = ev.target === widgetControls || !!ev.target.closest("#widget-controls-drag");
+      if (dragClick && Date.now() < suppressClickUntil) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }, true);
+    widgetControls.addEventListener("pointerdown", (ev) => {
+      if (!state.controlMode || !state.widgetSettings?.controls || ev.button !== 0) return;
+      const dragTarget = ev.target === widgetControls || !!ev.target.closest("#widget-controls-drag");
+      if (!dragTarget) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        controls: { ...state.widgetSettings.controls },
+        dragging: false,
+      };
+      widgetControls.setPointerCapture?.(ev.pointerId);
+    });
+    widgetControls.addEventListener("pointermove", (ev) => {
+      if (!start || !state.widgetSettings?.controls) return;
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      if (!start.dragging && Math.hypot(dx, dy) < 4) return;
+      start.dragging = true;
+      suppressClickUntil = Date.now() + 350;
+      ev.preventDefault();
+      ev.stopPropagation();
+      widgetControls.classList.add("dragging");
+      state.widgetSettings.controls.x = start.controls.x + dx;
+      state.widgetSettings.controls.y = start.controls.y + dy;
+      applyWidgetControlsPosition();
+    });
+    widgetControls.addEventListener("pointerup", () => {
+      if (!start) return;
+      const dragged = start.dragging;
+      start = null;
+      widgetControls.classList.remove("dragging");
+      if (dragged) {
+        suppressClickUntil = Date.now() + 350;
+        saveWidgetSettings();
+      }
+    });
+    widgetControls.addEventListener("pointercancel", () => {
+      start = null;
+      widgetControls.classList.remove("dragging");
+    });
+    widgetControlsDrag?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+  }
+
+  function normalizeMemoWidget(memo) {
+    if (!memo || typeof memo !== "object") return null;
+    return {
+      id: String(memo.id || `memo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`),
+      text: String(memo.text || ""),
+      x: Number(memo.x),
+      y: Number(memo.y),
+      w: Number(memo.w),
+      h: Number(memo.h),
+      fontSize: Number(memo.fontSize) || 18,
+      hidden: !!memo.hidden,
+    };
+  }
+
+  function normalizeBrowserWidget(browser) {
+    if (!browser || typeof browser !== "object") return null;
+    return {
+      id: String(browser.id || `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`),
+      url: String(browser.url || ""),
+      proxy: !!browser.proxy,
+      x: Number(browser.x),
+      y: Number(browser.y),
+      w: Number(browser.w),
+      h: Number(browser.h),
+      hidden: !!browser.hidden,
+    };
+  }
+
+  function normalizeElectronBrowserWidget(browser) {
+    const defaults = defaultWidgetSettings().electronBrowser;
+    if (!browser || typeof browser !== "object") return { ...defaults };
+    return {
+      x: Number(browser.x),
+      y: Number(browser.y),
+      w: Number(browser.w),
+      h: Number(browser.h),
+      open: !!browser.open,
+      hidden: !!browser.hidden,
+      debug: !!browser.debug,
+      url: String(browser.url || defaults.url),
+      title: String(browser.title || ""),
+      canGoBack: !!browser.canGoBack,
+      canGoForward: !!browser.canGoForward,
+      loading: !!browser.loading,
+    };
+  }
+
+  function clampPrisonScale(value, fallback = 0.45) {
+    const number = Number(value);
+    return Math.round(Math.min(0.9, Math.max(0.1, Number.isFinite(number) ? number : fallback)) * 100) / 100;
+  }
+
+  function clampJailWorldValue(value, fallback, min, max) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.round(Math.min(max, Math.max(min, number)) * 100) / 100;
+  }
+
+  function clampWorldX(value, fallback = 0) {
+    return clampJailWorldValue(value, fallback, WORLD_BOUNDS.xMin, WORLD_BOUNDS.xMax);
+  }
+
+  function clampWorldZ(value, fallback = CAMPFIRE_CENTER.z) {
+    return clampJailWorldValue(value, fallback, WORLD_BOUNDS.zMin, WORLD_BOUNDS.zMax);
+  }
+
+  function normalizeJailYaw(value, fallback = 0) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    const fullTurn = Math.PI * 2;
+    let normalized = number % fullTurn;
+    if (normalized > Math.PI) normalized -= fullTurn;
+    if (normalized < -Math.PI) normalized += fullTurn;
+    return Math.round(normalized * 1000) / 1000;
+  }
+
+  function normalizeCharacterPlacement(value) {
+    if (!value || typeof value !== "object") return null;
+    const space = String(value.space || "").toLowerCase() === "jail" ? "jail" : "world";
+    const x = space === "jail"
+      ? clampJailWorldValue(value.x, NaN, -1.08, 1.08)
+      : clampWorldX(value.x, NaN);
+    const z = space === "jail"
+      ? clampJailWorldValue(value.z, NaN, -0.78, 0.78)
+      : clampWorldZ(value.z, NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    const yawMode = String(value.yawMode || "").toLowerCase() === "manual" ? "manual" : "auto";
+    return {
+      x,
+      z,
+      space,
+      yawMode,
+      yaw: normalizeJailYaw(value.yaw, 0),
+    };
+  }
+
+  function normalizeCharacterPlacements(value) {
+    const out = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+    for (const [rawKey, rawPlacement] of Object.entries(value)) {
+      const key = String(rawKey || "").trim();
+      const placement = normalizeCharacterPlacement(rawPlacement);
+      if (key && placement) out[key] = placement;
+    }
+    return out;
+  }
+
+  function normalizeCharacterMoveWidget(widget) {
+    const defaults = defaultWidgetSettings().characterMove;
+    if (!widget || typeof widget !== "object") return { ...defaults, placements: {} };
+    return {
+      x: Number(widget.x),
+      y: Number(widget.y),
+      w: Number(widget.w),
+      h: Number(widget.h),
+      open: !!widget.open,
+      hidden: !!widget.hidden,
+      selectedKey: String(widget.selectedKey || ""),
+      placements: normalizeCharacterPlacements(widget.placements),
+    };
+  }
+
+  function normalizeGameWidget(widget) {
+    const defaults = defaultWidgetSettings().game;
+    if (!widget || typeof widget !== "object") return { ...defaults };
+    const selected = String(widget.selected || defaults.selected);
+    return {
+      x: Number(widget.x),
+      y: Number(widget.y),
+      w: Number(widget.w),
+      h: Number(widget.h),
+      open: !!widget.open,
+      hidden: !!widget.hidden,
+      selected: selected === "pokemon-gold" ? selected : defaults.selected,
+      rom: safeFilename(widget.rom || defaults.rom) || defaults.rom,
+      groupPlay: widget.groupPlay !== false,
+      debug: false,
+      speed: normalizeGameSpeed(widget.speed || defaults.speed),
+      volume: normalizeGameVolume(widget.volume ?? defaults.volume),
+      layoutDebug: !!widget.layoutDebug,
+      manualOpen: !!widget.manualOpen,
+      manualX: widget.manualX === null || widget.manualX === undefined ? NaN : Number(widget.manualX),
+      manualY: widget.manualY === null || widget.manualY === undefined ? NaN : Number(widget.manualY),
+      manualDragged: widget.manualCoordMode === "local-guide" && !!widget.manualDragged,
+      manualCoordMode: "local-guide",
+      manualScale: clampGameManualScale(widget.manualScale ?? defaults.manualScale),
+      closedAt: Math.max(0, Number(widget.closedAt) || 0),
+      lastCommand: String(widget.lastCommand || "").slice(0, 80),
+    };
+  }
+
+  function normalizeGameSpeed(value) {
+    const speeds = [1, 1.5, 2, 3, 4];
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 1;
+    return speeds.reduce((best, speed) => (
+      Math.abs(speed - number) < Math.abs(best - number) ? speed : best
+    ), 1);
+  }
+
+  function shiftGameSpeed(value, delta) {
+    const speeds = [1, 1.5, 2, 3, 4];
+    const current = normalizeGameSpeed(value);
+    const index = Math.max(0, speeds.indexOf(current));
+    return speeds[Math.min(speeds.length - 1, Math.max(0, index + delta))];
+  }
+
+  function gameSpeedLabel(value) {
+    const speed = normalizeGameSpeed(value);
+    return `x${Number.isInteger(speed) ? speed : speed.toFixed(1)}`;
+  }
+
+  function normalizeGameVolume(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 0.75;
+    return clamp(number, 0, 1);
+  }
+
+  function gameVolumeLabel(value) {
+    return `${Math.round(normalizeGameVolume(value) * 100)}%`;
+  }
+
+  function safeFilename(value) {
+    return String(value || "").split(/[\\/]/).pop().replace(/[^\w .()+@-]/g, "").trim().slice(0, 160);
+  }
+
+  function normalizeKeyList(value) {
+    const out = [];
+    const push = (item) => {
+      const key = String(typeof item === "object" && item ? (item.key || item.id || item.username || item.name || "") : item || "").trim();
+      if (key && !out.includes(key)) out.push(key);
+    };
+    if (Array.isArray(value)) value.forEach(push);
+    return out;
+  }
+
+  function normalizePrisonWidget(widget, kind = "mini") {
+    const defaults = kind === "real" ? defaultWidgetSettings().realJail : defaultWidgetSettings().miniJail;
+    const scale = clampPrisonScale(widget?.scale, defaults.scale);
+    const active = normalizeKeyList(widget?.active);
+    const pending = normalizeKeyList(widget?.pending?.length ? widget.pending : active);
+    const normalized = {
+      x: Number(widget?.x),
+      y: Number(widget?.y),
+      w: Number(widget?.w),
+      h: Number(widget?.h),
+      open: !!widget?.open,
+      hidden: !!widget?.hidden,
+      scale,
+      active,
+      pending,
+    };
+    if (kind === "real") {
+      normalized.worldX = clampWorldX(widget?.worldX, defaults.worldX);
+      normalized.worldZ = clampWorldZ(widget?.worldZ, defaults.worldZ);
+      normalized.worldYaw = normalizeJailYaw(widget?.worldYaw, defaults.worldYaw);
+      normalized.signText = normalizeJailSignText(widget?.signText, defaults.signText);
+      normalized.signColor = normalizeJailSignColor(widget?.signColor, defaults.signColor);
+    }
+    return normalized;
+  }
+
+  function normalizeJailSignText(value, fallback = "개집") {
+    if (value === undefined || value === null) return fallback;
+    return String(value).replace(/[\r\n\t]+/g, " ").trim().slice(0, 14);
+  }
+
+  function normalizeJailSignColor(value, fallback = "#ffd36a") {
+    const raw = String(value || "").trim();
+    const short = raw.match(/^#([0-9a-f]{3})$/i);
+    if (short) {
+      return `#${short[1].split("").map((ch) => `${ch}${ch}`).join("")}`.toLowerCase();
+    }
+    if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase();
+    return fallback;
+  }
+
+  function clampWidgetBox(box, minW = 180, minH = 110, displayW = 0, displayH = 0) {
+    const pad = 6;
+    box.w = Math.min(window.innerWidth - pad * 2, Math.max(minW, Number(box.w) || minW));
+    box.h = Math.min(window.innerHeight - pad * 2, Math.max(minH, Number(box.h) || minH));
+    const effectiveW = Number(displayW) || box.w;
+    const effectiveH = Number(displayH) || box.h;
+    box.x = Math.min(window.innerWidth - effectiveW - pad, Math.max(pad, Number(box.x) || pad));
+    box.y = Math.min(window.innerHeight - effectiveH - pad, Math.max(pad, Number(box.y) || pad));
+  }
+
+  function applyWidgetBox(el, box, minW, minH) {
+    const hiddenW = box.hidden ? 128 : 0;
+    const hiddenH = box.hidden ? 36 : 0;
+    clampWidgetBox(box, minW, minH, hiddenW, hiddenH);
+    el.style.left = `${box.x}px`;
+    el.style.top = `${box.y}px`;
+    el.style.width = `${box.w}px`;
+    el.style.height = `${box.h}px`;
+    el.classList.toggle("hidden-widget", !!box.hidden);
+  }
+
+  function isWidgetDragBlockedTarget(target, currentTarget) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest("button, input, textarea, select, [contenteditable='true'], .widget-resize");
+  }
+
+  function beginWidgetDragSession() {
+    state.widgetDragDepth = (Number(state.widgetDragDepth) || 0) + 1;
+    document.body.classList.add("widget-drag-active");
+    setElectronNativeViewDragSuppressed(true);
+  }
+
+  function flushPendingWidgetRender() {
+    if (state.widgetDragDepth > 0 || state.widgetInteractionDepth > 0 || !state.widgetRenderPending) return;
+    window.requestAnimationFrame(() => {
+      if (state.widgetDragDepth > 0 || state.widgetInteractionDepth > 0 || !state.widgetRenderPending) return;
+      renderWidgets({ force: true });
+    });
+  }
+
+  function endWidgetDragSession() {
+    state.widgetDragDepth = Math.max(0, (Number(state.widgetDragDepth) || 0) - 1);
+    if (state.widgetDragDepth > 0) return;
+    document.body.classList.remove("widget-drag-active");
+    setElectronNativeViewDragSuppressed(false);
+    flushPendingWidgetRender();
+  }
+
+  function beginWidgetInteractionSession() {
+    state.widgetInteractionDepth = (Number(state.widgetInteractionDepth) || 0) + 1;
+  }
+
+  function endWidgetInteractionSession() {
+    state.widgetInteractionDepth = Math.max(0, (Number(state.widgetInteractionDepth) || 0) - 1);
+    flushPendingWidgetRender();
+  }
+
+  function bindWidgetFrame(el, handles, resize, box, apply, save, minW, minH) {
+    const moveHandles = (Array.isArray(handles) ? handles : [handles]).filter(Boolean);
+    const protectLocalWidgetDrag = () => {
+      if (el?.id === "game-widget") {
+        state.gameLocalOverrideUntil = Date.now() + 5000;
+      }
+    };
+    function begin(ev, mode) {
+      if (!state.controlMode) return;
+      if (mode === "move" && isWidgetDragBlockedTarget(ev.target, ev.currentTarget)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      protectLocalWidgetDrag();
+      const pointerId = ev.pointerId;
+      const target = ev.currentTarget;
+      const start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        box: { ...box },
+      };
+      el.classList.add("dragging");
+      beginWidgetDragSession();
+      try { target.setPointerCapture?.(pointerId); } catch (_) {}
+      const move = (moveEv) => {
+        if (moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+        if (moveEv.buttons !== undefined && (moveEv.buttons & 1) === 0) {
+          finish();
+          return;
+        }
+        protectLocalWidgetDrag();
+        const dx = moveEv.clientX - start.x;
+        const dy = moveEv.clientY - start.y;
+        if (mode === "move") {
+          box.x = start.box.x + dx;
+          box.y = start.box.y + dy;
+        } else {
+          box.w = start.box.w + dx;
+          box.h = start.box.h + dy;
+        }
+        apply();
+      };
+      const finish = () => {
+        el.classList.remove("dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        target.removeEventListener("lostpointercapture", finish);
+        try { target.releasePointerCapture?.(pointerId); } catch (_) {}
+        apply();
+        save();
+        endWidgetDragSession();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish, { once: true });
+      window.addEventListener("pointercancel", finish, { once: true });
+      target.addEventListener("lostpointercapture", finish, { once: true });
+    }
+    for (const handle of moveHandles) {
+      handle?.addEventListener("pointerdown", (ev) => begin(ev, "move"));
+    }
+    resize?.addEventListener("pointerdown", (ev) => begin(ev, "resize"));
+  }
+
+  function widgetHideText(hidden, label) {
+    return hidden ? `show ${label}` : "hide";
+  }
+
+  function consumeHiddenShowPointerClick(button) {
+    if (button?.dataset.hiddenShowPointerHandled !== "1") return false;
+    delete button.dataset.hiddenShowPointerHandled;
+    return true;
+  }
+
+  function bindHiddenShowHandle(el, button, box, apply, save, show) {
+    if (!el || !button || !box) return;
+    let dragState = null;
+    const markPointerHandled = () => {
+      button.dataset.hiddenShowPointerHandled = "1";
+      window.setTimeout(() => {
+        if (button.dataset.hiddenShowPointerHandled === "1") {
+          delete button.dataset.hiddenShowPointerHandled;
+        }
+      }, 450);
+    };
+    button.addEventListener("pointerdown", (ev) => {
+      if (!box.hidden || !state.controlMode || ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pointerId = ev.pointerId;
+      const rect = el.getBoundingClientRect();
+      const boxX = Number(box.x);
+      const boxY = Number(box.y);
+      const start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        boxX: Number.isFinite(boxX) ? boxX : (rect.left || 0),
+        boxY: Number.isFinite(boxY) ? boxY : (rect.top || 0),
+        left: rect.left,
+        top: rect.top,
+        dragging: false,
+      };
+      dragState = start;
+      beginWidgetDragSession();
+      try { button.setPointerCapture?.(pointerId); } catch (_) {}
+      const commitPosition = () => {
+        const pad = 6;
+        const maxX = Math.max(pad, window.innerWidth - 128 - pad);
+        const maxY = Math.max(pad, window.innerHeight - 36 - pad);
+        box.x = Math.min(maxX, Math.max(pad, Number(box.x) || pad));
+        box.y = Math.min(maxY, Math.max(pad, Number(box.y) || pad));
+        el.style.left = `${box.x}px`;
+        el.style.top = `${box.y}px`;
+        el.style.transform = "translate3d(0,0,0)";
+      };
+      const move = (moveEv) => {
+        if (dragState !== start) return;
+        if (moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+        if (moveEv.buttons !== undefined && (moveEv.buttons & 1) === 0) {
+          end();
+          return;
+        }
+        const dx = moveEv.clientX - start.x;
+        const dy = moveEv.clientY - start.y;
+        if (!start.dragging && Math.hypot(dx, dy) < 4) return;
+        start.dragging = true;
+        moveEv.preventDefault();
+        box.x = start.boxX + dx;
+        box.y = start.boxY + dy;
+        commitPosition();
+        el.classList.add("dragging");
+      };
+      const cleanup = () => {
+        if (dragState === start) dragState = null;
+        try { button.releasePointerCapture?.(pointerId); } catch (_) {}
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", cancel);
+        button.removeEventListener("lostpointercapture", cancel);
+      };
+      const end = () => {
+        cleanup();
+        el.classList.remove("dragging");
+        if (start.dragging) {
+          commitPosition();
+          markPointerHandled();
+          apply();
+          save();
+        } else {
+          markPointerHandled();
+          show();
+        }
+        endWidgetDragSession();
+      };
+      const cancel = () => {
+        cleanup();
+        el.classList.remove("dragging");
+        if (start.dragging) {
+          commitPosition();
+          markPointerHandled();
+          apply();
+          save();
+        }
+        endWidgetDragSession();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end, { once: true });
+      window.addEventListener("pointercancel", cancel, { once: true });
+      button.addEventListener("lostpointercapture", cancel, { once: true });
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
+  }
+
+  function formatMarketPrice(asset) {
+    const price = Number(asset?.price);
+    if (!Number.isFinite(price)) return "-";
+    if (price >= 1000) return price.toLocaleString("en-US", { maximumFractionDigits: 0 });
+    if (price >= 10) return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
+
+  function formatMarketChange(asset) {
+    const change = Number(asset?.change);
+    const pct = Number(asset?.change_pct);
+    if (!Number.isFinite(change) || !Number.isFinite(pct)) return "-";
+    const sign = change >= 0 ? "+" : "";
+    const changeText = Math.abs(change) >= 100 ? change.toFixed(0) : change.toFixed(2);
+    return `${sign}${changeText} (${sign}${pct.toFixed(2)}%)`;
+  }
+
+  function sparklinePath(points, width = 126, height = 34) {
+    const values = (points || [])
+      .map((item) => Number(Array.isArray(item) ? item[1] : item?.price))
+      .filter((value) => Number.isFinite(value));
+    if (values.length < 2) return "";
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const spread = Math.max(0.000001, max - min);
+    return values.map((value, index) => {
+      const x = (index / (values.length - 1)) * width;
+      const y = height - ((value - min) / spread) * height;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+  }
+
+  function renderPriceRows(body) {
+    const assets = Array.isArray(state.priceWidgetData?.assets) ? state.priceWidgetData.assets : [];
+    body.innerHTML = "";
+    if (!assets.length) {
+      const empty = document.createElement("div");
+      empty.className = "price-widget-empty";
+      empty.textContent = state.priceWidgetLoading ? "loading prices" : "price feed unavailable";
+      body.appendChild(empty);
+      return;
+    }
+    for (const asset of assets) {
+      const row = document.createElement("div");
+      const pct = Number(asset.change_pct);
+      row.className = `price-row ${pct > 0 ? "up" : pct < 0 ? "down" : "flat"}`;
+      const path = sparklinePath(asset.points);
+      row.innerHTML = `
+        <div class="price-main">
+          <span class="price-symbol">${escapeHtml(asset.label || asset.symbol || "")}</span>
+          <span class="price-value">${formatMarketPrice(asset)}</span>
+          <span class="price-change">${formatMarketChange(asset)}</span>
+        </div>
+        <svg class="price-spark" viewBox="0 0 126 34" preserveAspectRatio="none" aria-hidden="true">
+          <path d="${path}"></path>
+        </svg>
+      `;
+      body.appendChild(row);
+    }
+  }
+
+  function updatePriceWidgetBody() {
+    const body = widgetLayer?.querySelector("#price-widget .price-widget-body");
+    if (body) renderPriceRows(body);
+    else renderWidgets();
+  }
+
+  async function refreshPriceWidget(force = false) {
+    if (!state.widgetSettings?.price || state.widgetSettings.price.hidden) return;
+    if (state.priceWidgetLoading && !force) return;
+    state.priceWidgetLoading = true;
+    updatePriceWidgetBody();
+    try {
+      const payload = await fetch(`/api/market/prices?_=${Date.now()}`, { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      state.priceWidgetData = payload;
+    } catch (exc) {
+      state.priceWidgetData = {
+        assets: [],
+        error: String(exc?.message || exc || "price feed unavailable"),
+        updated_at: Date.now() / 1000,
+      };
+    } finally {
+      state.priceWidgetLoading = false;
+      updatePriceWidgetBody();
+    }
+  }
+
+  function schedulePriceWidgetRefresh(immediate = false) {
+    if (state.priceWidgetTimer) window.clearInterval(state.priceWidgetTimer);
+    state.priceWidgetTimer = window.setInterval(() => refreshPriceWidget(false), PRICE_REFRESH_MS);
+    if (immediate) refreshPriceWidget(true);
+  }
+
+  function addMemoWidget() {
+    if (!state.widgetSettings) return;
+    const count = state.widgetSettings.memos.length;
+    state.widgetSettings.memos.push({
+      id: `memo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      text: "",
+      x: Math.min(window.innerWidth - 300, 80 + count * 24),
+      y: Math.min(window.innerHeight - 190, 120 + count * 24),
+      w: 300,
+      h: 170,
+      fontSize: 18,
+      hidden: false,
+    });
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  function addBrowserWidget() {
+    if (!state.widgetSettings) return;
+    if (!Array.isArray(state.widgetSettings.browsers)) state.widgetSettings.browsers = [];
+    const count = state.widgetSettings.browsers.length;
+    state.widgetSettings.browsers.push({
+      id: `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      url: "",
+      proxy: false,
+      x: Math.min(window.innerWidth - 520, 130 + count * 28),
+      y: Math.min(window.innerHeight - 360, 150 + count * 28),
+      w: 520,
+      h: 340,
+      hidden: false,
+    });
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  function participantDisplayLabel(p) {
+    return String(p?.name || p?.username || p?.id || "Unknown");
+  }
+
+  function participantDisplayLevel(p) {
+    const levelsEnabled = p?.level_system_enabled !== false && state.cfg.level_system_enabled !== false;
+    if (!levelsEnabled) return "";
+    if (p?.is_host) return "Lv. 99";
+    return String(p?.level_label || (Number.isFinite(Number(p?.level)) ? `Lv. ${Number(p.level)}` : "")).trim();
+  }
+
+  function prisonWidgetForKind(kind) {
+    return kind === "real" ? state.widgetSettings?.realJail : state.widgetSettings?.miniJail;
+  }
+
+  function otherPrisonWidgetForKind(kind) {
+    return kind === "real" ? state.widgetSettings?.miniJail : state.widgetSettings?.realJail;
+  }
+
+  function isRealJailed(key) {
+    return !!state.widgetSettings?.realJail?.active?.includes(String(key || ""));
+  }
+
+  function prisonKindForKey(key) {
+    const k = String(key || "");
+    if (state.widgetSettings?.realJail?.active?.includes(k)) return "real";
+    if (state.widgetSettings?.miniJail?.active?.includes(k)) return "mini";
+    return "";
+  }
+
+  function characterPrisonScale(key) {
+    const k = String(key || "");
+    if (state.widgetSettings?.realJail?.active?.includes(k)) return clampPrisonScale(state.widgetSettings.realJail.scale, 0.36);
+    if (state.widgetSettings?.miniJail?.active?.includes(k)) return clampPrisonScale(state.widgetSettings.miniJail.scale, 0.45);
+    return 1;
+  }
+
+  function realJailCenter() {
+    const defaults = defaultWidgetSettings().realJail;
+    const jail = state.widgetSettings?.realJail || {};
+    return {
+      x: clampWorldX(jail.worldX, defaults.worldX),
+      z: clampWorldZ(jail.worldZ, defaults.worldZ),
+    };
+  }
+
+  function realJailYaw() {
+    const defaults = defaultWidgetSettings().realJail;
+    const jail = state.widgetSettings?.realJail || {};
+    return normalizeJailYaw(jail.worldYaw, defaults.worldYaw);
+  }
+
+  function realJailSignConfig() {
+    const defaults = defaultWidgetSettings().realJail;
+    const jail = state.widgetSettings?.realJail || {};
+    return {
+      text: normalizeJailSignText(jail.signText, defaults.signText),
+      color: normalizeJailSignColor(jail.signColor, defaults.signColor),
+    };
+  }
+
+  function createJailSignTexture(text, color) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 512;
+    canvas.height = 160;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const label = text || "";
+    let fontSize = 82;
+    const fontFamily = "'Pretendard', 'Noto Sans KR', 'Malgun Gothic', 'Segoe UI', sans-serif";
+    do {
+      ctx.font = `900 ${fontSize}px ${fontFamily}`;
+      fontSize -= 4;
+    } while (fontSize >= 36 && ctx.measureText(label).width > 452);
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "rgba(27, 17, 11, 0.92)";
+    ctx.lineWidth = 12;
+    ctx.shadowColor = "rgba(0, 0, 0, 0.48)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 5;
+    ctx.strokeText(label, canvas.width / 2, canvas.height / 2 + 4);
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.fillStyle = color;
+    ctx.fillText(label, canvas.width / 2, canvas.height / 2 + 4);
+    const texture = new THREE.CanvasTexture(canvas);
+    if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding) texture.encoding = THREE.sRGBEncoding;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.needsUpdate = true;
+    return texture;
+  }
+
+  function createJailSignMaterial({ preview = false } = {}) {
+    const config = realJailSignConfig();
+    return new THREE.MeshBasicMaterial({
+      map: createJailSignTexture(config.text, config.color),
+      transparent: true,
+      opacity: preview ? 0.62 : 1,
+      color: preview ? 0xdff7ff : 0xffffff,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+  }
+
+  function updateJailSignLabel(group) {
+    if (!group || !window.THREE) return;
+    const preview = !!group.userData?.isPlacePreview;
+    group.traverse((obj) => {
+      if (!obj.userData?.jailSignLabel) return;
+      const previous = obj.material;
+      obj.material = createJailSignMaterial({ preview });
+      if (previous?.map) previous.map.dispose?.();
+      previous?.dispose?.();
+    });
+  }
+
+  function syncRealJailSign({ persist = false } = {}) {
+    const widget = state.widgetSettings?.realJail;
+    if (!widget) return;
+    const defaults = defaultWidgetSettings().realJail;
+    widget.signText = normalizeJailSignText(widget.signText, defaults.signText);
+    widget.signColor = normalizeJailSignColor(widget.signColor, defaults.signColor);
+    updateJailSignLabel(state.three?.jailGroup);
+    updateJailSignLabel(state.three?.jailPlacePreview);
+    if (persist) saveWidgetSettings();
+  }
+
+  function realJailLocalFromWorld(x, z) {
+    const center = realJailCenter();
+    const yaw = realJailYaw();
+    const dx = Number(x) - center.x;
+    const dz = Number(z) - center.z;
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    return {
+      x: dx * cos - dz * sin,
+      z: dx * sin + dz * cos,
+    };
+  }
+
+  function realJailWorldFromLocal(x, z) {
+    const center = realJailCenter();
+    const yaw = realJailYaw();
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const localX = clampJailWorldValue(x, 0, -1.08, 1.08);
+    const localZ = clampJailWorldValue(z, 0, -0.78, 0.78);
+    return {
+      x: center.x + localX * cos + localZ * sin,
+      z: center.z - localX * sin + localZ * cos,
+      localX,
+      localZ,
+    };
+  }
+
+  function realJailConstrainedWorldPoint(x, z) {
+    const local = realJailLocalFromWorld(x, z);
+    return realJailWorldFromLocal(local.x, local.z);
+  }
+
+  function applyRealJailPosition() {
+    const group = state.three?.jailGroup;
+    if (!group) return;
+    const center = realJailCenter();
+    group.position.set(center.x, 0, center.z);
+    group.rotation.y = realJailYaw();
+  }
+
+  function setPrisonTransformAdjusting(active) {
+    state.prisonTransformAdjusting = !!active;
+    if (!state.prisonTransformAdjusting && state.prisonWidgetRefreshPending) {
+      window.setTimeout(refreshOpenPrisonWidgets, 0);
+    }
+  }
+
+  function updateRealJailControlOutput() {
+    const widget = state.widgetSettings?.realJail;
+    const output = widgetLayer?.querySelector("#real-jail-widget .jail-position-output");
+    if (output && widget) output.textContent = formatJailPosition(widget);
+    const range = widgetLayer?.querySelector("#real-jail-widget .jail-yaw-range");
+    if (range && widget) range.value = String(Math.round(normalizeJailYaw(widget.worldYaw) * 180 / Math.PI));
+  }
+
+  function queueRealJailTransformRender() {
+    if (state.prisonTransformRenderFrame) return;
+    state.prisonTransformRenderFrame = window.requestAnimationFrame(() => {
+      state.prisonTransformRenderFrame = 0;
+      applyRealJailPosition();
+      renderParticipants();
+      updateRealJailControlOutput();
+    });
+  }
+
+  function syncRealJailTransform({ persist = false, render = true } = {}) {
+    const widget = state.widgetSettings?.realJail;
+    if (!widget) return;
+    const defaults = defaultWidgetSettings().realJail;
+    widget.worldX = clampWorldX(widget.worldX, defaults.worldX);
+    widget.worldZ = clampWorldZ(widget.worldZ, defaults.worldZ);
+    widget.worldYaw = normalizeJailYaw(widget.worldYaw, defaults.worldYaw);
+    if (render) queueRealJailTransformRender();
+    else {
+      applyRealJailPosition();
+      updateRealJailControlOutput();
+    }
+    const preview = state.three?.jailPlacePreview;
+    if (state.prisonPlaceMode && preview?.visible) preview.rotation.y = widget.worldYaw;
+    if (persist) saveWidgetSettings();
+  }
+
+  function setRealJailPlaceMode(active) {
+    state.prisonPlaceMode = !!active;
+    if (state.prisonPlaceMode) {
+      state.characterPlaceMode = false;
+      hideCharacterPlacePreview();
+      document.body.classList.remove("character-place-mode");
+      widgetLayer?.querySelector("#character-move-widget .character-place-toggle")?.classList.remove("active");
+      setCharacterDriveMode(false);
+    } else {
+      hideRealJailPlacePreview();
+    }
+    document.body.classList.toggle("jail-place-mode", state.prisonPlaceMode);
+    widgetLayer?.querySelector("#real-jail-widget .jail-place-toggle")?.classList.toggle("active", state.prisonPlaceMode);
+    if (!state.prisonPlaceMode && !state.prisonTransformAdjusting && state.prisonWidgetRefreshPending) {
+      window.setTimeout(refreshOpenPrisonWidgets, 0);
+    }
+  }
+
+  function realJailGroundPointFromEvent(ev) {
+    if (!state.three?.camera || !canvas || !window.THREE) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const mouse = new THREE.Vector2(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -(((ev.clientY - rect.top) / rect.height) * 2 - 1)
+    );
+    const raycaster = new THREE.Raycaster();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    raycaster.setFromCamera(mouse, state.three.camera);
+    if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+    return hit;
+  }
+
+  function groundPointFromEvent(ev) {
+    return realJailGroundPointFromEvent(ev);
+  }
+
+  function setRealJailPositionFromEvent(ev) {
+    const widget = state.widgetSettings?.realJail;
+    const point = groundPointFromEvent(ev);
+    if (!widget || !point) return false;
+    widget.worldX = clampWorldX(point.x, widget.worldX);
+    widget.worldZ = clampWorldZ(point.z, widget.worldZ);
+    syncRealJailTransform();
+    return true;
+  }
+
+  function updateRealJailPlacePreviewFromEvent(ev) {
+    const preview = state.three?.jailPlacePreview;
+    const point = groundPointFromEvent(ev);
+    if (!preview || !point) return false;
+    preview.position.set(
+      clampWorldX(point.x, preview.position.x),
+      0,
+      clampWorldZ(point.z, preview.position.z)
+    );
+    preview.rotation.y = realJailYaw();
+    preview.visible = true;
+    return true;
+  }
+
+  function hideRealJailPlacePreview() {
+    const preview = state.three?.jailPlacePreview;
+    if (preview) preview.visible = false;
+  }
+
+  function isJailPlacementBlockedTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest("#widget-layer, #widget-controls, #chat-panel, #topic-title, #topic-controls, #stream-preview-panel, #stream-preview-viewer, #media-lightbox, #chat-message-menu, #chat-mention-menu");
+  }
+
+  function characterMoveWidget() {
+    return state.widgetSettings?.characterMove;
+  }
+
+  function characterPlacementForKey(key) {
+    const placement = characterMoveWidget()?.placements?.[String(key || "")];
+    return normalizeCharacterPlacement(placement);
+  }
+
+  function hasCharacterPlacement(key) {
+    return !!characterPlacementForKey(key);
+  }
+
+  function characterPlacementWorldPosition(key, placement) {
+    const p = normalizeCharacterPlacement(placement);
+    if (!p) return null;
+    if (isRealJailed(key)) {
+      const point = p.space === "jail"
+        ? realJailWorldFromLocal(p.x, p.z)
+        : realJailConstrainedWorldPoint(p.x, p.z);
+      return {
+        x: point.x,
+        z: point.z,
+        a: Math.atan2(realJailCenter().x - point.x, realJailCenter().z - point.z),
+        yaw: p.yawMode === "manual" ? normalizeJailYaw(p.yaw, 0) : null,
+      };
+    }
+    return {
+      x: p.x,
+      z: p.z,
+      a: Math.atan2(CAMPFIRE_CENTER.x - p.x, CAMPFIRE_CENTER.z - p.z),
+      yaw: p.yawMode === "manual" ? normalizeJailYaw(p.yaw, 0) : null,
+    };
+  }
+
+  function yawForWorldDirection(x, z) {
+    return normalizeJailYaw(Math.atan2(x, z), 0);
+  }
+
+  function faceFireYaw(x, z) {
+    return yawForWorldDirection(CAMPFIRE_CENTER.x - x, CAMPFIRE_CENTER.z - z);
+  }
+
+  function selectedCharacterMoveKey() {
+    const widget = characterMoveWidget();
+    const selected = String(widget?.selectedKey || "");
+    if (selected && state.participants.has(selected)) return selected;
+    const first = displayedParticipants()[0];
+    return first ? keyFor(first) : "";
+  }
+
+  function ensureCharacterPlacement(key) {
+    const widget = characterMoveWidget();
+    const k = String(key || "");
+    if (!widget || !k) return null;
+    if (!widget.placements || typeof widget.placements !== "object") widget.placements = {};
+    const existing = normalizeCharacterPlacement(widget.placements[k]);
+    if (existing) {
+      if (isRealJailed(k) && existing.space !== "jail") {
+        const point = realJailConstrainedWorldPoint(existing.x, existing.z);
+        const converted = {
+          ...existing,
+          x: point.localX,
+          z: point.localZ,
+          space: "jail",
+        };
+        widget.placements[k] = converted;
+        return converted;
+      }
+      widget.placements[k] = existing;
+      return existing;
+    }
+    const group = state.characters.get(k);
+    const source = group?.userData?.target || group?.position || new THREE.Vector3(CAMPFIRE_CENTER.x, 0, CAMPFIRE_CENTER.z);
+    const realJailed = isRealJailed(k);
+    const point = realJailed ? realJailConstrainedWorldPoint(source.x, source.z) : null;
+    const placement = {
+      x: realJailed ? point.localX : clampWorldX(source.x, CAMPFIRE_CENTER.x),
+      z: realJailed ? point.localZ : clampWorldZ(source.z, CAMPFIRE_CENTER.z),
+      space: realJailed ? "jail" : "world",
+      yawMode: "auto",
+      yaw: normalizeJailYaw(group?.rotation?.y || 0, 0),
+    };
+    widget.placements[k] = placement;
+    return placement;
+  }
+
+  function setCharacterPlacementWorldPoint(key, placement, x, z) {
+    const p = placement || ensureCharacterPlacement(key);
+    if (!p) return null;
+    if (isRealJailed(key)) {
+      const point = realJailConstrainedWorldPoint(x, z);
+      p.x = point.localX;
+      p.z = point.localZ;
+      p.space = "jail";
+      return point;
+    }
+    p.x = clampWorldX(x, CAMPFIRE_CENTER.x);
+    p.z = clampWorldZ(z, CAMPFIRE_CENTER.z);
+    p.space = "world";
+    return { x: p.x, z: p.z };
+  }
+
+  function beginCharacterClawMove(key, target) {
+    const group = state.characters.get(String(key || ""));
+    if (!group || !target || !window.THREE) return;
+    const prisonScale = Number(group.userData?.prisonScale) || characterPrisonScale(key);
+    const visualScale = Math.max(
+      0.18,
+      Number(group.scale?.x) || characterScale(displayedParticipantCount(), false) * prisonScale
+    );
+    const from = group.position.clone();
+    from.y = 0;
+    const to = target.clone();
+    to.y = 0;
+    group.userData.clawMove = {
+      start: performance.now(),
+      duration: 3300,
+      from,
+      to,
+      scale: visualScale,
+      sway: ((hashString(`${key}:claw:${Date.now()}`) % 1000) / 1000 - 0.5) * 0.7,
+    };
+  }
+
+  function setCharacterPlaceMode(active) {
+    state.characterPlaceMode = !!active;
+    if (state.characterPlaceMode) {
+      setRealJailPlaceMode(false);
+      setCharacterDriveMode(false);
+    } else {
+      hideCharacterPlacePreview();
+    }
+    document.body.classList.toggle("character-place-mode", state.characterPlaceMode);
+    widgetLayer?.querySelector("#character-move-widget .character-place-toggle")?.classList.toggle("active", state.characterPlaceMode);
+  }
+
+  function setCharacterMoveAdjusting(active) {
+    state.characterMoveAdjusting = !!active;
+  }
+
+  function setCharacterDriveMode(active, key = "") {
+    const nextKey = String(key || selectedCharacterMoveKey() || "");
+    if (active && (!nextKey || !state.participants.has(nextKey))) return;
+    if (active) {
+      setRealJailPlaceMode(false);
+      state.characterPlaceMode = false;
+      hideCharacterPlacePreview();
+      document.body.classList.remove("character-place-mode");
+      const placement = ensureCharacterPlacement(nextKey);
+      const group = state.characters.get(nextKey);
+      if (placement) {
+        placement.yawMode = "manual";
+        placement.yaw = normalizeJailYaw(group?.rotation?.y ?? placement.yaw ?? 0, 0);
+      }
+      state.characterDriveMode = true;
+      state.characterDriveKey = nextKey;
+      state.characterDriveLastT = 0;
+      state.characterDriveLastSave = 0;
+      state.keys.clear();
+      blurEditableFocus();
+    } else {
+      state.characterDriveMode = false;
+      state.characterDriveKey = "";
+      state.characterDriveLastT = 0;
+      state.keys.clear();
+      saveWidgetSettings();
+    }
+    document.body.classList.toggle("character-drive-mode", state.characterDriveMode);
+    widgetLayer?.querySelector("#character-move-widget .character-drive-toggle")?.classList.toggle("active", state.characterDriveMode);
+  }
+
+  function updateCharacterDriveFromKeys(t) {
+    if (!state.characterDriveMode) return false;
+    const key = state.characterDriveKey || selectedCharacterMoveKey();
+    const widget = characterMoveWidget();
+    if (!key || !widget || !state.participants.has(key)) {
+      setCharacterDriveMode(false);
+      return true;
+    }
+    widget.selectedKey = key;
+    const placement = ensureCharacterPlacement(key);
+    if (!placement) return false;
+    const lastT = state.characterDriveLastT || t;
+    const dt = Math.min(0.05, Math.max(0.001, (t - lastT) / 1000));
+    state.characterDriveLastT = t;
+    let yaw = normalizeJailYaw(placement.yaw, 0);
+    const screenForward = new THREE.Vector3(-Math.sin(state.view.yaw), 0, -Math.cos(state.view.yaw));
+    const screenRight = new THREE.Vector3(Math.cos(state.view.yaw), 0, -Math.sin(state.view.yaw));
+    const move = new THREE.Vector3();
+    if (state.keys.has("w")) move.add(screenForward);
+    if (state.keys.has("s")) move.sub(screenForward);
+    if (state.keys.has("d")) move.add(screenRight);
+    if (state.keys.has("a")) move.sub(screenRight);
+    if (move.lengthSq() > 0) {
+      move.normalize();
+      yaw = yawForWorldDirection(move.x, move.z);
+      move.multiplyScalar(2.05 * dt);
+      const current = characterPlacementWorldPosition(key, placement) || { x: placement.x, z: placement.z };
+      setCharacterPlacementWorldPoint(key, placement, current.x + move.x, current.z + move.z);
+      const group = state.characters.get(key);
+      if (group) group.userData.driveMoveUntil = t + 140;
+    } else {
+      const turn = ((state.keys.has("q") ? 1 : 0) - (state.keys.has("e") ? 1 : 0)) * 2.4 * dt;
+      if (turn) yaw = normalizeJailYaw(yaw + turn, yaw);
+    }
+    placement.yawMode = "manual";
+    placement.yaw = yaw;
+    widget.placements[key] = placement;
+    if (!state.characterDriveLastSave || t - state.characterDriveLastSave > 500) {
+      state.characterDriveLastSave = t;
+      saveWidgetSettings();
+    }
+    return true;
+  }
+
+  function triggerCharacterDriveJump(key = "") {
+    const k = String(key || state.characterDriveKey || selectedCharacterMoveKey() || "");
+    const group = state.characters.get(k);
+    if (!group) return;
+    const now = performance.now();
+    if (now < Number(group.userData.driveJumpUntil || 0) - 140) return;
+    group.userData.driveJumpStart = now;
+    group.userData.driveJumpUntil = now + 560;
+    group.userData.driveMoveUntil = Math.max(Number(group.userData.driveMoveUntil || 0), now + 220);
+  }
+
+  function syncCharacterMoveWidget({ persist = false, render = true } = {}) {
+    const widget = characterMoveWidget();
+    if (!widget) return;
+    widget.placements = normalizeCharacterPlacements(widget.placements);
+    if (render) renderParticipants();
+    if (persist) saveWidgetSettings();
+  }
+
+  function setCharacterPlacementFromEvent(ev) {
+    const widget = characterMoveWidget();
+    const key = selectedCharacterMoveKey();
+    const point = groundPointFromEvent(ev);
+    if (!widget || !key || !point) return false;
+    const placement = ensureCharacterPlacement(key);
+    if (!placement) return false;
+    const worldPoint = setCharacterPlacementWorldPoint(key, placement, point.x, point.z);
+    placement.yawMode = "auto";
+    widget.selectedKey = key;
+    widget.placements[key] = placement;
+    beginCharacterClawMove(key, new THREE.Vector3(worldPoint.x, 0, worldPoint.z));
+    syncCharacterMoveWidget();
+    return true;
+  }
+
+  function updateCharacterPlacePreviewFromEvent(ev) {
+    const preview = state.three?.characterPlacePreview;
+    const key = selectedCharacterMoveKey();
+    const point = groundPointFromEvent(ev);
+    if (!preview || !key || !point) return false;
+    const constrained = isRealJailed(key)
+      ? realJailConstrainedWorldPoint(point.x, point.z)
+      : {
+        x: clampWorldX(point.x, preview.position.x),
+        z: clampWorldZ(point.z, preview.position.z),
+      };
+    const x = constrained.x;
+    const z = constrained.z;
+    preview.position.set(x, 0, z);
+    preview.rotation.y = faceFireYaw(x, z);
+    preview.scale.setScalar(characterPrisonScale(key));
+    const participant = state.participants.get(key);
+    if (participant) {
+      const color = new THREE.Color(participantColor(participant));
+      preview.traverse((obj) => {
+        if (obj.material?.color && obj.userData.previewTint !== false) obj.material.color.copy(color);
+      });
+    }
+    preview.visible = true;
+    return true;
+  }
+
+  function hideCharacterPlacePreview() {
+    const preview = state.three?.characterPlacePreview;
+    if (preview) preview.visible = false;
+  }
+
+  function formatCharacterPlacement(widget = null) {
+    const key = selectedCharacterMoveKey();
+    const placement = key ? characterPlacementForKey(key) : null;
+    if (!key) return "선택 없음";
+    if (!placement) return "자동 배치";
+    const deg = Math.round(normalizeJailYaw(placement.yaw, 0) * 180 / Math.PI);
+    const scope = placement.space === "jail" ? "cage " : "";
+    return `${scope}x ${placement.x.toFixed(2)} / z ${placement.z.toFixed(2)} / ${placement.yawMode === "manual" ? `${deg}deg` : "auto"}`;
+  }
+
+  function pruneCharacterPlacements(liveKeys) {
+    const widget = characterMoveWidget();
+    if (!widget?.placements || !liveKeys) return false;
+    let changed = false;
+    for (const key of Object.keys(widget.placements)) {
+      if (liveKeys.has(key)) continue;
+      delete widget.placements[key];
+      changed = true;
+    }
+    if (widget.selectedKey && !liveKeys.has(widget.selectedKey)) {
+      widget.selectedKey = "";
+      changed = true;
+    }
+    if (state.characterDriveMode && state.characterDriveKey && !liveKeys.has(state.characterDriveKey)) {
+      setCharacterDriveMode(false);
+      changed = true;
+    }
+    return changed;
+  }
+
+  function applyRealJailPresence(hasPrisoner = false) {
+    const group = state.three?.jailGroup;
+    if (!group) return;
+    const active = !!hasPrisoner;
+    group.visible = true;
+    if (group.userData.presenceActive === active) return;
+    group.userData.presenceActive = active;
+    const opacityScale = active ? 1 : 0.28;
+    group.traverse((obj) => {
+      const materials = Array.isArray(obj.material) ? obj.material : (obj.material ? [obj.material] : []);
+      for (const material of materials) {
+        if (!material) continue;
+        if (!Number.isFinite(material.userData.jailBaseOpacity)) {
+          material.userData.jailBaseOpacity = Number.isFinite(material.opacity) ? material.opacity : 1;
+        }
+        material.opacity = material.userData.jailBaseOpacity * opacityScale;
+        material.transparent = material.opacity < 0.999;
+        material.depthWrite = active;
+        material.needsUpdate = true;
+      }
+    });
+  }
+
+  function formatJailPosition(widget = null) {
+    const defaults = defaultWidgetSettings().realJail;
+    const x = clampWorldX(widget?.worldX, defaults.worldX);
+    const z = clampWorldZ(widget?.worldZ, defaults.worldZ);
+    const yaw = normalizeJailYaw(widget?.worldYaw, defaults.worldYaw);
+    const deg = Math.round(yaw * 180 / Math.PI);
+    return `x ${x.toFixed(2)} / z ${z.toFixed(2)} / ${deg}deg`;
+  }
+
+  function removeKeysFromList(list, keys) {
+    const remove = new Set((keys || []).map((key) => String(key)));
+    return normalizeKeyList(list).filter((key) => !remove.has(key));
+  }
+
+  function removeJailLocalPlacements(keys) {
+    const placements = state.widgetSettings?.characterMove?.placements;
+    if (!placements) return false;
+    let changed = false;
+    for (const key of (Array.isArray(keys) ? keys : [keys])) {
+      const k = String(key || "");
+      if (!k) continue;
+      const placement = normalizeCharacterPlacement(placements[k]);
+      if (placement?.space !== "jail") continue;
+      delete placements[k];
+      changed = true;
+    }
+    return changed;
+  }
+
+  function removePrisonAssignments(keys, { save = true, render = true } = {}) {
+    const remove = (Array.isArray(keys) ? keys : [keys]).map((key) => String(key || "")).filter(Boolean);
+    if (!remove.length || !state.widgetSettings) return;
+    const real = state.widgetSettings.realJail;
+    const removedFromReal = real
+      ? remove.filter((key) => normalizeKeyList(real.active).includes(key) || normalizeKeyList(real.pending).includes(key))
+      : [];
+    for (const widget of [state.widgetSettings.miniJail, state.widgetSettings.realJail]) {
+      if (!widget) continue;
+      widget.active = removeKeysFromList(widget.active, remove);
+      widget.pending = removeKeysFromList(widget.pending, remove);
+    }
+    if (removedFromReal.length) removeJailLocalPlacements(removedFromReal);
+    if (render) {
+      renderParticipants();
+      renderWidgets();
+    }
+    if (save) saveWidgetSettings();
+  }
+
+  function removeVisualEffectsForKey(key) {
+    const k = String(key || "");
+    if (!k) return;
+    const char = state.characters.get(k);
+    if (char?.userData) {
+      char.userData.fireHopUntil = 0;
+      char.userData.levelEffectKind = "";
+      char.userData.levelEffectStart = 0;
+      if (char.userData.cheerRig) {
+        char.userData.cheerRig.until = 0;
+        updateCheerRig(char, performance.now(), performance.now(), true);
+      }
+    }
+    const effects = state.three?.effects || [];
+    for (let i = effects.length - 1; i >= 0; i -= 1) {
+      const effect = effects[i];
+      if (effect?.key !== k) continue;
+      effect.group?.parent?.remove(effect.group);
+      effects.splice(i, 1);
+    }
+  }
+
+  function prunePrisonAssignments(liveKeys) {
+    if (!state.widgetSettings || !liveKeys) return false;
+    let changed = false;
+    const mini = state.widgetSettings.miniJail;
+    if (mini) {
+      const active = normalizeKeyList(mini.active).filter((key) => liveKeys.has(key));
+      const pending = normalizeKeyList(mini.pending).filter((key) => liveKeys.has(key));
+      changed = changed || active.length !== mini.active.length || pending.length !== mini.pending.length;
+      mini.active = active;
+      mini.pending = pending;
+    }
+    const real = state.widgetSettings.realJail;
+    if (real) {
+      const active = normalizeKeyList(real.active);
+      const pending = normalizeKeyList(real.pending);
+      changed = changed || active.length !== real.active.length || pending.length !== real.pending.length;
+      real.active = active;
+      real.pending = pending;
+    }
+    return changed;
+  }
+
+  function openPrisonWidget(kind) {
+    const widget = prisonWidgetForKind(kind);
+    if (!widget) return;
+    widget.open = true;
+    widget.hidden = false;
+    widget.pending = normalizeKeyList(widget.active);
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  function prisonAvatarMarkup(p) {
+    if (p?.avatar_url) {
+      return `<img src="${escapeHtml(p.avatar_url)}" alt="" width="34" height="34" loading="lazy" decoding="async" style="width:34px;height:34px;max-width:34px;max-height:34px;object-fit:cover;display:block;">`;
+    }
+    return `<span>${escapeHtml(initials(p?.name || p?.username))}</span>`;
+  }
+
+  function createPrisonParticipantButton(p, widget, kind) {
+    const key = keyFor(p);
+    const active = widget.pending.includes(key);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `prison-roster-card${active ? " selected" : ""}`;
+    row.style.setProperty("--speaker-color", participantColor(p));
+    row.innerHTML = `
+      <span class="prison-roster-avatar${p.avatar_url ? " has-photo" : ""}">${prisonAvatarMarkup(p)}</span>
+      <span class="prison-roster-meta">
+        <span class="prison-roster-name">${escapeHtml(participantDisplayLabel(p))}</span>
+        <span class="prison-roster-level">${escapeHtml(participantDisplayLevel(p) || (kind === "real" ? "케이지 후보" : "난쟁이 후보"))}</span>
+      </span>
+    `;
+    const img = row.querySelector(".prison-roster-avatar img");
+    img?.addEventListener("error", () => {
+      const avatar = row.querySelector(".prison-roster-avatar");
+      if (!avatar) return;
+      avatar.classList.remove("has-photo");
+      avatar.textContent = initials(p.name || p.username);
+    });
+    row.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (widget.pending.includes(key)) {
+        widget.pending = widget.pending.filter((item) => item !== key);
+      } else {
+        widget.pending = normalizeKeyList([...widget.pending, key]);
+      }
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    return row;
+  }
+
+  function createPrisonChip(key, widget) {
+    const p = state.participants.get(key);
+    const chip = document.createElement("span");
+    chip.className = "prison-chip";
+    chip.style.setProperty("--speaker-color", p ? participantColor(p) : "rgba(255,255,255,0.5)");
+    const label = document.createElement("span");
+    label.className = "prison-chip-label";
+    label.textContent = p ? participantDisplayLabel(p) : key;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.title = "remove";
+    remove.textContent = "x";
+    remove.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      widget.pending = widget.pending.filter((item) => item !== key);
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    chip.append(label, remove);
+    return chip;
+  }
+
+  function commitPrisonWidget(kind) {
+    const widget = prisonWidgetForKind(kind);
+    const other = otherPrisonWidgetForKind(kind);
+    if (!widget) return;
+    const previousReal = normalizeKeyList(state.widgetSettings?.realJail?.active);
+    const pending = normalizeKeyList(widget.pending);
+    const keys = kind === "real" ? pending : pending.filter((key) => state.participants.has(key));
+    widget.active = keys;
+    widget.pending = [...keys];
+    widget.scale = clampPrisonScale(widget.scale, kind === "real" ? 0.36 : 0.45);
+    if (other) {
+      other.active = removeKeysFromList(other.active, keys);
+      other.pending = removeKeysFromList(other.pending, keys);
+    }
+    const nextReal = normalizeKeyList(state.widgetSettings?.realJail?.active);
+    const removedFromReal = previousReal.filter((key) => !nextReal.includes(key));
+    if (removedFromReal.length) removeJailLocalPlacements(removedFromReal);
+    if (kind === "real") keys.forEach(removeVisualEffectsForKey);
+    renderParticipants();
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  function openCharacterMoveWidget() {
+    const widget = characterMoveWidget();
+    if (!widget) return;
+    widget.open = true;
+    widget.hidden = false;
+    widget.selectedKey = selectedCharacterMoveKey();
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  function createCharacterMoveParticipantButton(p, widget) {
+    const key = keyFor(p);
+    const selected = widget.selectedKey === key;
+    const placed = hasCharacterPlacement(key);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `prison-roster-card character-move-card${selected ? " selected" : ""}${placed ? " placed" : ""}`;
+    row.style.setProperty("--speaker-color", participantColor(p));
+    row.innerHTML = `
+      <span class="prison-roster-avatar${p.avatar_url ? " has-photo" : ""}">${prisonAvatarMarkup(p)}</span>
+      <span class="prison-roster-meta">
+        <span class="prison-roster-name">${escapeHtml(participantDisplayLabel(p))}</span>
+        <span class="prison-roster-level">${escapeHtml(placed ? "수동 위치" : (participantDisplayLevel(p) || "자동 배치"))}</span>
+      </span>
+    `;
+    const img = row.querySelector(".prison-roster-avatar img");
+    img?.addEventListener("error", () => {
+      const avatar = row.querySelector(".prison-roster-avatar");
+      if (!avatar) return;
+      avatar.classList.remove("has-photo");
+      avatar.textContent = initials(p.name || p.username);
+    });
+    row.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      widget.selectedKey = key;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    return row;
+  }
+
+  function renderCharacterMoveWidget() {
+    const widget = characterMoveWidget();
+    if (!widget || widget.open === false) return;
+    const card = document.createElement("section");
+    card.id = "character-move-widget";
+    card.className = "overlay-widget character-move-widget";
+    const header = document.createElement("div");
+    header.className = "widget-header character-move-header";
+	    header.innerHTML = `
+	      <span class="widget-title">이동</span>
+	      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(widget.hidden, "move")}</button>
+	      <button class="character-move-close" type="button" title="close">x</button>
+	    `;
+    const body = document.createElement("div");
+    body.className = "character-move-body";
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(header, body, resize);
+    widgetLayer.appendChild(card);
+    const apply = () => applyWidgetBox(card, widget, 320, 280);
+    apply();
+    if (!widget.hidden) {
+      const rows = displayedParticipants();
+      if (!widget.selectedKey || !state.participants.has(widget.selectedKey)) {
+        widget.selectedKey = rows[0] ? keyFor(rows[0]) : "";
+      }
+      const selectedKey = selectedCharacterMoveKey();
+      const selectedParticipant = selectedKey ? state.participants.get(selectedKey) : null;
+      const control = document.createElement("div");
+      control.className = "character-move-control";
+      control.innerHTML = `
+        <div class="character-move-selected">${escapeHtml(selectedParticipant ? participantDisplayLabel(selectedParticipant) : "선택 없음")}</div>
+        <button class="character-place-toggle${state.characterPlaceMode ? " active" : ""}" type="button">place</button>
+        <button class="character-drive-toggle${state.characterDriveMode && state.characterDriveKey === selectedKey ? " active" : ""}" type="button">drive</button>
+        <button class="character-yaw-auto" type="button" title="rotation auto">rot auto</button>
+        <button class="character-placement-reset" type="button" title="reset position and rotation">pos reset</button>
+        <output class="character-placement-output">${escapeHtml(formatCharacterPlacement(widget))}</output>
+      `;
+      const yaw = document.createElement("label");
+      yaw.className = "character-yaw-control";
+      const placement = selectedKey ? characterPlacementForKey(selectedKey) : null;
+      yaw.innerHTML = `
+        <span>rot</span>
+        <input class="character-yaw-range" type="range" min="-180" max="180" step="1" value="${Math.round(normalizeJailYaw(placement?.yaw, 0) * 180 / Math.PI)}">
+      `;
+      const roster = document.createElement("div");
+      roster.className = "prison-roster character-move-roster";
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "prison-empty";
+        empty.textContent = "현재 비디오챗 캐릭터가 없습니다";
+        roster.appendChild(empty);
+      } else {
+        for (const p of rows) roster.appendChild(createCharacterMoveParticipantButton(p, widget));
+      }
+      const actions = document.createElement("div");
+      actions.className = "prison-actions character-move-actions";
+      const clearButton = document.createElement("button");
+      clearButton.type = "button";
+      clearButton.className = "prison-clear";
+      clearButton.textContent = "전체 리셋";
+      clearButton.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        widget.placements = {};
+        setCharacterPlaceMode(false);
+        setCharacterDriveMode(false);
+        renderParticipants();
+        renderWidgets();
+        saveWidgetSettings();
+      });
+      actions.append(clearButton);
+      body.append(control, yaw, roster, actions);
+
+      const output = control.querySelector(".character-placement-output");
+      const yawRange = yaw.querySelector(".character-yaw-range");
+      const syncLocalOutput = () => {
+        if (output) output.textContent = formatCharacterPlacement(widget);
+        const p = selectedKey ? characterPlacementForKey(selectedKey) : null;
+        if (yawRange) {
+          yawRange.value = String(Math.round(normalizeJailYaw(p?.yaw, 0) * 180 / Math.PI));
+        }
+      };
+      const setSelectedYaw = (degrees, { persist = false } = {}) => {
+        if (!selectedKey) return;
+        const p = ensureCharacterPlacement(selectedKey);
+        if (!p) return;
+        p.yawMode = "manual";
+        p.yaw = normalizeJailYaw(Number(degrees) * Math.PI / 180, p.yaw);
+        widget.placements[selectedKey] = p;
+        syncLocalOutput();
+        syncCharacterMoveWidget({ persist });
+      };
+      control.querySelector(".character-place-toggle")?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!selectedKey) return;
+        widget.selectedKey = selectedKey;
+        setCharacterPlaceMode(!state.characterPlaceMode);
+        saveWidgetSettings();
+      });
+      control.querySelector(".character-drive-toggle")?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!selectedKey) return;
+        widget.selectedKey = selectedKey;
+        setCharacterDriveMode(!(state.characterDriveMode && state.characterDriveKey === selectedKey), selectedKey);
+        renderParticipants();
+        saveWidgetSettings();
+      });
+      control.querySelector(".character-yaw-auto")?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!selectedKey) return;
+        const p = ensureCharacterPlacement(selectedKey);
+        if (!p) return;
+        p.yawMode = "auto";
+        widget.placements[selectedKey] = p;
+        syncLocalOutput();
+        syncCharacterMoveWidget({ persist: true });
+      });
+      control.querySelector(".character-placement-reset")?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!selectedKey) return;
+        delete widget.placements[selectedKey];
+        setCharacterPlaceMode(false);
+        if (state.characterDriveKey === selectedKey) setCharacterDriveMode(false);
+        renderParticipants();
+        renderWidgets();
+        saveWidgetSettings();
+      });
+      yawRange?.addEventListener("pointerdown", (ev) => {
+        ev.stopPropagation();
+        setCharacterMoveAdjusting(true);
+        window.addEventListener("pointerup", () => {
+          setCharacterMoveAdjusting(false);
+          syncCharacterMoveWidget({ persist: true });
+        }, { once: true });
+        window.addEventListener("pointercancel", () => {
+          setCharacterMoveAdjusting(false);
+          syncCharacterMoveWidget({ persist: true });
+        }, { once: true });
+      });
+      yawRange?.addEventListener("input", () => setSelectedYaw(yawRange.value));
+      yawRange?.addEventListener("change", () => setSelectedYaw(yawRange.value, { persist: true }));
+    }
+    const hideButton = header.querySelector(".widget-hide");
+    const showCharacterMoveWidget = () => {
+      widget.hidden = false;
+      widget.open = true;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      widget.hidden = !widget.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".character-move-close")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      widget.open = false;
+      widget.hidden = true;
+      setCharacterPlaceMode(false);
+      setCharacterDriveMode(false);
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, widget, apply, saveWidgetSettings, showCharacterMoveWidget);
+    bindWidgetFrame(card, header, resize, widget, apply, saveWidgetSettings, 320, 280);
+  }
+
+  function renderPrisonWidget(kind) {
+    const widget = prisonWidgetForKind(kind);
+    if (!widget || widget.open === false) return;
+    const isReal = kind === "real";
+    const card = document.createElement("section");
+    card.id = isReal ? "real-jail-widget" : "mini-jail-widget";
+    card.className = `overlay-widget prison-widget ${isReal ? "real-jail-widget" : "mini-jail-widget"}`;
+    const header = document.createElement("div");
+    header.className = "widget-header prison-widget-header";
+    header.innerHTML = `
+      <span class="widget-title">${isReal ? "케이지" : "난쟁이"}</span>
+      <label class="prison-scale-control" title="scale">
+        <span>scale</span>
+        <button class="prison-scale-step" type="button" data-delta="-0.05" title="smaller">-</button>
+        <input class="prison-scale-range" type="range" min="0.1" max="0.9" step="0.05" value="${escapeHtml(widget.scale)}">
+        <output class="prison-scale-value">${escapeHtml(widget.scale)}</output>
+        <button class="prison-scale-step" type="button" data-delta="0.05" title="larger">+</button>
+      </label>
+	      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(widget.hidden, isReal ? "케이지" : "난쟁이")}</button>
+	      <button class="prison-widget-close" type="button" title="close">x</button>
+	    `;
+    const body = document.createElement("div");
+    body.className = "prison-widget-body";
+    if (isReal) body.classList.add("has-jail-control");
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(header, body, resize);
+    widgetLayer.appendChild(card);
+    const apply = () => applyWidgetBox(card, widget, 320, 280);
+    apply();
+    if (!widget.hidden) {
+      const selected = document.createElement("div");
+      selected.className = "prison-selected";
+      if (widget.pending.length) {
+        for (const key of widget.pending) selected.appendChild(createPrisonChip(key, widget));
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "prison-empty";
+        empty.textContent = "선택된 캐릭터 없음";
+        selected.appendChild(empty);
+      }
+      let location = null;
+      if (isReal) {
+        location = document.createElement("div");
+        location.className = "prison-jail-control";
+        location.innerHTML = `
+          <div class="jail-place-control">
+            <button class="jail-place-toggle${state.prisonPlaceMode ? " active" : ""}" type="button" title="place cage on the scene">place</button>
+            <button class="jail-reset" type="button" title="reset cage">reset</button>
+            <output class="jail-position-output">${formatJailPosition(widget)}</output>
+          </div>
+          <label class="jail-yaw-control" title="rotate jail">
+            <span>rot</span>
+            <input class="jail-yaw-range" type="range" min="-180" max="180" step="1" value="${Math.round(normalizeJailYaw(widget.worldYaw) * 180 / Math.PI)}">
+          </label>
+          <label class="jail-sign-control" title="cage sign">
+            <span>sign</span>
+            <input class="jail-sign-text" type="text" maxlength="14" value="${escapeHtml(widget.signText || "")}">
+            <input class="jail-sign-color" type="color" value="${escapeHtml(widget.signColor || "#ffd36a")}">
+          </label>
+        `;
+        const defaults = defaultWidgetSettings().realJail;
+        const yawRange = location.querySelector(".jail-yaw-range");
+        const signText = location.querySelector(".jail-sign-text");
+        const signColor = location.querySelector(".jail-sign-color");
+        let signColorEditing = false;
+        let signColorEditTimer = 0;
+        let signColorFrame = 0;
+        const beginSignColorEdit = () => {
+          if (!signColorEditing) {
+            signColorEditing = true;
+            beginWidgetInteractionSession();
+          }
+          if (signColorEditTimer) window.clearTimeout(signColorEditTimer);
+          signColorEditTimer = window.setTimeout(endSignColorEdit, 15000);
+        };
+        const endSignColorEdit = () => {
+          if (signColorEditTimer) window.clearTimeout(signColorEditTimer);
+          signColorEditTimer = 0;
+          if (!signColorEditing) return;
+          signColorEditing = false;
+          endWidgetInteractionSession();
+        };
+        const setYawDeg = (degrees, { persist = false } = {}) => {
+          widget.worldYaw = normalizeJailYaw(Number(degrees) * Math.PI / 180, defaults.worldYaw);
+          syncRealJailTransform({ persist });
+        };
+        const setSign = ({ persist = false } = {}) => {
+          widget.signText = normalizeJailSignText(signText?.value || "", "");
+          widget.signColor = normalizeJailSignColor(signColor?.value, defaults.signColor);
+          syncRealJailSign({ persist });
+        };
+        location.querySelector(".jail-place-toggle")?.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          setRealJailPlaceMode(!state.prisonPlaceMode);
+        });
+        signText?.addEventListener("keydown", (ev) => ev.stopPropagation());
+        signText?.addEventListener("input", () => setSign({ persist: true }));
+        signText?.addEventListener("change", () => setSign({ persist: true }));
+        signColor?.addEventListener("pointerdown", (ev) => {
+          ev.stopPropagation();
+          beginSignColorEdit();
+        });
+        signColor?.addEventListener("focus", beginSignColorEdit);
+        signColor?.addEventListener("input", () => {
+          if (signColorEditTimer) window.clearTimeout(signColorEditTimer);
+          signColorEditTimer = window.setTimeout(endSignColorEdit, 15000);
+          if (signColorFrame) return;
+          signColorFrame = window.requestAnimationFrame(() => {
+            signColorFrame = 0;
+            setSign();
+          });
+        });
+        signColor?.addEventListener("change", () => {
+          if (signColorFrame) {
+            window.cancelAnimationFrame(signColorFrame);
+            signColorFrame = 0;
+          }
+          setSign({ persist: true });
+          window.setTimeout(endSignColorEdit, 150);
+        });
+        signColor?.addEventListener("blur", () => {
+          if (signColorEditTimer) window.clearTimeout(signColorEditTimer);
+          signColorEditTimer = window.setTimeout(endSignColorEdit, 6000);
+        });
+        yawRange?.addEventListener("pointerdown", (ev) => {
+          ev.stopPropagation();
+          setPrisonTransformAdjusting(true);
+          window.addEventListener("pointerup", () => {
+            setPrisonTransformAdjusting(false);
+            syncRealJailTransform({ persist: true });
+          }, { once: true });
+          window.addEventListener("pointercancel", () => {
+            setPrisonTransformAdjusting(false);
+            syncRealJailTransform({ persist: true });
+          }, { once: true });
+        });
+        yawRange?.addEventListener("input", () => setYawDeg(yawRange.value));
+        yawRange?.addEventListener("change", () => setYawDeg(yawRange.value, { persist: true }));
+        location.querySelector(".jail-reset")?.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          widget.worldX = defaults.worldX;
+          widget.worldZ = defaults.worldZ;
+          widget.worldYaw = defaults.worldYaw;
+          setRealJailPlaceMode(false);
+          syncRealJailTransform({ persist: true, render: false });
+          renderParticipants();
+        });
+        syncRealJailTransform({ render: false });
+      }
+      const roster = document.createElement("div");
+      roster.className = "prison-roster";
+      const rows = displayedParticipants();
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "prison-empty";
+        empty.textContent = "현재 비디오챗 캐릭터가 없습니다";
+        roster.appendChild(empty);
+      } else {
+        for (const p of rows) roster.appendChild(createPrisonParticipantButton(p, widget, kind));
+      }
+      const actions = document.createElement("div");
+      actions.className = "prison-actions";
+      const applyButton = document.createElement("button");
+      applyButton.type = "button";
+      applyButton.className = "prison-commit";
+      applyButton.textContent = "확정";
+      applyButton.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        commitPrisonWidget(kind);
+      });
+      const clearButton = document.createElement("button");
+      clearButton.type = "button";
+      clearButton.className = "prison-clear";
+      clearButton.textContent = "전체 해제";
+      clearButton.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        widget.pending = [];
+        widget.active = [];
+        renderParticipants();
+        renderWidgets();
+        saveWidgetSettings();
+      });
+      actions.append(applyButton, clearButton);
+      body.append(selected);
+      if (location) body.append(location);
+      body.append(roster, actions);
+    }
+    const range = header.querySelector(".prison-scale-range");
+    const valueLabel = header.querySelector(".prison-scale-value");
+    let scaleRenderFrame = 0;
+    let scaleSaveTimer = 0;
+    const formatScale = (value) => String(Math.round(Number(value) * 100) / 100);
+    const syncScaleControls = () => {
+      if (range) range.value = String(widget.scale);
+      if (valueLabel) valueLabel.textContent = formatScale(widget.scale);
+    };
+    const queueScaleRender = () => {
+      if (scaleRenderFrame) return;
+      scaleRenderFrame = window.requestAnimationFrame(() => {
+        scaleRenderFrame = 0;
+        renderParticipants();
+      });
+    };
+    const queueScaleSave = () => {
+      if (scaleSaveTimer) window.clearTimeout(scaleSaveTimer);
+      scaleSaveTimer = window.setTimeout(() => {
+        scaleSaveTimer = 0;
+        saveWidgetSettings();
+      }, 180);
+    };
+    const setScale = (value) => {
+      widget.scale = clampPrisonScale(value, widget.scale);
+      syncScaleControls();
+      queueScaleRender();
+      queueScaleSave();
+    };
+    const beginScaleAdjust = () => {
+      state.prisonScaleAdjusting = true;
+    };
+    const endScaleAdjust = () => {
+      if (!state.prisonScaleAdjusting) return;
+      state.prisonScaleAdjusting = false;
+      saveWidgetSettings();
+      if (state.prisonWidgetRefreshPending) {
+        window.setTimeout(refreshOpenPrisonWidgets, 0);
+      }
+    };
+    syncScaleControls();
+    range?.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+      beginScaleAdjust();
+      window.addEventListener("pointerup", endScaleAdjust, { once: true });
+      window.addEventListener("pointercancel", endScaleAdjust, { once: true });
+    });
+    range?.addEventListener("input", () => setScale(range.value));
+    range?.addEventListener("change", () => {
+      setScale(range.value);
+      endScaleAdjust();
+    });
+    range?.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      beginScaleAdjust();
+      window.setTimeout(endScaleAdjust, 0);
+    });
+    header.querySelectorAll(".prison-scale-step").forEach((button) => {
+      button.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setScale((Number(widget.scale) || 0) + (Number(button.dataset.delta) || 0));
+      });
+    });
+    header.querySelector(".prison-scale-control")?.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+    });
+    const hideButton = header.querySelector(".widget-hide");
+    const showPrisonWidget = () => {
+      widget.hidden = false;
+      widget.open = true;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      widget.hidden = !widget.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".prison-widget-close")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      widget.open = false;
+      widget.hidden = true;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, widget, apply, saveWidgetSettings, showPrisonWidget);
+    bindWidgetFrame(card, header, resize, widget, apply, saveWidgetSettings, 320, 280);
+  }
+
+  function normalizeBrowserUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return parsed.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function browserWidgetFrameSrc(browser) {
+    const url = normalizeBrowserUrl(browser?.url);
+    if (!url) return "";
+    return browser.proxy ? `/api/link/proxy?url=${encodeURIComponent(url)}` : url;
+  }
+
+  function extractYouTubeVideoId(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
+    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const parsed = new URL(candidate);
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      if (host === "youtu.be") {
+        const id = parsed.pathname.split("/").filter(Boolean)[0] || "";
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
+      }
+      if (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) {
+        const watchId = parsed.searchParams.get("v") || "";
+        if (/^[a-zA-Z0-9_-]{11}$/.test(watchId)) return watchId;
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        const marker = parts.findIndex((part) => ["embed", "shorts", "live"].includes(part));
+        const id = marker >= 0 ? parts[marker + 1] : "";
+        return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  function youtubeWatchUrl(videoId) {
+    return videoId ? `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}` : "";
+  }
+
+  function youtubeEmbedUrl(videoId) {
+    if (!videoId) return "";
+    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`;
+  }
+
+  function youtubeNativeEmbedUrl(videoId) {
+    if (!videoId) return "";
+    return new URL(`/static/youtube_player.html?video_id=${encodeURIComponent(videoId)}`, window.location.href).href;
+  }
+
+  function postYoutubeCommand(command, args = []) {
+    const frame = widgetLayer?.querySelector("#youtube-widget .youtube-player");
+    if (!frame?.contentWindow) return;
+    try {
+      frame.contentWindow.postMessage(JSON.stringify({
+        event: "command",
+        func: command,
+        args,
+      }), "*");
+    } catch (_) {}
+  }
+
+  function setYoutubeVideo(youtube, videoId, options = {}) {
+    if (!youtube || !videoId) return;
+    if (options.resetQuery) youtube.query = "";
+    const url = youtubeWatchUrl(videoId);
+    youtube.url = url;
+    youtube.videoId = videoId;
+    youtube.open = true;
+    youtube.hidden = false;
+    renderWidgets();
+    saveWidgetSettings();
+  }
+
+  async function searchYoutubeWidget(youtube, inputValue = "") {
+    const value = String(inputValue || youtube?.query || youtube?.url || "").trim();
+    if (!youtube || !value) return;
+    const videoId = extractYouTubeVideoId(value);
+    if (videoId) {
+      setYoutubeVideo(youtube, videoId, { resetQuery: true });
+      return;
+    }
+    youtube.query = value;
+    youtube.videoId = "";
+    youtube.url = "";
+    state.youtubeSearchLoading = true;
+    state.youtubeSearchError = "";
+    state.youtubeSearchResults = [];
+    renderWidgets();
+    try {
+      const payload = await fetch(`/api/youtube/search?q=${encodeURIComponent(value)}&_=${Date.now()}`, { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      state.youtubeSearchResults = Array.isArray(payload.results) ? payload.results : [];
+      state.youtubeSearchError = state.youtubeSearchResults.length ? "" : "no results";
+    } catch (exc) {
+      state.youtubeSearchError = String(exc?.message || exc || "search failed");
+    } finally {
+      state.youtubeSearchLoading = false;
+      renderWidgets();
+      saveWidgetSettings();
+    }
+  }
+
+  function renderPriceWidget() {
+    const price = state.widgetSettings?.price;
+    if (!price) return;
+    const card = document.createElement("section");
+    card.id = "price-widget";
+    card.className = "overlay-widget price-widget";
+    const header = document.createElement("div");
+    header.className = "widget-header";
+    header.innerHTML = `
+      <span class="widget-title">Prices</span>
+      <button class="widget-refresh" type="button" title="refresh prices">R</button>
+      <button class="price-font-down" type="button" title="smaller price text">-</button>
+      <button class="price-font-up" type="button" title="larger price text">+</button>
+      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(price.hidden, "price")}</button>
+    `;
+    const body = document.createElement("div");
+    body.className = "widget-body price-widget-body";
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(header, body, resize);
+    widgetLayer.appendChild(card);
+    const apply = () => {
+      price.textScale = clamp(Number(price.textScale) || 1, 0.72, 1.55);
+      applyWidgetBox(card, price, 300, 215);
+      card.style.setProperty("--price-text-scale", String(price.textScale));
+    };
+    apply();
+    renderPriceRows(body);
+    const hideButton = header.querySelector(".widget-hide");
+    const showPriceWidget = () => {
+      price.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+      refreshPriceWidget(true);
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      price.hidden = !price.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+      if (!price.hidden) refreshPriceWidget(true);
+    });
+    header.querySelector(".widget-refresh")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      refreshPriceWidget(true);
+    });
+    header.querySelector(".price-font-down")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      price.textScale = clamp((Number(price.textScale) || 1) - 0.08, 0.72, 1.55);
+      apply();
+      saveWidgetSettings();
+    });
+    header.querySelector(".price-font-up")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      price.textScale = clamp((Number(price.textScale) || 1) + 0.08, 0.72, 1.55);
+      apply();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, price, apply, saveWidgetSettings, showPriceWidget);
+    bindWidgetFrame(card, header, resize, price, apply, saveWidgetSettings, 300, 215);
+  }
+
+  function renderMemoWidget(memo) {
+    const card = document.createElement("section");
+    card.className = "overlay-widget memo-widget";
+    card.dataset.memoId = memo.id;
+    const header = document.createElement("div");
+    header.className = "widget-header";
+    header.innerHTML = `
+	      <span class="widget-title">Memo</span>
+	      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(memo.hidden, "memo")}</button>
+      <button class="widget-delete" type="button" title="delete memo">x</button>
+    `;
+    const textarea = document.createElement("textarea");
+    textarea.className = "memo-widget-text";
+    textarea.value = memo.text || "";
+    textarea.placeholder = "memo";
+    textarea.style.fontSize = `${memo.fontSize || 18}px`;
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(header, textarea, resize);
+    widgetLayer.appendChild(card);
+    const apply = () => {
+      applyWidgetBox(card, memo, 190, 96);
+      textarea.style.fontSize = `${Math.min(48, Math.max(12, Number(memo.fontSize) || 18))}px`;
+    };
+    apply();
+    const hideButton = header.querySelector(".widget-hide");
+    const showMemoWidget = () => {
+      memo.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      memo.hidden = !memo.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".widget-delete")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.widgetSettings.memos = state.widgetSettings.memos.filter((item) => item.id !== memo.id);
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    textarea.addEventListener("input", () => {
+      memo.text = textarea.value;
+      saveWidgetSettings();
+    });
+    textarea.addEventListener("keydown", (ev) => ev.stopPropagation());
+    bindHiddenShowHandle(card, hideButton, memo, apply, saveWidgetSettings, showMemoWidget);
+    bindWidgetFrame(card, header, resize, memo, apply, saveWidgetSettings, 190, 96);
+  }
+
+  function renderBrowserWidget(browser) {
+    const card = document.createElement("section");
+    card.className = "overlay-widget browser-widget";
+    card.dataset.browserId = browser.id;
+    const dragStrip = document.createElement("div");
+    dragStrip.className = "widget-drag-strip browser-widget-drag";
+    dragStrip.title = "move browser widget";
+    const header = document.createElement("div");
+    header.className = "widget-header browser-widget-header";
+    header.innerHTML = `
+      <input class="browser-widget-url" type="text" placeholder="https://..." value="${escapeHtml(browser.url || "")}">
+      <button class="browser-widget-go" type="button" title="load URL">go</button>
+      <button class="browser-widget-proxy" type="button" title="toggle local proxy">${browser.proxy ? "raw" : "proxy"}</button>
+      <button class="browser-widget-open" type="button" title="open externally">open</button>
+	      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(browser.hidden, "web")}</button>
+      <button class="widget-delete" type="button" title="delete browser">x</button>
+    `;
+    const body = document.createElement("div");
+    body.className = "browser-widget-body";
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(dragStrip, header, body, resize);
+    widgetLayer.appendChild(card);
+    const input = header.querySelector(".browser-widget-url");
+    const apply = () => applyWidgetBox(card, browser, 320, 220);
+    const loadFrame = () => {
+      body.innerHTML = "";
+      const src = browserWidgetFrameSrc(browser);
+      if (!src) {
+        const empty = document.createElement("div");
+        empty.className = "browser-widget-empty";
+        empty.textContent = "enter URL";
+        body.appendChild(empty);
+        return;
+      }
+      const frame = document.createElement("iframe");
+      frame.className = "browser-widget-frame";
+      frame.src = src;
+      frame.referrerPolicy = "no-referrer";
+      frame.sandbox = "allow-scripts allow-forms allow-popups allow-pointer-lock";
+      body.appendChild(frame);
+    };
+    apply();
+    loadFrame();
+    const commitUrl = () => {
+      const normalized = normalizeBrowserUrl(input?.value || "");
+      browser.url = normalized || String(input?.value || "").trim();
+      if (input) input.value = browser.url;
+      loadFrame();
+      saveWidgetSettings();
+    };
+    input?.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        commitUrl();
+      }
+    });
+    input?.addEventListener("change", commitUrl);
+    header.querySelector(".browser-widget-go")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      commitUrl();
+    });
+    header.querySelector(".browser-widget-proxy")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      browser.proxy = !browser.proxy;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".browser-widget-open")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const url = normalizeBrowserUrl(browser.url);
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    });
+    const hideButton = header.querySelector(".widget-hide");
+    const showBrowserWidget = () => {
+      browser.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      browser.hidden = !browser.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".widget-delete")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.widgetSettings.browsers = state.widgetSettings.browsers.filter((item) => item.id !== browser.id);
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, browser, apply, saveWidgetSettings, showBrowserWidget);
+    bindWidgetFrame(card, dragStrip, resize, browser, apply, saveWidgetSettings, 320, 220);
+  }
+
+  function gamePlayerUrl(game) {
+    const selected = String(game?.selected || "pokemon-gold");
+    const rom = safeFilename(game?.rom || "pk_gold.gb") || "pk_gold.gb";
+    const speed = gameSpeedLabel(game?.speed || 1).slice(1);
+    const volume = Math.round(normalizeGameVolume(game?.volume ?? 0.75) * 100);
+    return `/static/game_player.html?game=${encodeURIComponent(selected)}&rom=${encodeURIComponent(rom)}&debug=${game?.debug ? "1" : "0"}&layout=${game?.layoutDebug ? "1" : "0"}&speed=${encodeURIComponent(speed)}&volume=${encodeURIComponent(volume)}&v=21`;
+  }
+
+  function gameRomLabel(row) {
+    const file = String(row?.file || row || "");
+    if (file.toLowerCase() === "pk_gold.gb") return "포켓몬 골드";
+    return String(row?.name || file.replace(/\.[^.]+$/, "") || "ROM");
+  }
+
+  async function refreshGameRomList(force = false) {
+    if (state.gameRomLoading || (state.gameRomLoaded && !force)) return state.gameRomList;
+    state.gameRomLoading = true;
+    pushGameLog("rom-list", "request /api/game/roms");
+    try {
+      const payload = await fetch(`/api/game/roms?_=${Date.now()}`, { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      });
+      state.gameRomList = Array.isArray(payload.roms) ? payload.roms : [];
+      pushGameLog("rom-list", `${state.gameRomList.length} ROM(s)`);
+    } catch (err) {
+      state.gameRomList = [];
+      pushGameLog("rom-list-error", err?.message || String(err || "unknown error"));
+    } finally {
+      state.gameRomLoading = false;
+      state.gameRomLoaded = true;
+    }
+    return state.gameRomList;
+  }
+
+  function gameWidgetFrame() {
+    return widgetLayer?.querySelector("#game-widget .game-widget-frame") || null;
+  }
+
+  function postGameWidgetMessage(payload) {
+    const frame = gameWidgetFrame();
+    if (!frame?.contentWindow) return false;
+    try {
+      frame.contentWindow.postMessage(payload, window.location.origin);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function requestGameWidgetSave(reason = "widget") {
+    return postGameWidgetMessage({ type: "tg-game-save", reason });
+  }
+
+  function syncGameWidgetViewport() {
+    postGameWidgetMessage({ type: "tg-game-resize" });
+  }
+
+  function scheduleGameWidgetViewportSync() {
+    window.requestAnimationFrame(() => {
+      syncGameWidgetViewport();
+      for (const delay of [80, 180, 360, 720, 1400]) {
+        window.setTimeout(syncGameWidgetViewport, delay);
+      }
+    });
+  }
+
+  function postGameWidgetSpeed(game = state.widgetSettings?.game) {
+    return postGameWidgetMessage({ type: "tg-game-speed", speed: normalizeGameSpeed(game?.speed || 1) });
+  }
+
+  function postGameWidgetVolume(game = state.widgetSettings?.game) {
+    return postGameWidgetMessage({ type: "tg-game-volume", volume: normalizeGameVolume(game?.volume ?? 0.75) });
+  }
+
+  function postGameWidgetLayoutDebug(game = state.widgetSettings?.game) {
+    return postGameWidgetMessage({ type: "tg-game-layout-debug", enabled: !!game?.layoutDebug });
+  }
+
+  function updateGameWidgetStatus(text) {
+    const status = widgetLayer?.querySelector("#game-widget .game-widget-status");
+    if (status) status.textContent = text;
+  }
+
+  function setGameButtonVisual(command, pressed) {
+    const button = widgetLayer?.querySelector(`#game-widget [data-game-command="${CSS.escape(String(command || ""))}"]`);
+    button?.classList.toggle("is-pressed", !!pressed);
+  }
+
+  function setGameButtonPressed(command, pressed, holdMs = 190) {
+    command = String(command || "");
+    if (!GAME_BUTTON_META[command]) return;
+    const timers = state.gameButtonTimers;
+    if (timers?.has(command)) {
+      window.clearTimeout(timers.get(command));
+      timers.delete(command);
+    }
+    setGameButtonVisual(command, pressed);
+    if (pressed && holdMs > 0) {
+      timers?.set(command, window.setTimeout(() => {
+        timers.delete(command);
+        setGameButtonVisual(command, false);
+      }, holdMs));
+    }
+  }
+
+  function flashGamePadButtons(commands, holdMs = 210) {
+    for (const command of commands || []) {
+      setGameButtonPressed(command, true, holdMs);
+    }
+  }
+
+  function clearGamePadButtons() {
+    for (const [command, timer] of state.gameButtonTimers || []) {
+      window.clearTimeout(timer);
+      setGameButtonVisual(command, false);
+    }
+    state.gameButtonTimers?.clear?.();
+  }
+
+  function finishGameClose(reason = "done") {
+    const pending = state.gameClosePending;
+    if (!pending) return;
+    if (state.gameCloseTimer) {
+      window.clearTimeout(state.gameCloseTimer);
+      state.gameCloseTimer = 0;
+    }
+    pending.card?.remove?.();
+    state.gameClosePending = null;
+    pushGameLog("close", reason);
+    saveWidgetSettingsSoon(80);
+  }
+
+  function beginGameClose(card, game) {
+    if (!card || !game) return;
+    const closedAt = Date.now();
+    state.gameLocalOverrideUntil = closedAt + 15000;
+    state.gameLocalClosedAt = closedAt;
+    game.closedAt = closedAt;
+    game.open = false;
+    game.hidden = true;
+    storageSet(WIDGET_SETTINGS_KEY, JSON.stringify(state.widgetSettings));
+    card.style.opacity = "0";
+    card.style.pointerEvents = "none";
+    state.gameClosePending = { card, startedAt: Date.now() };
+    const sent = requestGameWidgetSave("close");
+    pushGameLog("close", sent ? "save requested" : "save unavailable");
+    state.gameCloseTimer = window.setTimeout(() => finishGameClose("timeout"), sent ? 1500 : 120);
+  }
+
+  const GAME_BUTTON_META = {
+    up: { label: "▲", hint: "up/u", className: "dpad-up" },
+    down: { label: "▼", hint: "down/d", className: "dpad-down" },
+    left: { label: "◀", hint: "left/l", className: "dpad-left" },
+    right: { label: "▶", hint: "right/r", className: "dpad-right" },
+    a: { label: "A", hint: "a", className: "action-a" },
+    b: { label: "B", hint: "b", className: "action-b" },
+    select: { label: "SELECT", hint: "sel", className: "system-select" },
+    start: { label: "START", hint: "start", className: "system-start" },
+  };
+
+  function gameCommandLabel(command) {
+    return GAME_BUTTON_META[command]?.label || String(command || "").toUpperCase();
+  }
+
+  function validManualPosition(value) {
+    return Number.isFinite(Number(value));
+  }
+
+  function clampGameManualScale(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return 1;
+    return Math.round(clamp(number, 0.72, 1.8) * 100) / 100;
+  }
+
+  function gameManualAnchor(card) {
+    return card?.querySelector?.(".game-widget-guide") || card;
+  }
+
+  function gameManualPanelSize(game = state.widgetSettings?.game) {
+    const scale = clampGameManualScale(game?.manualScale ?? 1);
+    const panelW = Math.min(440 * scale, Math.max(280, window.innerWidth - 24));
+    const panelH = 360 * scale;
+    return { w: panelW, h: panelH };
+  }
+
+  function clampGameManualPosition(card, x, y, game = state.widgetSettings?.game) {
+    const anchorRect = gameManualAnchor(card)?.getBoundingClientRect?.() || { left: 0, top: 0 };
+    const panel = gameManualPanelSize(game);
+    const minX = 8 - anchorRect.left;
+    const maxX = Math.max(minX, window.innerWidth - panel.w - 8 - anchorRect.left);
+    const minY = 8 - anchorRect.top;
+    const maxY = Math.max(minY, window.innerHeight - panel.h - 8 - anchorRect.top);
+    return {
+      x: Math.round(clamp(Number(x) || 0, minX, maxX)),
+      y: Math.round(clamp(Number(y) || 0, minY, maxY)),
+    };
+  }
+
+  function defaultGameManualPosition(card) {
+    const rect = card?.getBoundingClientRect?.();
+    const anchorRect = gameManualAnchor(card)?.getBoundingClientRect?.() || { left: 0, top: 0 };
+    const panel = gameManualPanelSize(state.widgetSettings?.game);
+    if (!rect) return clampGameManualPosition(card, window.innerWidth - panel.w - 8, 96);
+    const gap = 12;
+    let x = rect.right + gap;
+    if (x + panel.w > window.innerWidth - gap) x = rect.left - panel.w - gap;
+    if (x < gap) x = Math.min(window.innerWidth - panel.w - gap, rect.left + gap);
+    const y = rect.top + Math.min(96, Math.max(42, rect.height * 0.16));
+    return clampGameManualPosition(card, x - anchorRect.left, y - anchorRect.top);
+  }
+
+  function ensureGameManualPosition(card, game = state.widgetSettings?.game) {
+    if (!game) return null;
+    if (game.manualCoordMode !== "local-guide") {
+      game.manualCoordMode = "local-guide";
+      game.manualDragged = false;
+      game.manualX = NaN;
+      game.manualY = NaN;
+    }
+    if (!game.manualDragged || !validManualPosition(game.manualX) || !validManualPosition(game.manualY)) {
+      const next = defaultGameManualPosition(card);
+      game.manualX = next.x;
+      game.manualY = next.y;
+    }
+    const clamped = clampGameManualPosition(card, game.manualX, game.manualY, game);
+    game.manualX = clamped.x;
+    game.manualY = clamped.y;
+    return clamped;
+  }
+
+  function positionGameManualPanel(card, game = state.widgetSettings?.game) {
+    const panel = card?.querySelector?.(".gameboy-manual-panel");
+    if (!panel || !game) return;
+    const pos = ensureGameManualPosition(card, game);
+    if (!pos) return;
+    panel.style.setProperty("--game-manual-scale", String(clampGameManualScale(game.manualScale ?? 1)));
+    panel.style.left = `${pos.x}px`;
+    panel.style.top = `${pos.y}px`;
+  }
+
+  function positionGameManualTab(card) {
+    const tab = card?.querySelector?.(".gameboy-manual-tab");
+    if (!tab) return;
+    const rect = card.getBoundingClientRect();
+    const anchorRect = gameManualAnchor(card)?.getBoundingClientRect?.() || { left: 0, top: 0 };
+    const tabW = 118;
+    const tabH = 82;
+    const gap = 8;
+    let x = rect.right + gap;
+    if (x + tabW > window.innerWidth - gap) x = rect.right - tabW - gap;
+    const preferredY = rect.top + Math.min(210, Math.max(96, rect.height * 0.34));
+    const y = clamp(preferredY, gap, Math.max(gap, window.innerHeight - tabH - gap));
+    tab.style.left = `${Math.round(x - anchorRect.left)}px`;
+    tab.style.top = `${Math.round(y - anchorRect.top)}px`;
+  }
+
+  function positionGameManualUi(card, game = state.widgetSettings?.game) {
+    positionGameManualTab(card);
+    positionGameManualPanel(card, game);
+  }
+
+  function gameWidgetGuideHtml(game = state.widgetSettings?.game) {
+    const groupPlay = game?.groupPlay !== false;
+    const noteTitle = groupPlay ? "집단 플레이 설명서" : "솔로 플레이 설명서";
+    const noteText = groupPlay
+      ? "채팅으로 up/u down/d left/l right/r a b sel start"
+      : "키보드 방향키 Z=A X=B V=SELECT Enter=START";
+    return `
+      <button class="gameboy-manual-tab" type="button" title="open game controls guide">
+        <span>MANUAL</span>
+        <strong>?</strong>
+      </button>
+      <div class="gameboy-manual-panel"${game?.manualOpen ? "" : " hidden"}>
+        <div class="gameboy-manual-card">
+          <div class="gameboy-manual-drag">drag manual</div>
+          <button class="gameboy-manual-close" type="button" title="close manual">x</button>
+          <button class="gameboy-manual-resize" type="button" title="resize manual"></button>
+          <h3>${escapeHtml(noteTitle)}</h3>
+          <p>${escapeHtml(noteText)}</p>
+          <div class="gameboy-manual-grid">
+            <span>UP</span><b>up / u / ↑</b>
+            <span>DOWN</span><b>down / d / ↓</b>
+            <span>LEFT</span><b>left / l / ←</b>
+            <span>RIGHT</span><b>right / r / →</b>
+            <span>A</span><b>a ${groupPlay ? "" : "/ Z"}</b>
+            <span>B</span><b>b ${groupPlay ? "" : "/ X"}</b>
+            <span>SELECT</span><b>sel ${groupPlay ? "" : "/ V"}</b>
+            <span>START</span><b>start ${groupPlay ? "" : "/ Enter"}</b>
+          </div>
+          <small>비디오챗 참가자만 집단 플레이 가능 · 케이지 안에서는 참여 불가</small>
+        </div>
+      </div>
+      <div class="gameboy-control-deck">
+        <div class="gameboy-dpad" aria-label="direction buttons">
+          ${["up", "left", "right", "down"].map((command) => {
+            const item = GAME_BUTTON_META[command];
+            return `<button class="gameboy-btn gameboy-dpad-btn ${item.className}" type="button" data-game-command="${command}" title="${escapeHtml(item.hint)}">${item.label}</button>`;
+          }).join("")}
+        </div>
+        <div class="gameboy-system-buttons" aria-label="system buttons">
+          ${["select", "start"].map((command) => {
+            const item = GAME_BUTTON_META[command];
+            return `<button class="gameboy-btn gameboy-system-btn ${item.className}" type="button" data-game-command="${command}" title="${escapeHtml(item.hint)}">${item.label}</button>`;
+          }).join("")}
+        </div>
+        <div class="gameboy-action-buttons" aria-label="action buttons">
+          ${["b", "a"].map((command) => {
+            const item = GAME_BUTTON_META[command];
+            return `<button class="gameboy-btn gameboy-action-btn ${item.className}" type="button" data-game-command="${command}" title="${escapeHtml(item.hint)}">${item.label}</button>`;
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function gameWidgetDefaultStatus(game = state.widgetSettings?.game) {
+    return game?.groupPlay === false
+      ? "솔로: 방향키, Z=A, X=B, V=select, Enter=start"
+      : "비디오챗 참가자 채팅만 반영 · 케이지 안에서는 참여 불가";
+  }
+
+  function updateGameWidgetButtons(game = state.widgetSettings?.game) {
+    const card = widgetLayer?.querySelector("#game-widget");
+    if (!card || !game) return;
+    const group = card.querySelector(".game-widget-group");
+    if (group) {
+      const active = game.groupPlay !== false;
+      group.classList.toggle("active", active);
+      group.textContent = `집단 ${active ? "on" : "off"}`;
+    }
+    const debug = card.querySelector(".game-widget-debug");
+    if (debug) {
+      debug.classList.toggle("active", !!game.debug);
+      debug.textContent = `debug ${game.debug ? "on" : "off"}`;
+    }
+    const layoutDebug = card.querySelector(".game-widget-layout-debug");
+    if (layoutDebug) {
+      layoutDebug.classList.toggle("active", !!game.layoutDebug);
+      layoutDebug.textContent = `layout ${game.layoutDebug ? "on" : "off"}`;
+    }
+    const speed = card.querySelector(".game-widget-speed");
+    if (speed) speed.textContent = gameSpeedLabel(game.speed || 1);
+    const volume = card.querySelector(".game-widget-volume");
+    if (volume) volume.value = String(Math.round(normalizeGameVolume(game.volume ?? 0.75) * 100));
+    const volumeText = card.querySelector(".game-widget-volume-value");
+    if (volumeText) volumeText.textContent = gameVolumeLabel(game.volume ?? 0.75);
+    const body = card.querySelector(".game-widget-body");
+    body?.classList.toggle("game-widget-debug-on", !!game.debug);
+    const guide = card.querySelector(".game-widget-guide");
+    if (guide) guide.innerHTML = gameWidgetGuideHtml(game);
+    positionGameManualUi(card, game);
+    if (!game.lastCommand) updateGameWidgetStatus(gameWidgetDefaultStatus(game));
+    card.dataset.groupPlay = String(game.groupPlay !== false);
+    card.dataset.debug = String(!!game.debug);
+    card.dataset.manualOpen = String(!!game.manualOpen);
+  }
+
+  function pushGameLog(kind, message = "") {
+    const now = new Date();
+    const time = now.toTimeString().slice(0, 8);
+    const line = `[${time}] ${kind}${message ? `: ${message}` : ""}`;
+    state.gameLogs.push(line);
+    if (state.gameLogs.length > 80) state.gameLogs.splice(0, state.gameLogs.length - 80);
+    const panel = widgetLayer?.querySelector("#game-widget .game-widget-debug-log");
+    if (panel) {
+      panel.textContent = state.gameLogs.slice(-28).join("\n");
+      panel.scrollTop = panel.scrollHeight;
+    }
+  }
+
+  function gameManualKeyPayload(ev) {
+    const key = String(ev?.key || "");
+    const lower = key.toLowerCase();
+    const code = String(ev?.code || "");
+    if (key === "ArrowUp") return { key: "ArrowUp", code: "ArrowUp", command: "up" };
+    if (key === "ArrowDown") return { key: "ArrowDown", code: "ArrowDown", command: "down" };
+    if (key === "ArrowLeft") return { key: "ArrowLeft", code: "ArrowLeft", command: "left" };
+    if (key === "ArrowRight") return { key: "ArrowRight", code: "ArrowRight", command: "right" };
+    if (lower === "z" || code === "KeyZ") return { key: "z", code: "KeyZ", command: "a" };
+    if (lower === "x" || code === "KeyX") return { key: "x", code: "KeyX", command: "b" };
+    if (lower === "v" || code === "KeyV") return { key: "v", code: "KeyV", command: "select" };
+    if (key === "Enter" || code === "Enter") return { key: "Enter", code: "Enter", command: "start" };
+    return null;
+  }
+
+  function shouldForwardGameKeyboard(ev) {
+    const game = state.widgetSettings?.game;
+    return !!(
+      game?.open &&
+      !game.hidden &&
+      game.groupPlay === false &&
+      !state.characterDriveMode &&
+      !state.characterPlaceMode &&
+      !state.prisonPlaceMode &&
+      !isTextInputTarget(ev.target)
+    );
+  }
+
+  function forwardGameKeyboardEvent(ev, down) {
+    const payload = gameManualKeyPayload(ev);
+    if (!payload || !shouldForwardGameKeyboard(ev)) return false;
+    const sent = postGameWidgetMessage({ type: "tg-game-key", down, ...payload });
+    if (sent) {
+      setGameButtonPressed(payload.command, down, down ? 0 : 1);
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+    return sent;
+  }
+
+  function gameCommandTokens(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return [];
+    const normalized = raw
+      .replace(/[，,;|/]+/g, " ")
+      .replace(/[↑⬆]/g, " up ")
+      .replace(/[↓⬇]/g, " down ")
+      .replace(/[←⬅]/g, " left ")
+      .replace(/[→➡]/g, " right ");
+    const map = {
+      u: "up",
+      up: "up",
+      d: "down",
+      down: "down",
+      l: "left",
+      left: "left",
+      r: "right",
+      right: "right",
+      a: "a",
+      b: "b",
+      sel: "select",
+      select: "select",
+      start: "start",
+    };
+    const tokens = normalized.split(/\s+/).filter(Boolean);
+    if (!tokens.length || tokens.length > 8) return [];
+    const commands = tokens.map((token) => map[token] || "");
+    return commands.every(Boolean) ? commands : [];
+  }
+
+  function clearGameVoteBuffer() {
+    if (state.gameVoteBuffer?.timer) window.clearTimeout(state.gameVoteBuffer.timer);
+    state.gameVoteBuffer = null;
+    clearGamePadButtons();
+  }
+
+  function flushGameVoteBuffer() {
+    const buffer = state.gameVoteBuffer;
+    state.gameVoteBuffer = null;
+    if (!buffer?.votesByUser?.size) return false;
+    const candidates = new Map();
+    for (const vote of buffer.votesByUser.values()) {
+      const signature = vote.commands.join(" ");
+      const item = candidates.get(signature) || {
+        commands: vote.commands,
+        count: 0,
+        firstOrder: vote.order,
+        names: [],
+      };
+      item.count += 1;
+      item.firstOrder = Math.min(item.firstOrder, vote.order);
+      item.names.push(vote.name);
+      candidates.set(signature, item);
+    }
+    const total = buffer.votesByUser.size;
+    const chosen = Array.from(candidates.values()).sort((a, b) => {
+      if (b.count !== a.count) return b.count - a.count;
+      if (a.commands.length !== b.commands.length) return b.commands.length - a.commands.length;
+      return a.firstOrder - b.firstOrder;
+    })[0];
+    if (!chosen) return false;
+    const game = state.widgetSettings?.game;
+    if (!game?.open || game.hidden || game.groupPlay === false) return false;
+    const sent = postGameWidgetMessage({
+      type: "tg-game-input",
+      commands: chosen.commands,
+      source: "group-input",
+      name: `집단 ${chosen.count}/${total}`,
+    });
+    if (sent) flashGamePadButtons(chosen.commands, 240);
+    const text = sent
+      ? `집단 입력: ${chosen.commands.join(" ")} (${chosen.count}/${total})`
+      : "game frame not ready";
+    if (game) game.lastCommand = text;
+    updateGameWidgetStatus(text);
+    return sent;
+  }
+
+  function queueGameGroupVote(key, commands) {
+    if (!state.gameVoteBuffer) {
+      state.gameVoteBuffer = {
+        votesByUser: new Map(),
+        order: 0,
+        timer: window.setTimeout(flushGameVoteBuffer, 850),
+      };
+    }
+    const buffer = state.gameVoteBuffer;
+    const participant = state.participants.get(key);
+    buffer.order += 1;
+    buffer.votesByUser.set(key, {
+      commands,
+      name: participantDisplayLabel(participant),
+      order: buffer.order,
+    });
+    flashGamePadButtons(commands, 120);
+    const total = buffer.votesByUser.size;
+    updateGameWidgetStatus(`집단 입력 수집: ${commands.join(" ")} (${total}명)`);
+    return true;
+  }
+
+  function handleGameChatCommand(data) {
+    const game = state.widgetSettings?.game;
+    if (!game?.open || game.hidden || game.groupPlay === false || data?.type !== "text") return false;
+    const key = speakerKey(data, true) || speakerKey(data);
+    if (!key || !state.participants.has(key) || isRealJailed(key)) return false;
+    const commands = gameCommandTokens(data.text);
+    if (!commands.length) return false;
+    return queueGameGroupVote(key, commands);
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const payload = event.data || {};
+    if (payload.type !== "tg-game-status") return;
+    pushGameLog(payload.status || "iframe", payload.message || payload.rom || "");
+    if (
+      state.gameClosePending &&
+      ["state-saved", "quick-state-saved", "state-save-missing", "state-save-error", "saved"].includes(payload.status)
+    ) {
+      finishGameClose(payload.status || "save-response");
+    }
+    if (payload.status === "saved") updateGameWidgetStatus("게임 저장됨");
+    else if (payload.status === "state-saved") updateGameWidgetStatus("상태 세이브 저장됨");
+    else if (payload.status === "quick-state-saved") updateGameWidgetStatus("임시 quick state 저장됨");
+    else if (payload.status === "state-loaded") updateGameWidgetStatus("상태 세이브 로드됨");
+    else if (payload.status === "state-load-pending") updateGameWidgetStatus("start 후 상태 세이브 로드");
+    else if (payload.status === "state-load-missing") updateGameWidgetStatus("불러올 상태 세이브 없음");
+    else if (payload.status === "state-load-failed") updateGameWidgetStatus("상태 세이브 로드 실패");
+    else if (payload.status === "state-save-missing") updateGameWidgetStatus("저장할 상태 없음");
+    else if (payload.status === "state-save-error") updateGameWidgetStatus(payload.message || "상태 세이브 저장 실패");
+    else if (payload.status === "speed") updateGameWidgetStatus(`게임 속도 ${payload.message || ""}`.trim());
+    else if (payload.status === "volume") updateGameWidgetStatus(`게임 볼륨 ${payload.message || ""}`.trim());
+    else if (payload.status === "started") updateGameWidgetStatus("게임 실행 중");
+    else if (payload.status === "ready") updateGameWidgetStatus("게임 준비됨");
+    else if (payload.status === "error") updateGameWidgetStatus(payload.message || "게임 오류");
+    else if (payload.status === "rom-error") updateGameWidgetStatus(payload.message || "ROM 로드 실패");
+    else if (payload.status === "loader-error") updateGameWidgetStatus("EmulatorJS 로드 실패");
+  });
+
+  function renderGameWidget() {
+    const game = state.widgetSettings?.game;
+    if (!game || game.open === false) return;
+    const card = document.createElement("section");
+    card.id = "game-widget";
+    card.className = "overlay-widget game-widget";
+    const dragStrip = document.createElement("div");
+    dragStrip.className = "widget-drag-strip game-widget-drag";
+    dragStrip.title = "move game widget";
+    const header = document.createElement("div");
+    header.className = "widget-header game-widget-header";
+    const romOptions = state.gameRomList.length ? state.gameRomList : [{ file: game.rom || "pk_gold.gb", name: "포켓몬 골드" }];
+    if (!romOptions.some((rom) => safeFilename(rom.file || rom) === game.rom)) {
+      game.rom = safeFilename(romOptions[0]?.file || romOptions[0] || game.rom) || game.rom;
+    }
+    header.innerHTML = `
+      <span class="widget-title">게임</span>
+      <select class="game-widget-select" title="ROM">
+        ${romOptions.map((rom) => {
+          const file = safeFilename(rom.file || rom);
+          return `<option value="${escapeHtml(file)}"${file === game.rom ? " selected" : ""}>${escapeHtml(gameRomLabel(rom))}</option>`;
+        }).join("")}
+      </select>
+      <button class="game-widget-group${game.groupPlay === false ? "" : " active"}" type="button" title="toggle chat group play">집단 ${game.groupPlay === false ? "off" : "on"}</button>
+      <div class="game-widget-stepper" title="game speed">
+        <button class="game-widget-speed-down" type="button" title="slower game speed">-</button>
+        <span class="game-widget-speed">${gameSpeedLabel(game.speed || 1)}</span>
+        <button class="game-widget-speed-up" type="button" title="faster game speed">+</button>
+      </div>
+      <label class="game-widget-volume-wrap" title="game volume">
+        <span>vol</span>
+        <input class="game-widget-volume" type="range" min="0" max="100" step="5" value="${Math.round(normalizeGameVolume(game.volume ?? 0.75) * 100)}">
+        <span class="game-widget-volume-value">${gameVolumeLabel(game.volume ?? 0.75)}</span>
+      </label>
+      <div class="game-widget-savebar">
+        <button class="game-widget-load" type="button" title="load save state">load</button>
+        <button class="game-widget-new" type="button" title="restart without state">new</button>
+        <button class="game-widget-save" type="button" title="quick save">save</button>
+      </div>
+      <button class="game-widget-layout-debug${game.layoutDebug ? " active" : ""}" type="button" title="show layout debug">layout ${game.layoutDebug ? "on" : "off"}</button>
+      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(game.hidden, "game")}</button>
+      <button class="game-widget-stop" type="button" title="close game">x</button>
+    `;
+    const body = document.createElement("div");
+    body.className = "game-widget-body";
+    body.classList.toggle("game-widget-debug-on", !!game.debug);
+    const consoleShell = document.createElement("div");
+    consoleShell.className = "gameboy-console";
+    const screen = document.createElement("div");
+    screen.className = "gameboy-screen";
+    const guide = document.createElement("div");
+    guide.className = "game-widget-guide";
+    guide.innerHTML = gameWidgetGuideHtml(game);
+    const frame = document.createElement("iframe");
+    frame.className = "game-widget-frame";
+    frame.src = gamePlayerUrl(game);
+    frame.referrerPolicy = "no-referrer";
+    const status = document.createElement("div");
+    status.className = "game-widget-status";
+    status.textContent = game.lastCommand || gameWidgetDefaultStatus(game);
+    const debugLog = document.createElement("pre");
+    debugLog.className = "game-widget-debug-log";
+    debugLog.textContent = state.gameLogs.slice(-28).join("\n");
+    screen.append(frame, status);
+    consoleShell.append(screen, guide);
+    body.append(consoleShell, debugLog);
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(dragStrip, header, body, resize);
+    widgetLayer.appendChild(card);
+    card.dataset.rom = String(game.rom || "");
+    card.dataset.groupPlay = String(game.groupPlay !== false);
+    card.dataset.debug = String(!!game.debug);
+    card.dataset.manualOpen = String(!!game.manualOpen);
+    frame.addEventListener("load", () => {
+      pushGameLog("iframe-load", frame.src);
+      window.setTimeout(() => {
+        postGameWidgetSpeed(game);
+        postGameWidgetVolume(game);
+        postGameWidgetLayoutDebug(game);
+        syncGameWidgetViewport();
+      }, 320);
+      if (game.debug) debugLog.scrollTop = debugLog.scrollHeight;
+    });
+    frame.addEventListener("error", () => {
+      pushGameLog("iframe-error", frame.src);
+      updateGameWidgetStatus("game iframe load error");
+    });
+    const apply = () => {
+      applyWidgetBox(card, game, 500, 470);
+      positionGameManualUi(card, game);
+      scheduleGameWidgetViewportSync();
+    };
+    apply();
+    if (!state.gameRomLoaded && !state.gameRomLoading) {
+      refreshGameRomList().then(() => {
+        if (state.widgetSettings?.game?.open) renderWidgets();
+      });
+    }
+    const hideButton = header.querySelector(".widget-hide");
+    const showGameWidget = () => {
+      game.hidden = false;
+      game.open = true;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      if (!game.hidden) {
+        clearGameVoteBuffer();
+        requestGameWidgetSave();
+        game.hidden = true;
+        apply();
+        hideButton.textContent = widgetHideText(true, "game");
+        saveWidgetSettings();
+        return;
+      }
+      showGameWidget();
+    });
+    header.querySelector(".game-widget-save")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const ok = requestGameWidgetSave();
+      status.textContent = ok ? "save requested" : "game frame not ready";
+    });
+    header.querySelector(".game-widget-load")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const ok = postGameWidgetMessage({ type: "tg-game-load" });
+      status.textContent = ok ? "load requested" : "game frame not ready";
+    });
+    header.querySelector(".game-widget-new")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      clearGameVoteBuffer();
+      const ok = postGameWidgetMessage({ type: "tg-game-new" });
+      status.textContent = ok ? "new game requested" : "game frame not ready";
+    });
+    const changeSpeed = (delta) => {
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.speed = shiftGameSpeed(game.speed || 1, delta);
+      updateGameWidgetButtons(game);
+      const sent = postGameWidgetSpeed(game);
+      updateGameWidgetStatus(sent ? `게임 속도 ${gameSpeedLabel(game.speed)}` : "game frame not ready");
+      saveWidgetSettingsSoon();
+    };
+    header.querySelector(".game-widget-speed-down")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      changeSpeed(-1);
+    });
+    header.querySelector(".game-widget-speed-up")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      changeSpeed(1);
+    });
+    header.querySelector(".game-widget-volume")?.addEventListener("input", (ev) => {
+      ev.stopPropagation();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.volume = normalizeGameVolume(Number(ev.currentTarget.value) / 100);
+      updateGameWidgetButtons(game);
+      postGameWidgetVolume(game);
+      saveWidgetSettingsSoon(220);
+    });
+    header.querySelector(".game-widget-select")?.addEventListener("change", (ev) => {
+      clearGameVoteBuffer();
+      const nextRom = safeFilename(ev.currentTarget.value) || game.rom;
+      if (nextRom === game.rom) return;
+      requestGameWidgetSave();
+      game.rom = nextRom;
+      game.selected = "pokemon-gold";
+      updateGameWidgetStatus("ROM 전환 전 저장 요청...");
+      window.setTimeout(() => {
+        renderWidgets();
+        saveWidgetSettings();
+      }, 650);
+    });
+    header.querySelector(".game-widget-group")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      clearGameVoteBuffer();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.groupPlay = game.groupPlay === false;
+      updateGameWidgetButtons(game);
+      saveWidgetSettingsSoon();
+    });
+    header.querySelector(".game-widget-layout-debug")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.layoutDebug = !game.layoutDebug;
+      updateGameWidgetButtons(game);
+      const sent = postGameWidgetLayoutDebug(game);
+      updateGameWidgetStatus(sent ? `layout debug ${game.layoutDebug ? "on" : "off"}` : "game frame not ready");
+      saveWidgetSettingsSoon();
+    });
+    body.addEventListener("pointerdown", (ev) => {
+      const button = ev.target instanceof Element ? ev.target.closest("[data-game-command]") : null;
+      if (!button) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const command = String(button.getAttribute("data-game-command") || "");
+      const sent = postGameWidgetMessage({ type: "tg-game-input", commands: [command], source: "widget-button", name: "host" });
+      if (sent) {
+        setGameButtonPressed(command, true, 160);
+        updateGameWidgetStatus(`직접 입력: ${gameCommandLabel(command)}`);
+      } else {
+        updateGameWidgetStatus("game frame not ready");
+      }
+    });
+    const openManual = (ev) => {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      game.manualOpen = true;
+      const panel = body.querySelector(".gameboy-manual-panel");
+      panel?.removeAttribute("hidden");
+      card.dataset.manualOpen = "true";
+      positionGameManualUi(card, game);
+      saveWidgetSettings();
+    };
+    const closeManual = (ev) => {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      game.manualOpen = false;
+      body.querySelector(".gameboy-manual-panel")?.setAttribute("hidden", "");
+      card.dataset.manualOpen = "false";
+      positionGameManualUi(card, game);
+      saveWidgetSettings();
+    };
+    body.querySelector(".gameboy-manual-tab")?.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    body.querySelector(".gameboy-manual-tab")?.addEventListener("click", openManual, true);
+    body.querySelector(".gameboy-manual-close")?.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    body.querySelector(".gameboy-manual-close")?.addEventListener("click", closeManual, true);
+    const beginManualResize = (ev, handle) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pointerId = ev.pointerId;
+      const start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        scale: clampGameManualScale(game.manualScale ?? 1),
+      };
+      handle.classList.add("dragging");
+      try { handle.setPointerCapture?.(pointerId); } catch (_) {}
+      const move = (moveEv) => {
+        if (moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+        const dx = moveEv.clientX - start.x;
+        const dy = moveEv.clientY - start.y;
+        const mainDelta = Math.abs(dx) > Math.abs(dy) ? dx / 320 : dy / 260;
+        game.manualScale = clampGameManualScale(start.scale + mainDelta);
+        positionGameManualUi(card, game);
+      };
+      const finish = () => {
+        handle.classList.remove("dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        handle.removeEventListener("lostpointercapture", finish);
+        saveWidgetSettingsSoon(80);
+        try { handle.releasePointerCapture?.(pointerId); } catch (_) {}
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish, { once: true });
+      window.addEventListener("pointercancel", finish, { once: true });
+      handle.addEventListener("lostpointercapture", finish, { once: true });
+    };
+    body.querySelector(".gameboy-manual-resize")?.addEventListener("pointerdown", (ev) => {
+      beginManualResize(ev, ev.currentTarget);
+    }, true);
+    card.addEventListener("click", (ev) => {
+      const target = ev.target instanceof Element ? ev.target : null;
+      if (!target) return;
+      if (target.closest(".gameboy-manual-tab")) {
+        openManual(ev);
+      } else if (target.closest(".gameboy-manual-close")) {
+        closeManual(ev);
+      }
+    }, true);
+    body.addEventListener("click", (ev) => {
+      const target = ev.target instanceof Element ? ev.target : null;
+      if (!target) return;
+      if (target.closest(".gameboy-manual-tab")) {
+        openManual(ev);
+        return;
+      }
+      if (target.closest(".gameboy-manual-close")) {
+        closeManual(ev);
+        return;
+      }
+      const panel = target.closest(".gameboy-manual-panel");
+      if (panel && ev.target === panel) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    });
+    body.addEventListener("pointerdown", (ev) => {
+      const target = ev.target instanceof Element ? ev.target : null;
+      const resizeHandle = target?.closest(".gameboy-manual-resize");
+      if (resizeHandle) {
+        beginManualResize(ev, resizeHandle);
+        return;
+      }
+      const manualCard = target?.closest(".gameboy-manual-card");
+      if (!manualCard || target.closest("button")) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pointerId = ev.pointerId;
+      const start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        manualX: validManualPosition(game.manualX) ? Number(game.manualX) : defaultGameManualPosition(card).x,
+        manualY: validManualPosition(game.manualY) ? Number(game.manualY) : defaultGameManualPosition(card).y,
+      };
+      manualCard.classList.add("dragging");
+      try { manualCard.setPointerCapture?.(pointerId); } catch (_) {}
+      const move = (moveEv) => {
+        if (moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+        const next = clampGameManualPosition(card,
+          start.manualX + moveEv.clientX - start.x,
+          start.manualY + moveEv.clientY - start.y,
+          game
+        );
+        game.manualX = next.x;
+        game.manualY = next.y;
+        game.manualDragged = true;
+        game.manualCoordMode = "local-guide";
+        positionGameManualUi(card, game);
+      };
+      const finish = () => {
+        manualCard.classList.remove("dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        manualCard.removeEventListener("lostpointercapture", finish);
+        saveWidgetSettingsSoon(80);
+        try { manualCard.releasePointerCapture?.(pointerId); } catch (_) {}
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", finish, { once: true });
+      window.addEventListener("pointercancel", finish, { once: true });
+      manualCard.addEventListener("lostpointercapture", finish, { once: true });
+    });
+    header.querySelector(".game-widget-debug")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.debug = !game.debug;
+      pushGameLog("debug", game.debug ? "on" : "off");
+      updateGameWidgetButtons(game);
+      saveWidgetSettingsSoon();
+    });
+    header.querySelector(".game-widget-stop")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      clearGameVoteBuffer();
+      beginGameClose(card, game);
+    });
+    const saveGameWidgetBox = () => {
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      saveWidgetSettings();
+      scheduleGameWidgetViewportSync();
+    };
+    bindHiddenShowHandle(card, hideButton, game, apply, saveGameWidgetBox, showGameWidget);
+    bindWidgetFrame(card, dragStrip, resize, game, apply, saveGameWidgetBox, 500, 470);
+  }
+
+  function reusableGameWidget() {
+    const game = state.widgetSettings?.game;
+    const card = widgetLayer?.querySelector("#game-widget");
+    if (!game || !card || game.open === false) return null;
+    if (card.dataset.rom !== String(game.rom || "")) return null;
+    updateGameWidgetButtons(game);
+    applyWidgetBox(card, game, 500, 470);
+    card.style.opacity = "";
+    card.style.pointerEvents = "";
+    const hide = card.querySelector(".widget-hide");
+    if (hide) hide.textContent = widgetHideText(game.hidden, "game");
+    return card;
+  }
+
+  function electronBrowserApi() {
+    return window.tgElectronBrowser || null;
+  }
+
+  function hasElectronBrowserApi() {
+    const api = electronBrowserApi();
+    return !!(api && typeof api.upsert === "function");
+  }
+
+  function electronBrowserLinkPreview() {
+    if (!hasElectronBrowserApi()) return null;
+    if (!sharedElectronLinkPreview) {
+      sharedElectronLinkPreview = {
+        open(url) {
+          openUrlInElectronBrowser(url);
+        },
+      };
+    }
+    return sharedElectronLinkPreview;
+  }
+
+  function openUrlInElectronBrowser(rawUrl) {
+    const url = normalizeBrowserUrl(rawUrl);
+    if (!url || !hasElectronBrowserApi()) return false;
+    if (!state.widgetSettings) state.widgetSettings = loadWidgetSettings();
+    const browser = normalizeElectronBrowserWidget(state.widgetSettings.electronBrowser);
+    browser.open = true;
+    browser.hidden = false;
+    browser.url = url;
+    state.widgetSettings.electronBrowser = browser;
+    renderWidgets();
+    saveWidgetSettings();
+    return true;
+  }
+
+  function electronBrowserBounds(el) {
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.round(rect.left)),
+      y: Math.max(0, Math.round(rect.top)),
+      width: Math.max(1, Math.round(rect.width)),
+      height: Math.max(1, Math.round(rect.height)),
+    };
+  }
+
+  function hideElectronNativeView(id, pause = false) {
+    const api = electronBrowserApi();
+    if (!api || typeof api.upsert !== "function") return false;
+    api.upsert({ id, visible: false, pause: !!pause });
+    return true;
+  }
+
+  function closeElectronNativeView(id) {
+    const api = electronBrowserApi();
+    if (!api || typeof api.close !== "function") return false;
+    api.close({ id });
+    return true;
+  }
+
+  function setElectronNativeViewDragSuppressed(active) {
+    const next = !!active;
+    if (state.electronNativeViewsSuppressedForDrag === next) return;
+    const api = electronBrowserApi();
+    if (!api || typeof api.upsert !== "function") {
+      state.electronNativeViewsSuppressedForDrag = false;
+      return;
+    }
+    state.electronNativeViewsSuppressedForDrag = next;
+    if (next) {
+      api.upsert({ id: "web", visible: false });
+      api.upsert({ id: "youtube", visible: false });
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const browser = state.widgetSettings?.electronBrowser;
+      const browserViewport = widgetLayer?.querySelector("#electron-browser-widget .electron-browser-viewport");
+      if (browser && browserViewport) syncElectronBrowserView(browser, browserViewport);
+      const youtube = state.widgetSettings?.youtube;
+      const youtubeViewport = widgetLayer?.querySelector("#youtube-widget .youtube-native-player");
+      if (youtube && youtubeViewport) syncYoutubeNativeView(youtube, youtubeViewport);
+    });
+  }
+
+  function appendElectronBrowserLog(entry) {
+    const level = String(entry?.level || entry?.type || "info").toLowerCase();
+    const message = String(entry?.message || "");
+    if (!message) return;
+    state.electronBrowserLogs.push({
+      level,
+      message,
+      source: String(entry?.source || ""),
+      line: Number(entry?.line) || 0,
+      ts: Date.now(),
+    });
+    state.electronBrowserLogs = state.electronBrowserLogs.slice(-120);
+    updateElectronBrowserLogPanel();
+  }
+
+  function renderElectronBrowserLogPanel(panel) {
+    if (!panel) return;
+    panel.innerHTML = "";
+    const logs = state.electronBrowserLogs.slice(-80);
+    if (!logs.length) {
+      const empty = document.createElement("div");
+      empty.className = "electron-browser-log-empty";
+      empty.textContent = "no logs";
+      panel.appendChild(empty);
+      return;
+    }
+    for (const item of logs) {
+      const row = document.createElement("div");
+      row.className = `electron-browser-log ${item.level}`;
+      const time = new Date(item.ts).toLocaleTimeString("ko-KR", { hour12: false });
+      const suffix = item.source ? ` ${item.source}${item.line ? `:${item.line}` : ""}` : "";
+      row.textContent = `[${time}] ${item.level}${suffix} ${item.message}`;
+      panel.appendChild(row);
+    }
+    panel.scrollTop = panel.scrollHeight;
+  }
+
+  function updateElectronBrowserLogPanel() {
+    renderElectronBrowserLogPanel(widgetLayer?.querySelector(".electron-browser-debug-log"));
+  }
+
+  function setupElectronBrowserBridge() {
+    if (state.electronBrowserBridgeBound) return;
+    const api = electronBrowserApi();
+    if (!api || typeof api.onEvent !== "function") return;
+    state.electronBrowserBridgeBound = true;
+    api.onEvent((event) => {
+      if (!event || typeof event !== "object") return;
+      const eventId = String(event.id || "web").toLowerCase();
+      if (eventId !== "web") return;
+      const browser = state.widgetSettings?.electronBrowser;
+      if (event.type === "log") {
+        appendElectronBrowserLog(event);
+        return;
+      }
+      if (event.type !== "status" || !browser) return;
+      if (event.url) browser.url = String(event.url);
+      if (event.title !== undefined) browser.title = String(event.title || "");
+      if (event.canGoBack !== undefined) browser.canGoBack = !!event.canGoBack;
+      if (event.canGoForward !== undefined) browser.canGoForward = !!event.canGoForward;
+      if (event.loading !== undefined) browser.loading = !!event.loading;
+      const card = widgetLayer?.querySelector("#electron-browser-widget");
+      const input = card?.querySelector(".electron-browser-url");
+      if (input && document.activeElement !== input) input.value = browser.url || "";
+      const title = card?.querySelector(".electron-browser-title");
+      if (title) title.textContent = browser.title || browser.url || "web";
+      card?.querySelector(".electron-browser-back")?.toggleAttribute("disabled", !browser.canGoBack);
+      card?.querySelector(".electron-browser-forward")?.toggleAttribute("disabled", !browser.canGoForward);
+      saveWidgetSettings();
+    });
+  }
+
+  function syncElectronBrowserView(browser, viewport) {
+    const api = electronBrowserApi();
+    if (!api || typeof api.upsert !== "function") return;
+    if (state.electronNativeViewsSuppressedForDrag) return;
+    if (!browser?.open || browser.hidden || !viewport) {
+      api.upsert({ id: "web", visible: false });
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      if (!browser.open || browser.hidden || !viewport.isConnected) {
+        api.upsert({ id: "web", visible: false });
+        return;
+      }
+      const url = normalizeBrowserUrl(browser.url);
+      if (!url) return;
+      api.upsert({
+        id: "web",
+        visible: true,
+        url,
+        debug: !!browser.debug,
+        bounds: electronBrowserBounds(viewport),
+      });
+    });
+  }
+
+  function renderElectronBrowserWidget() {
+    const browser = state.widgetSettings?.electronBrowser;
+    if (!browser || browser.open === false) {
+      closeElectronNativeView("web");
+      return;
+    }
+    setupElectronBrowserBridge();
+    const card = document.createElement("section");
+    card.id = "electron-browser-widget";
+    card.className = `overlay-widget electron-browser-widget${browser.debug ? " debug-widget" : ""}`;
+    const dragStrip = document.createElement("div");
+    dragStrip.className = "widget-drag-strip electron-browser-widget-drag";
+    dragStrip.title = "move web widget";
+    const header = document.createElement("div");
+    header.className = "widget-header electron-browser-widget-header";
+    header.innerHTML = `
+      <input class="electron-browser-url" type="text" placeholder="https://..." value="${escapeHtml(browser.url || "")}">
+      <button class="electron-browser-go" type="button" title="load URL">go</button>
+      <button class="electron-browser-back" type="button" title="back"${browser.canGoBack ? "" : " disabled"}>&lt;</button>
+      <button class="electron-browser-forward" type="button" title="forward"${browser.canGoForward ? "" : " disabled"}>&gt;</button>
+      <button class="electron-browser-refresh" type="button" title="reload">R</button>
+      <button class="electron-browser-open" type="button" title="open externally">open</button>
+      <button class="electron-browser-devtools" type="button" title="open web DevTools">dev</button>
+      <button class="electron-browser-debug-toggle${browser.debug ? " active" : ""}" type="button" title="show console logs">debug</button>
+	      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(browser.hidden, "web")}</button>
+      <button class="electron-browser-stop" type="button" title="close browser view">x</button>
+    `;
+    const body = document.createElement("div");
+    body.className = "electron-browser-widget-body";
+    const viewport = document.createElement("div");
+    viewport.className = "electron-browser-viewport";
+    const title = document.createElement("div");
+    title.className = "electron-browser-title";
+    title.textContent = browser.title || browser.url || "web";
+    const fallback = document.createElement("div");
+    fallback.className = "electron-browser-fallback";
+    fallback.textContent = hasElectronBrowserApi()
+      ? "Native web view is attached here."
+      : "Web browsing works only inside the Windows Electron app.";
+    viewport.append(title, fallback);
+    const debugPanel = document.createElement("div");
+    debugPanel.className = "electron-browser-debug-log";
+    body.append(viewport, debugPanel);
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(dragStrip, header, body, resize);
+    widgetLayer.appendChild(card);
+    renderElectronBrowserLogPanel(debugPanel);
+    const input = header.querySelector(".electron-browser-url");
+    const apply = () => {
+      applyWidgetBox(card, browser, 620, browser.debug ? 390 : 300);
+      syncElectronBrowserView(browser, viewport);
+    };
+    apply();
+    const commitUrl = () => {
+      const normalized = normalizeBrowserUrl(input?.value || "");
+      if (!normalized) return;
+      browser.url = normalized;
+      browser.open = true;
+      browser.hidden = false;
+      if (input) input.value = browser.url;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    input?.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        commitUrl();
+      }
+    });
+    input?.addEventListener("change", commitUrl);
+    header.querySelector(".electron-browser-go")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      commitUrl();
+    });
+    header.querySelector(".electron-browser-back")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      electronBrowserApi()?.back?.({ id: "web" });
+    });
+    header.querySelector(".electron-browser-forward")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      electronBrowserApi()?.forward?.({ id: "web" });
+    });
+    header.querySelector(".electron-browser-refresh")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      electronBrowserApi()?.reload?.({ id: "web" });
+    });
+    header.querySelector(".electron-browser-open")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const url = normalizeBrowserUrl(input?.value || browser.url);
+      if (url) {
+        if (electronBrowserApi()?.openExternal) electronBrowserApi().openExternal(url);
+        else window.open(url, "_blank", "noopener,noreferrer");
+      }
+    });
+    header.querySelector(".electron-browser-devtools")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      electronBrowserApi()?.devtools?.({ id: "web" });
+    });
+    header.querySelector(".electron-browser-debug-toggle")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      browser.debug = !browser.debug;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    const hideButton = header.querySelector(".widget-hide");
+    const showElectronBrowserWidget = () => {
+      browser.hidden = false;
+      browser.open = true;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(hideButton)) return;
+      browser.hidden = !browser.hidden;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    header.querySelector(".electron-browser-stop")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      browser.open = false;
+      browser.hidden = true;
+      browser.url = "";
+      browser.title = "";
+      browser.canGoBack = false;
+      browser.canGoForward = false;
+      browser.loading = false;
+      state.electronBrowserLogs = [];
+      closeElectronNativeView("web");
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, browser, apply, saveWidgetSettings, showElectronBrowserWidget);
+    bindWidgetFrame(card, dragStrip, resize, browser, apply, saveWidgetSettings, 620, 300);
+  }
+
+  function syncYoutubeNativeView(youtube, viewport) {
+    const api = electronBrowserApi();
+    if (!api || typeof api.upsert !== "function") return false;
+    if (state.electronNativeViewsSuppressedForDrag) return true;
+    if (!youtube?.open || youtube.hidden || !youtube.videoId || !viewport) {
+      api.upsert({ id: "youtube", visible: false, pause: true });
+      return true;
+    }
+    window.requestAnimationFrame(() => {
+      if (!youtube.open || youtube.hidden || !youtube.videoId || !viewport.isConnected) {
+        api.upsert({ id: "youtube", visible: false, pause: true });
+        return;
+      }
+      const url = youtubeNativeEmbedUrl(youtube.videoId);
+      if (!url) return;
+      api.upsert({
+        id: "youtube",
+        visible: true,
+        url,
+        bounds: electronBrowserBounds(viewport),
+      });
+    });
+    return true;
+  }
+
+  function renderYoutubeResults(body, youtube) {
+    const results = state.youtubeSearchResults || [];
+    const resultsBox = document.createElement("div");
+    resultsBox.className = "youtube-widget-results";
+    if (state.youtubeSearchLoading) {
+      const loading = document.createElement("div");
+      loading.className = "youtube-widget-empty";
+      loading.textContent = "searching...";
+      resultsBox.appendChild(loading);
+    } else if (state.youtubeSearchError) {
+      const error = document.createElement("div");
+      error.className = "youtube-widget-empty";
+      error.textContent = state.youtubeSearchError;
+      resultsBox.appendChild(error);
+    } else if (!results.length) {
+      const empty = document.createElement("div");
+      empty.className = "youtube-widget-empty";
+      empty.textContent = "enter YouTube URL or search";
+      resultsBox.appendChild(empty);
+    } else {
+      for (const item of results) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "youtube-result";
+        const thumb = document.createElement("img");
+        thumb.alt = "";
+        thumb.loading = "lazy";
+        thumb.referrerPolicy = "no-referrer";
+        thumb.src = item.thumbnail || "";
+        const meta = document.createElement("span");
+        meta.className = "youtube-result-meta";
+        const title = document.createElement("span");
+        title.className = "youtube-result-title";
+        title.textContent = item.title || "Untitled";
+        const sub = document.createElement("span");
+        sub.className = "youtube-result-sub";
+        sub.textContent = [item.channel, item.duration, item.published].filter(Boolean).join(" · ");
+        meta.append(title, sub);
+        row.append(thumb, meta);
+        row.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          setYoutubeVideo(youtube, item.video_id);
+        });
+        resultsBox.appendChild(row);
+      }
+    }
+    body.appendChild(resultsBox);
+  }
+
+  function renderYoutubeWidget() {
+    const youtube = state.widgetSettings?.youtube;
+    if (!youtube || youtube.open === false) {
+      closeElectronNativeView("youtube");
+      return;
+    }
+    const card = document.createElement("section");
+    card.id = "youtube-widget";
+    card.className = "overlay-widget youtube-widget";
+    const dragStrip = document.createElement("div");
+    dragStrip.className = "widget-drag-strip youtube-widget-drag";
+    dragStrip.title = "move YouTube widget";
+    const header = document.createElement("div");
+    header.className = "widget-header youtube-widget-header";
+    header.innerHTML = `
+      <input class="youtube-widget-query" type="text" placeholder="YouTube URL or search" value="${escapeHtml(youtube.query || youtube.url || "")}">
+      <button class="youtube-widget-search" type="button" title="search or load">go</button>
+      <button class="youtube-widget-open" type="button" title="open YouTube">open</button>
+      <button class="widget-hide" type="button" title="show/hide">${widgetHideText(youtube.hidden, "youtube")}</button>
+      <button class="youtube-widget-stop" type="button" title="close and stop">x</button>
+    `;
+    const body = document.createElement("div");
+    body.className = "youtube-widget-body";
+    const resize = document.createElement("div");
+    resize.className = "widget-resize";
+    resize.title = "resize";
+    card.append(dragStrip, header, body, resize);
+    widgetLayer.appendChild(card);
+    const input = header.querySelector(".youtube-widget-query");
+    const currentYoutube = () => state.widgetSettings?.youtube || youtube;
+    let nativeViewport = null;
+    const apply = () => {
+      applyWidgetBox(card, youtube, 360, 260);
+      if (nativeViewport) syncYoutubeNativeView(youtube, nativeViewport);
+    };
+    const renderBody = () => {
+      nativeViewport = null;
+      body.innerHTML = "";
+      if (youtube.hidden) {
+        hideElectronNativeView("youtube", true);
+        return;
+      }
+      if (youtube.videoId) {
+        if (hasElectronBrowserApi()) {
+          const player = document.createElement("div");
+          player.className = "youtube-player youtube-native-player";
+          const fallback = document.createElement("div");
+          fallback.className = "youtube-widget-empty";
+          fallback.textContent = "Native YouTube view is attached here.";
+          player.appendChild(fallback);
+          body.appendChild(player);
+          nativeViewport = player;
+          syncYoutubeNativeView(youtube, nativeViewport);
+        } else {
+          const player = document.createElement("iframe");
+          player.className = "youtube-player";
+          player.src = youtubeEmbedUrl(youtube.videoId);
+          player.title = "YouTube player";
+          player.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
+          player.allowFullscreen = true;
+          body.appendChild(player);
+        }
+      } else {
+        hideElectronNativeView("youtube", true);
+        renderYoutubeResults(body, youtube);
+      }
+    };
+    apply();
+    renderBody();
+    apply();
+    const submit = () => {
+      const value = String(input?.value || "").trim();
+      if (!value) return;
+      searchYoutubeWidget(currentYoutube(), value);
+    };
+    input?.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submit();
+      }
+    });
+    header.querySelector(".youtube-widget-search")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      submit();
+    });
+    header.querySelector(".youtube-widget-open")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const active = currentYoutube();
+      const raw = String(input?.value || active.url || "").trim();
+      const videoId = active.videoId || extractYouTubeVideoId(raw);
+      const url = videoId
+        ? youtubeWatchUrl(videoId)
+        : (raw ? `https://www.youtube.com/results?search_query=${encodeURIComponent(raw)}` : "https://www.youtube.com/");
+      if (electronBrowserApi()?.openExternal) electronBrowserApi().openExternal(url);
+      else window.open(url, "_blank", "noopener,noreferrer");
+    });
+    const showYoutubeWidget = () => {
+      const active = currentYoutube();
+      active.hidden = false;
+      active.open = true;
+      renderWidgets();
+      saveWidgetSettings();
+    };
+    const hideButton = header.querySelector(".widget-hide");
+    hideButton?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (hideButton.dataset.hiddenShowPointerHandled === "1") {
+        delete hideButton.dataset.hiddenShowPointerHandled;
+        return;
+      }
+      const active = currentYoutube();
+      if (active.hidden) {
+        showYoutubeWidget();
+        return;
+      }
+      active.hidden = true;
+      active.open = true;
+      if (active.hidden) {
+        postYoutubeCommand("pauseVideo");
+        hideElectronNativeView("youtube", true);
+      }
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    bindHiddenShowHandle(card, hideButton, youtube, apply, saveWidgetSettings, showYoutubeWidget);
+    header.querySelector(".youtube-widget-stop")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const active = currentYoutube();
+      active.open = false;
+      active.hidden = true;
+      active.query = "";
+      active.videoId = "";
+      active.url = "";
+      state.youtubeSearchLoading = false;
+      state.youtubeSearchResults = [];
+      state.youtubeSearchError = "";
+      closeElectronNativeView("youtube");
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    body.addEventListener("dblclick", (ev) => {
+      const active = currentYoutube();
+      if (!active.videoId) return;
+      ev.preventDefault();
+      active.videoId = "";
+      closeElectronNativeView("youtube");
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    card.dataset.videoId = youtube.hidden ? "" : String(youtube.videoId || "");
+    bindWidgetFrame(card, dragStrip, resize, youtube, apply, saveWidgetSettings, 360, 260);
+  }
+
+  function reusableYoutubeWidget() {
+    if (hasElectronBrowserApi()) return null;
+    const youtube = state.widgetSettings?.youtube;
+    const card = widgetLayer?.querySelector("#youtube-widget");
+    if (!youtube || !card || youtube.open === false) return null;
+    if (!youtube.videoId) return null;
+    if (card.dataset.videoId !== String(youtube.videoId || "")) return null;
+    applyWidgetBox(card, youtube, 360, 260);
+    const hide = card.querySelector(".widget-hide");
+    if (hide) hide.textContent = widgetHideText(youtube.hidden, "youtube");
+    return card;
+  }
+
+  function clearWidgetLayerExcept(preserved = []) {
+    const keep = new Set(preserved.filter(Boolean));
+    for (const child of Array.from(widgetLayer.children)) {
+      if (!keep.has(child)) child.remove();
+    }
+  }
+
+  function renderWidgets({ force = false } = {}) {
+    if (!widgetLayer || !state.widgetSettings) return;
+    if ((state.widgetDragDepth > 0 || state.widgetInteractionDepth > 0) && !force) {
+      state.widgetRenderPending = true;
+      return;
+    }
+    state.widgetRenderPending = false;
+    const preservedYoutube = reusableYoutubeWidget();
+    const preservedGame = reusableGameWidget();
+    clearWidgetLayerExcept([preservedYoutube, preservedGame]);
+    renderPriceWidget();
+    if (!preservedYoutube) renderYoutubeWidget();
+    renderElectronBrowserWidget();
+    if (!preservedGame) renderGameWidget();
+    renderCharacterMoveWidget();
+    renderPrisonWidget("mini");
+    renderPrisonWidget("real");
+    for (const memo of state.widgetSettings.memos || []) {
+      renderMemoWidget(memo);
+    }
+    for (const browser of state.widgetSettings.browsers || []) {
+      renderBrowserWidget(browser);
+    }
+  }
+
+  function refreshOpenPrisonWidgets() {
+    if (!state.widgetSettings) return;
+    const mini = state.widgetSettings.miniJail;
+    const real = state.widgetSettings.realJail;
+    if (!mini?.open && !real?.open) return;
+    if (state.prisonScaleAdjusting || state.prisonTransformAdjusting || state.prisonPlaceMode) {
+      state.prisonWidgetRefreshPending = true;
+      return;
+    }
+    state.prisonWidgetRefreshPending = false;
+    renderWidgets();
+  }
+
+  function refreshOpenCharacterMoveWidget() {
+    const widget = characterMoveWidget();
+    if (!widget?.open) return;
+    if (state.characterMoveAdjusting || state.characterPlaceMode || state.characterDriveMode) return;
+    renderWidgets();
+  }
+
+  function applyWidgetSettings() {
+    if (!state.widgetSettings) return;
+    if (!Array.isArray(state.widgetSettings.memos)) state.widgetSettings.memos = [];
+    state.widgetSettings.memos = state.widgetSettings.memos.map(normalizeMemoWidget).filter(Boolean);
+    if (!Array.isArray(state.widgetSettings.browsers)) state.widgetSettings.browsers = [];
+    state.widgetSettings.browsers = state.widgetSettings.browsers.map(normalizeBrowserWidget).filter(Boolean);
+    state.widgetSettings.controls = Object.assign(defaultWidgetSettings().controls, state.widgetSettings.controls || {});
+    state.widgetSettings.price = Object.assign(defaultWidgetSettings().price, state.widgetSettings.price || {});
+    state.widgetSettings.game = normalizeGameWidget(state.widgetSettings.game);
+    state.widgetSettings.characterMove = normalizeCharacterMoveWidget(state.widgetSettings.characterMove);
+    state.widgetSettings.miniJail = normalizePrisonWidget(state.widgetSettings.miniJail, "mini");
+    state.widgetSettings.realJail = normalizePrisonWidget(state.widgetSettings.realJail, "real");
+    syncRealJailSign();
+    const youtubeSettings = state.widgetSettings.youtube && typeof state.widgetSettings.youtube === "object"
+      ? state.widgetSettings.youtube
+      : {};
+    Object.assign(youtubeSettings, Object.assign(defaultWidgetSettings().youtube, youtubeSettings));
+    if (youtubeSettings.open === undefined) youtubeSettings.open = !youtubeSettings.hidden;
+    state.widgetSettings.youtube = youtubeSettings;
+    state.widgetSettings.electronBrowser = normalizeElectronBrowserWidget(state.widgetSettings.electronBrowser);
+    applyWidgetControlsPosition();
+    renderWidgets();
+  }
+
+  function setupWidgetControls() {
+    state.widgetSettings = loadWidgetSettings();
+    applyWidgetSettings();
+    setupWidgetControlsDrag();
+    widgetAddPrice?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      state.widgetSettings.price.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+      refreshPriceWidget(true);
+    });
+    widgetAddMemo?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      addMemoWidget();
+    });
+    widgetAddCharacterMove?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      openCharacterMoveWidget();
+    });
+    widgetAddMiniJail?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      openPrisonWidget("mini");
+    });
+    widgetAddRealJail?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      openPrisonWidget("real");
+    });
+    widgetAddGame?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      state.gameLocalClosedAt = 0;
+      state.widgetSettings.game.closedAt = 0;
+      state.widgetSettings.game.open = true;
+      state.widgetSettings.game.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    widgetAddBrowser?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      addBrowserWidget();
+    });
+    widgetAddElectronBrowser?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      state.widgetSettings.electronBrowser.open = true;
+      state.widgetSettings.electronBrowser.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    widgetAddYoutube?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      state.widgetSettings.youtube.open = true;
+      state.widgetSettings.youtube.hidden = false;
+      renderWidgets();
+      saveWidgetSettings();
+    });
+    window.addEventListener("resize", () => {
+      applyWidgetSettings();
+      saveWidgetSettings();
+    });
+    schedulePriceWidgetRefresh(true);
+  }
+
   function defaultTopicSettings() {
     const w = Math.min(820, Math.max(360, Math.round(window.innerWidth * 0.5)));
     return {
@@ -1862,6 +6170,10 @@
     return {
       avatarScale: 1,
       bubbleScale: 1,
+      headGapPx: 0,
+      bubbleGapPx: 0,
+      subaccountAutoJoin: true,
+      hideSubaccount: false,
     };
   }
 
@@ -1883,10 +6195,78 @@
     if (!state.avatarSettings) return;
     state.avatarSettings.avatarScale = Math.min(1.8, Math.max(0.55, Number(state.avatarSettings.avatarScale) || 1));
     state.avatarSettings.bubbleScale = Math.min(1.8, Math.max(0.55, Number(state.avatarSettings.bubbleScale) || 1));
+    state.avatarSettings.headGapPx = Math.round(Math.min(160, Math.max(-80, Number(state.avatarSettings.headGapPx) || 0)));
+    state.avatarSettings.bubbleGapPx = Math.round(Math.min(220, Math.max(-80, Number(state.avatarSettings.bubbleGapPx) || 0)));
+    state.avatarSettings.subaccountAutoJoin = state.avatarSettings.subaccountAutoJoin !== false;
+    state.avatarSettings.hideSubaccount = !!state.avatarSettings.hideSubaccount;
     document.documentElement.style.setProperty("--avatar-ui-scale", String(state.avatarSettings.avatarScale));
     document.documentElement.style.setProperty("--bubble-ui-scale", String(state.avatarSettings.bubbleScale));
+    document.documentElement.style.setProperty("--bubble-card-gap-px", `${state.avatarSettings.bubbleGapPx}px`);
+    if (avatarHeadGap) avatarHeadGap.value = String(state.avatarSettings.headGapPx);
+    if (bubbleCardGap) bubbleCardGap.value = String(state.avatarSettings.bubbleGapPx);
+    if (subaccountToggle) {
+      subaccountToggle.textContent = state.avatarSettings.hideSubaccount ? "sub show" : "sub hide";
+      subaccountToggle.classList.toggle("active", state.avatarSettings.hideSubaccount);
+      subaccountToggle.title = state.avatarSettings.hideSubaccount ? "부계정 캐릭터 보이기" : "부계정 캐릭터 숨기기";
+    }
+    if (subaccountAutoToggle) {
+      subaccountAutoToggle.textContent = state.avatarSettings.subaccountAutoJoin ? "auto on" : "auto off";
+      subaccountAutoToggle.classList.toggle("active", state.avatarSettings.subaccountAutoJoin);
+      subaccountAutoToggle.title = state.avatarSettings.subaccountAutoJoin
+        ? "부계정 리시버 자동 입장 끄기"
+        : "부계정 리시버 자동 입장 켜기";
+    }
+    window.dispatchEvent(new CustomEvent("tg-subaccount-toggle-state", {
+      detail: { hidden: state.avatarSettings.hideSubaccount },
+    }));
+    window.dispatchEvent(new CustomEvent("tg-subaccount-auto-join-state", {
+      detail: { enabled: state.avatarSettings.subaccountAutoJoin },
+    }));
     renderParticipants();
   }
+
+  function setSubaccountHidden(hidden) {
+    if (!state.avatarSettings) return false;
+    const previous = !!state.avatarSettings.hideSubaccount;
+    const next = !!hidden;
+    if (previous === next) return previous;
+    state.avatarSettings.hideSubaccount = next;
+    applyAvatarSettings();
+    if (previous && !next) {
+      for (const p of displayedParticipants().filter(isSubaccountParticipant)) {
+        showParticipantEntryToast(p);
+      }
+    }
+    saveAvatarSettings();
+    return state.avatarSettings.hideSubaccount;
+  }
+
+  function toggleSubaccountHidden() {
+    return setSubaccountHidden(!state.avatarSettings?.hideSubaccount);
+  }
+
+  function setSubaccountAutoJoin(enabled) {
+    if (!state.avatarSettings) return true;
+    const next = !!enabled;
+    if (state.avatarSettings.subaccountAutoJoin === next) return next;
+    state.avatarSettings.subaccountAutoJoin = next;
+    applyAvatarSettings();
+    saveAvatarSettings();
+    return state.avatarSettings.subaccountAutoJoin;
+  }
+
+  function toggleSubaccountAutoJoin() {
+    return setSubaccountAutoJoin(!(state.avatarSettings?.subaccountAutoJoin !== false));
+  }
+
+  window.tgVideochatOverlay = Object.assign(window.tgVideochatOverlay || {}, {
+    setSubaccountHidden,
+    toggleSubaccountHidden,
+    isSubaccountHidden: () => !!state.avatarSettings?.hideSubaccount,
+    setSubaccountAutoJoin,
+    toggleSubaccountAutoJoin,
+    isSubaccountAutoJoinEnabled: () => state.avatarSettings?.subaccountAutoJoin !== false,
+  });
 
   function setupAvatarControls() {
     state.avatarSettings = loadAvatarSettings();
@@ -1910,6 +6290,28 @@
       state.avatarSettings.bubbleScale += 0.08;
       applyAvatarSettings();
       saveAvatarSettings();
+    });
+    const updateHeadGap = () => {
+      state.avatarSettings.headGapPx = Number(avatarHeadGap.value);
+      applyAvatarSettings();
+      saveAvatarSettings();
+    };
+    const updateBubbleGap = () => {
+      state.avatarSettings.bubbleGapPx = Number(bubbleCardGap.value);
+      applyAvatarSettings();
+      saveAvatarSettings();
+    };
+    avatarHeadGap?.addEventListener("input", updateHeadGap);
+    avatarHeadGap?.addEventListener("change", updateHeadGap);
+    bubbleCardGap?.addEventListener("input", updateBubbleGap);
+    bubbleCardGap?.addEventListener("change", updateBubbleGap);
+    avatarHeadGap?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    bubbleCardGap?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    subaccountToggle?.addEventListener("click", () => {
+      toggleSubaccountHidden();
+    });
+    subaccountAutoToggle?.addEventListener("click", () => {
+      toggleSubaccountAutoJoin();
     });
   }
 
@@ -2130,20 +6532,35 @@
 
   function isEditableTarget(target) {
     if (!(target instanceof Element)) return false;
-    return !!target.closest("input, textarea, select, button, [contenteditable='true'], #chat-panel");
+    return !!target.closest("input, textarea, select, button, [contenteditable='true'], #chat-panel, .overlay-widget");
+  }
+
+  function isTextInputTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest("input, textarea, select, [contenteditable='true'], #chat-panel");
   }
 
   function blurEditableFocus() {
     const active = document.activeElement;
-    if (active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable='true']")) {
+    if (active instanceof HTMLElement && active.matches("input, textarea, select, button, [contenteditable='true']")) {
       active.blur();
     }
     hideMentionMenu();
   }
 
-  function toastMessageParts(template, name, fallback) {
+  function replaceToastTokens(value, tokens = {}) {
+    return String(value).replace(/\{([a-z_]+)\}/gi, (match, key) => {
+      const normalized = String(key || "").toLowerCase();
+      if (normalized === "name") return match;
+      if (!Object.prototype.hasOwnProperty.call(tokens, normalized)) return match;
+      const tokenValue = tokens[normalized];
+      return tokenValue === undefined || tokenValue === null ? "" : String(tokenValue);
+    });
+  }
+
+  function toastMessageParts(template, name, fallback, tokens = {}) {
     const displayName = String(name || "누군가");
-    const value = String(template || fallback || "{name}").trim() || fallback || "{name}";
+    const value = replaceToastTokens(String(template || fallback || "{name}").trim() || fallback || "{name}", tokens);
     if (!value.includes("{name}")) {
       return { before: "", name: displayName, after: ` ${value}` };
     }
@@ -2163,13 +6580,19 @@
       style: "ember",
       entryTemplate: "{name} \uB4F1\uC7A5",
       exitTemplate: "{name} \uC548\uB155 \uB2E4\uC74C\uC5D0 \uB610\uBD10\uC694",
+      levelUpTemplate: LEVEL_UP_TEMPLATE_DEFAULT,
+      levelDownTemplate: LEVEL_DOWN_TEMPLATE_DEFAULT,
     };
   }
 
   function loadToastSettings() {
     try {
       const raw = localStorage.getItem(TOAST_SETTINGS_KEY);
-      return Object.assign(defaultToastSettings(), raw ? JSON.parse(raw) : {}, settingSection("toast") || {});
+      const settings = Object.assign(defaultToastSettings(), raw ? JSON.parse(raw) : {}, settingSection("toast") || {});
+      if (settings.levelUpTemplate === "{name} 레벨 업 Lv. {old_level} → {new_level}") {
+        settings.levelUpTemplate = LEVEL_UP_TEMPLATE_DEFAULT;
+      }
+      return settings;
     } catch (_) {
       return defaultToastSettings();
     }
@@ -2190,9 +6613,13 @@
     if (!styles.has(s.style)) s.style = "ember";
     s.entryTemplate = String(s.entryTemplate || "{name} \uB4F1\uC7A5");
     s.exitTemplate = String(s.exitTemplate || "{name} \uC548\uB155 \uB2E4\uC74C\uC5D0 \uB610\uBD10\uC694");
+    s.levelUpTemplate = String(s.levelUpTemplate || LEVEL_UP_TEMPLATE_DEFAULT);
+    s.levelDownTemplate = String(s.levelDownTemplate || LEVEL_DOWN_TEMPLATE_DEFAULT);
     if (toastStyle) toastStyle.value = s.style;
     if (entryMessageTemplate) entryMessageTemplate.value = s.entryTemplate;
     if (exitMessageTemplate) exitMessageTemplate.value = s.exitTemplate;
+    if (levelUpMessageTemplate) levelUpMessageTemplate.value = s.levelUpTemplate;
+    if (levelDownMessageTemplate) levelDownMessageTemplate.value = s.levelDownTemplate;
     if (toastHandle) {
       toastHandle.style.left = `${s.x}px`;
       toastHandle.style.top = `${s.y}px`;
@@ -2233,8 +6660,20 @@
       applyToastSettings();
       saveToastSettings();
     });
+    levelUpMessageTemplate?.addEventListener("input", () => {
+      state.toastSettings.levelUpTemplate = levelUpMessageTemplate.value;
+      applyToastSettings();
+      saveToastSettings();
+    });
+    levelDownMessageTemplate?.addEventListener("input", () => {
+      state.toastSettings.levelDownTemplate = levelDownMessageTemplate.value;
+      applyToastSettings();
+      saveToastSettings();
+    });
     entryMessageTemplate?.addEventListener("keydown", (ev) => ev.stopPropagation());
     exitMessageTemplate?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    levelUpMessageTemplate?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    levelDownMessageTemplate?.addEventListener("keydown", (ev) => ev.stopPropagation());
     let start = null;
     toastHandle?.addEventListener("pointerdown", (ev) => {
       ev.preventDefault();
@@ -2305,6 +6744,36 @@
         applyStreamPreviewSettings(true);
         storageSet(STREAM_PREVIEW_SETTINGS_KEY, JSON.stringify(state.streamPreviewSettings));
       }
+      if (nextSettings.widgets && state.widgetSettings) {
+        const { game: incomingGame, ...incomingWidgets } = nextSettings.widgets;
+        const localGame = state.widgetSettings.game || {};
+        const localGameProtected = Date.now() < (state.gameLocalOverrideUntil || 0);
+        const localClosedAt = Math.max(
+          Number(state.gameLocalClosedAt || 0),
+          Number(localGame.closedAt || 0)
+        );
+        const incomingClosedAt = Number(incomingGame?.closedAt || 0);
+        const incomingReopensClosedGame = !!incomingGame?.open && localClosedAt > 0 && incomingClosedAt < localClosedAt;
+        const incomingGameFresh = !localGameProtected && (
+          !incomingReopensClosedGame &&
+          (!localClosedAt || incomingClosedAt >= localClosedAt)
+        );
+        Object.assign(state.widgetSettings, incomingWidgets, {
+          controls: Object.assign(state.widgetSettings.controls || {}, incomingWidgets.controls || {}),
+          price: Object.assign(state.widgetSettings.price || {}, incomingWidgets.price || {}),
+          youtube: Object.assign(state.widgetSettings.youtube || {}, incomingWidgets.youtube || {}),
+          electronBrowser: Object.assign(state.widgetSettings.electronBrowser || {}, incomingWidgets.electronBrowser || {}),
+          game: normalizeGameWidget(Object.assign(
+            localGame,
+            incomingGameFresh ? (incomingGame || {}) : {}
+          )),
+          memos: Array.isArray(incomingWidgets.memos) ? incomingWidgets.memos : state.widgetSettings.memos,
+          browsers: Array.isArray(incomingWidgets.browsers) ? incomingWidgets.browsers : state.widgetSettings.browsers,
+        });
+        applyWidgetSettings();
+        storageSet(WIDGET_SETTINGS_KEY, JSON.stringify(state.widgetSettings));
+        refreshPriceWidget(false);
+      }
       if (nextSettings.camera) {
         applyCameraControl({ type: "videochat_camera", ...nextSettings.camera });
       }
@@ -2327,6 +6796,7 @@
   setupEffectControls();
   setupToastControls();
   setupStreamPreviewControls();
+  setupWidgetControls();
   if (state.controlMode) scheduleOverlaySettingsPush(300);
 
   function keyFor(p) {
@@ -2453,7 +6923,7 @@
       const a = -Math.PI / 2 + t * Math.PI * 2 + ring * 0.23 + jitterA * 0.2;
       return {
         x: Math.cos(a) * radius,
-        z: Math.sin(a) * radius + 0.25 + jitterR * 0.14,
+        z: Math.sin(a) * radius + CAMPFIRE_CENTER.z + jitterR * 0.14,
         a,
       };
     }
@@ -2466,6 +6936,42 @@
       x: Math.cos(a) * radius,
       z: Math.sin(a) * radius + 0.05 + jitterR * 0.12,
       a,
+    };
+  }
+
+  function jailWorldPosition(index, count, key = "") {
+    const safeCount = Math.max(1, Number(count) || 1);
+    const center = realJailCenter();
+    const randA = ((hashString(`${key}:jail:a`) % 1000) / 1000 - 0.5);
+    const randB = ((hashString(`${key}:jail:b`) % 1000) / 1000 - 0.5);
+    let localX = 0;
+    let localZ = 0;
+    if (safeCount <= 10) {
+      const radius = Math.sqrt((index + 0.5) / safeCount);
+      const angle = index * 2.39996323 + randA * 0.58;
+      localX = Math.cos(angle) * radius * 0.98 + randA * 0.1;
+      localZ = Math.sin(angle) * radius * 0.74 + randB * 0.08;
+    } else {
+      const cols = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(safeCount * 1.28))));
+      const rows = Math.max(1, Math.ceil(safeCount / cols));
+      const col = index % cols;
+      const row = Math.floor(index / cols);
+      const cellW = 2.18 / cols;
+      const cellZ = 1.62 / rows;
+      localX = -1.09 + cellW * (col + 0.5) + randA * cellW * 0.48;
+      localZ = -0.81 + cellZ * (row + 0.5) + randB * cellZ * 0.48;
+    }
+    localX = Math.min(1.12, Math.max(-1.12, localX));
+    localZ = Math.min(0.84, Math.max(-0.84, localZ));
+    const yaw = realJailYaw();
+    const cos = Math.cos(yaw);
+    const sin = Math.sin(yaw);
+    const x = center.x + localX * cos + localZ * sin;
+    const z = center.z - localX * sin + localZ * cos;
+    return {
+      x,
+      z,
+      a: Math.atan2(center.x - x, center.z - z),
     };
   }
 
@@ -2484,6 +6990,11 @@
     if (count >= 40) return -6;
     if (count >= 20) return -14;
     return -28;
+  }
+
+  function avatarScreenTop(screenPoint, count) {
+    const headGapPx = Number(state.avatarSettings?.headGapPx) || 0;
+    return screenPoint.y - avatarScreenLift(count) - headGapPx;
   }
 
   function initials(name) {
@@ -2539,7 +7050,7 @@
     };
   }
 
-  function facePointYawOnly(group, x, z, centerX = 0, centerZ = 0.25) {
+  function facePointYawOnly(group, x, z, centerX = CAMPFIRE_CENTER.x, centerZ = CAMPFIRE_CENTER.z) {
     group.rotation.set(0, Math.atan2(centerX - x, centerZ - z), 0);
   }
 
@@ -2577,6 +7088,11 @@
       group.userData.pendingLeave = true;
       return;
     }
+    group.userData.prisonKind = prisonKindForKey(key) || group.userData.prisonKind || "";
+    group.userData.prisonScale = characterPrisonScale(key);
+    if (group.userData.prisonKind !== "real") {
+      removePrisonAssignments(key, { save: true, render: false });
+    }
     const mode = state.effectSettings?.exitEffect || "ascend";
     const duration = exitDurationForMode(mode);
     const lift = mode === "ascend" ? 1.9 : 0.35;
@@ -2600,6 +7116,15 @@
       until: group.userData.leavingUntil,
       screen: { x: 0, y: 0 },
     });
+  }
+
+  function showParticipantEntryToast(p) {
+    if (!p) return;
+    showEventToast(
+      toastMessageParts(state.toastSettings?.entryTemplate, eventDisplayName(p.name || p.username), "{name} \uB4F1\uC7A5"),
+      "enter",
+      participantColor(p)
+    );
   }
 
   function createCharacter(p) {
@@ -2803,6 +7328,12 @@
     armR.position.set(0.33, 0.69, 0.06);
     armL.rotation.set(0.14, 0, -0.56);
     armR.rotation.set(0.14, 0, 0.56);
+    group.userData.arms = {
+      left: armL,
+      right: armR,
+      leftBase: armL.rotation.clone(),
+      rightBase: armR.rotation.clone(),
+    };
     group.add(armL, armR);
 
     const legGeo = new THREE.CapsuleGeometry(0.065, 0.3, 4, 8);
@@ -2860,6 +7391,7 @@
         obj.material.userData.originalColor = obj.material.color.clone();
       }
     });
+    attachCheerRig(group, key);
     state.three.scene.add(group);
     state.characters.set(key, group);
     return group;
@@ -2943,18 +7475,33 @@
 
   function renderParticipants() {
     if (!state.three) return;
-    const rows = Array.from(state.participants.values());
+    const allRows = Array.from(state.participants.values());
+    const rows = allRows.filter((p) => !shouldHideSubaccountParticipant(p));
     rows.sort((a, b) => Number(b.is_host || 0) - Number(a.is_host || 0) || String(a.name).localeCompare(String(b.name)));
     assignParticipantColors(rows);
     participantLayer.classList.toggle("crowd", rows.length >= 20);
     participantLayer.classList.toggle("packed", rows.length >= 40);
     const liveKeys = new Set(rows.map(keyFor));
-    removeMissingCharacters(liveKeys);
+    if (state.hasSnapshot) removeMissingCharacters(liveKeys);
+    const prisonChanged = state.hasSnapshot ? prunePrisonAssignments(liveKeys) : false;
+    const placementChanged = state.hasSnapshot ? pruneCharacterPlacements(liveKeys) : false;
+    if (prisonChanged || placementChanged) saveWidgetSettings();
+    const realRows = rows.filter((p) => isRealJailed(keyFor(p)));
+    const normalRows = rows.filter((p) => !isRealJailed(keyFor(p)) && !hasCharacterPlacement(keyFor(p)));
+    const realIndexByKey = new Map(realRows.map((p, index) => [keyFor(p), index]));
+    const normalIndexByKey = new Map(normalRows.map((p, index) => [keyFor(p), index]));
     const holdingLayout = state.leaving.size > 0;
 
     rows.forEach((p, i) => {
       const key = keyFor(p);
       const char = state.characters.get(key) || createCharacter(p);
+      const prisonKind = prisonKindForKey(key);
+      const realJailed = prisonKind === "real";
+      const customPlacement = characterPlacementForKey(key);
+      const manuallyPlaced = !!customPlacement;
+      const prisonScale = characterPrisonScale(key);
+      const targetRows = realJailed ? realRows : normalRows;
+      const targetIndexByKey = realJailed ? realIndexByKey : normalIndexByKey;
       const wasLeaving = !!char.userData.leavingUntil;
       if (wasLeaving) {
         char.userData.leavingUntil = 0;
@@ -2966,12 +7513,20 @@
         state.leaving.delete(key);
       }
       char.userData.participant = p;
-      const layoutIndex = holdingLayout && Number.isFinite(char.userData.layoutIndex) ? char.userData.layoutIndex : i;
-      const layoutCount = holdingLayout && Number.isFinite(char.userData.layoutCount) ? char.userData.layoutCount : rows.length;
-      const wp = layoutWorld(layoutIndex, layoutCount, key);
+      const samePrisonKind = (char.userData.prisonKind || "") === prisonKind;
+      const preserveLayout = holdingLayout && samePrisonKind && Number.isFinite(char.userData.layoutIndex) && Number.isFinite(char.userData.layoutCount);
+      const layoutIndex = manuallyPlaced
+        ? (realJailed ? (targetIndexByKey.get(key) ?? i) : i)
+        : (preserveLayout ? char.userData.layoutIndex : (targetIndexByKey.get(key) ?? i));
+      const layoutCount = manuallyPlaced
+        ? (realJailed ? Math.max(1, targetRows.length || rows.length) : Math.max(1, rows.length))
+        : (preserveLayout ? char.userData.layoutCount : Math.max(1, targetRows.length || rows.length));
+      const wp = manuallyPlaced
+        ? (characterPlacementWorldPosition(key, customPlacement) || (realJailed ? jailWorldPosition(layoutIndex, layoutCount, key) : layoutWorld(layoutIndex, layoutCount, key)))
+        : (realJailed ? jailWorldPosition(layoutIndex, layoutCount, key) : layoutWorld(layoutIndex, layoutCount, key));
       const target = new THREE.Vector3(wp.x, 0, wp.z);
       if (!char.userData.enterDone && !char.userData.enterFrom) {
-        const mode = char.userData.entryEffect || state.effectSettings?.entryEffect || "drop";
+        const mode = realJailed ? "drop" : (char.userData.entryEffect || state.effectSettings?.entryEffect || "drop");
         if (mode === "none") {
           char.userData.enterDone = true;
           char.position.copy(target);
@@ -2987,11 +7542,20 @@
           char.position.copy(char.userData.enterFrom);
         }
       }
-      facePointYawOnly(char, wp.x, wp.z);
+      if (Number.isFinite(wp.yaw)) char.rotation.set(0, wp.yaw, 0);
+      else facePointYawOnly(char, wp.x, wp.z);
       char.userData.target = target;
       char.userData.layout = wp;
       char.userData.layoutIndex = layoutIndex;
       char.userData.layoutCount = layoutCount;
+      char.userData.prisonKind = prisonKind;
+      char.userData.prisonScale = prisonScale;
+      if (realJailed) {
+        char.userData.fireHopUntil = 0;
+        char.userData.levelEffectKind = "";
+        char.userData.levelEffectStart = 0;
+        if (char.userData.cheerRig) char.userData.cheerRig.until = 0;
+      }
       char.userData.leavingUntil = 0;
       state.leaving.delete(key);
 
@@ -3000,10 +7564,10 @@
       const anchor = (!char.userData.enterDone && char.userData.target)
         ? char.userData.target.clone()
         : char.position.clone();
-      anchor.y = avatarAnchorY(rows.length);
+      anchor.y = avatarAnchorY(layoutCount) * prisonScale;
       const sp = screenFromWorld(anchor);
       el.style.left = `${sp.x}px`;
-      el.style.top = `${sp.y - avatarScreenLift(rows.length)}px`;
+      el.style.top = `${avatarScreenTop(sp, layoutCount)}px`;
       el.style.zIndex = el.classList.contains("speaking")
         ? (el.dataset.speechZ || "22000")
         : (!char.userData.enterDone ? "21000" : String(Math.round(sp.y)));
@@ -3018,6 +7582,10 @@
       el.classList.toggle("broadcasting", !!p.video || !!p.screen);
       el.classList.toggle("has-photo", !!p.avatar_url);
       el.classList.toggle("no-photo", !p.avatar_url);
+      el.classList.toggle("mini-prisoner", prisonKind === "mini");
+      el.classList.toggle("real-prisoner", realJailed);
+      el.style.setProperty("--avatar-prison-scale", String(prisonScale));
+      el.style.setProperty("--avatar-speaking-prison-scale", String(realJailed ? prisonScale : prisonScale * 1.06));
       const broadcastBadge = el.querySelector(".broadcast-badge");
       const broadcastLabel = broadcastBadge?.querySelector(".broadcast-label");
       if (broadcastBadge && broadcastLabel) {
@@ -3082,45 +7650,47 @@
         continue;
       }
       const anchor = (group.userData.leaveFrom || group.position).clone();
-      anchor.y = avatarAnchorY(rows.length) + 0.2;
+      const layoutCount = Number(group.userData.layoutCount) || rows.length;
+      const prisonScale = Number(group.userData.prisonScale) || 1;
+      anchor.y = avatarAnchorY(layoutCount) * prisonScale + 0.2 * prisonScale;
       const sp = screenFromWorld(anchor);
       const start = group.userData.leavingStartedAt || now;
       const progress = clamp((now - start) / Math.max(1, leave.until - start), 0, 1);
       leave.screen = sp;
       el.style.left = `${sp.x}px`;
-      el.style.top = `${sp.y - avatarScreenLift(rows.length)}px`;
+      el.style.top = `${avatarScreenTop(sp, layoutCount)}px`;
       el.style.zIndex = String(20500);
       el.classList.add("leaving");
       el.style.opacity = String(Math.max(0, 1 - progress * 0.86));
       el.style.filter = `brightness(${1 + (1 - progress) * 0.35}) drop-shadow(0 0 ${Math.round(18 + (1 - progress) * 18)}px rgba(235,248,255,${0.38 * (1 - progress)}))`;
     }
     renderStreamPreviews();
+    if (prisonChanged) refreshOpenPrisonWidgets();
+    if (placementChanged) refreshOpenCharacterMoveWidget();
   }
 
   function setSnapshot(data) {
+    const initialSnapshot = !state.hasSnapshot;
     const previousKeys = new Set(state.participants.keys());
     const entrants = [];
     state.participants.clear();
     for (const p of data.participants || []) {
       const key = keyFor(p);
       state.participants.set(key, p);
-      if (state.hasSnapshot && !previousKeys.has(key)) {
+      if (!initialSnapshot && !previousKeys.has(key) && !shouldHideSubaccountParticipant(p)) {
         state.pendingEntrants.add(key);
         entrants.push(p);
       }
     }
-    const rows = Array.from(state.participants.values());
+    const rows = displayedParticipants();
     rows.sort((a, b) => Number(b.is_host || 0) - Number(a.is_host || 0) || String(a.name).localeCompare(String(b.name)));
     assignParticipantColors(rows);
-    for (const p of entrants) {
-      showEventToast(
-        toastMessageParts(state.toastSettings?.entryTemplate, eventDisplayName(p.name || p.username), "{name} \uB4F1\uC7A5"),
-        "enter",
-        participantColor(p)
-      );
+    for (const p of initialSnapshot ? rows : entrants) {
+      showParticipantEntryToast(p);
     }
     state.hasSnapshot = true;
     renderParticipants();
+    refreshOpenPrisonWidgets();
   }
 
   function mockParticipants(count) {
@@ -3198,7 +7768,7 @@
     let i = 0;
     const offstageNames = ["가상손님", "채팅테스트", "미참여유저"];
     setInterval(() => {
-      const rows = Array.from(state.participants.values());
+      const rows = displayedParticipants();
       const debug = state.debugMessages[i % state.debugMessages.length];
       if (!rows.length || i % 3 === 2) {
         const name = offstageNames[Math.floor(i / 3) % offstageNames.length];
@@ -3276,9 +7846,11 @@
     const chatKey = speakerKey(data, false);
     const key = speakerKey(data, true);
     addChatLine(data, !!chatKey);
-    if (type === "text" && String(data.text || "").trim().toLowerCase() === "/fire") {
+    const effectCommand = String(data.text || "").trim().toLowerCase();
+    if (type === "text" && /^\/(?:fire|cheer)(?:@\w+)?(?:\s|$)/.test(effectCommand)) {
       return;
     }
+    if (type === "text") handleGameChatCommand(data);
     const el = key ? state.elements.get(key) : null;
     const char = key ? state.characters.get(key) : null;
     if (el) {
@@ -3532,7 +8104,10 @@
       const msg = document.createElement("span");
       msg.className = "chat-text";
       appendRichText(msg, String(data.text || ""), { entities: data.entities || [] });
-      item.append(document.createTextNode(": "), msg);
+      const separator = document.createElement("span");
+      separator.className = "chat-separator";
+      separator.textContent = ": ";
+      item.append(separator, msg);
       if (data.stt_label) {
         const label = document.createElement("span");
         label.className = "stt-label";
@@ -3596,6 +8171,11 @@
     return Math.min(max, Math.max(min, value));
   }
 
+  function clampCameraView() {
+    state.view.distance = clamp(Number(state.view.distance) || DEFAULT_CAMERA_VIEW.distance, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
+    state.view.height = clamp(Number(state.view.height) || DEFAULT_CAMERA_VIEW.height, CAMERA_HEIGHT_MIN, CAMERA_HEIGHT_MAX);
+  }
+
   function easeInOut(value) {
     const t = clamp(value, 0, 1);
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -3633,7 +8213,7 @@
 
   function applyPitch(pitch) {
     if (pitch == null) return;
-    const p = clamp(pitch, 8 * Math.PI / 180, 58 * Math.PI / 180);
+    const p = clamp(pitch, CAMERA_PITCH_MIN, CAMERA_PITCH_MAX);
     state.view.height = state.view.target.y + Math.tan(p) * state.view.distance;
   }
 
@@ -3653,7 +8233,7 @@
 
     const distance = asFiniteNumber(data.distance);
     if (distance != null) state.view.distance = distance;
-    state.view.distance = clamp(state.view.distance, 3.8, 18);
+    state.view.distance = clamp(state.view.distance, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
 
     const yaw = angleFromPayload(data, "yaw", "yaw_deg");
     if (yaw != null) state.view.yaw = yaw;
@@ -3673,7 +8253,7 @@
       applyCameraTarget(delta.target, true);
       const dDistance = asFiniteNumber(delta.distance);
       if (dDistance != null) state.view.distance += dDistance;
-      state.view.distance = clamp(state.view.distance, 3.8, 18);
+      state.view.distance = clamp(state.view.distance, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
       const dYaw = angleFromPayload(delta, "yaw", "yaw_deg");
       if (dYaw != null) state.view.yaw += dYaw;
       const dHeight = asFiniteNumber(delta.height);
@@ -3689,14 +8269,14 @@
       }
     }
 
-    state.view.height = clamp(state.view.height, 1.4, 8);
+    clampCameraView();
     state.view.screenOffsetX = clamp(state.view.screenOffsetX || 0, -window.innerWidth, window.innerWidth);
     state.view.screenOffsetY = clamp(state.view.screenOffsetY || 0, -window.innerHeight, window.innerHeight);
     applySceneScreenOffset();
     const fov = asFiniteNumber(data.fov);
     const dFov = asFiniteNumber(delta?.fov);
     if (state.three?.camera && (fov != null || dFov != null)) {
-      state.three.camera.fov = clamp((fov != null ? fov : state.three.camera.fov) + (dFov || 0), 28, 70);
+      state.three.camera.fov = clamp((fov != null ? fov : state.three.camera.fov) + (dFov || 0), CAMERA_FOV_MIN, CAMERA_FOV_MAX);
       state.three.camera.updateProjectionMatrix();
       state.view.fov = state.three.camera.fov;
     }
@@ -3713,6 +8293,83 @@
       depthTest: true,
       blending: THREE.AdditiveBlending,
     });
+  }
+
+  function createCheerStick(color) {
+    const stick = new THREE.Group();
+    const handle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.02, 0.18, 10),
+      new THREE.MeshStandardMaterial({ color: 0x1b1f28, roughness: 0.46 })
+    );
+    handle.position.y = -0.07;
+    const glow = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.54, 18, 1, true),
+      makeFireworkMaterial(color, 0.22)
+    );
+    glow.position.y = 0.23;
+    const core = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.026, 0.52, 16),
+      makeFireworkMaterial(color.clone().lerp(new THREE.Color(0xffffff), 0.08), 0.94)
+    );
+    core.position.y = 0.23;
+    const tip = new THREE.Mesh(
+      new THREE.SphereGeometry(0.044, 14, 10),
+      makeFireworkMaterial(color.clone().lerp(new THREE.Color(0xffffff), 0.2), 0.72)
+    );
+    tip.position.y = 0.51;
+    stick.add(handle, glow, core, tip);
+    stick.traverse((obj) => {
+      obj.userData.isCheerStick = true;
+    });
+    stick.visible = false;
+    return { group: stick, glow, core, tip };
+  }
+
+  function attachCheerRig(group, key) {
+    const hue = (hashString(`${key}:cheer`) % 360) / 360;
+    const left = createCheerStick(new THREE.Color().setHSL(hue, 1, 0.58));
+    const right = createCheerStick(new THREE.Color().setHSL((hue + 0.23) % 1, 1, 0.58));
+    group.add(left.group, right.group);
+    group.userData.cheerRig = {
+      left,
+      right,
+      startedAt: 0,
+      until: 0,
+    };
+  }
+
+  function setCheerStickPose(stick, side, wave, lift, pulse) {
+    const dir = side === "left" ? -1 : 1;
+    stick.group.traverse((obj) => {
+      obj.visible = true;
+    });
+    stick.group.position.set(dir * (0.49 + wave * 0.035), 0.66 + lift, 0.17);
+    stick.group.rotation.set(0.48 + Math.abs(wave) * 0.14, 0.08 * dir, dir * 0.36 + wave * 0.62);
+    stick.glow.material.opacity = 0.18 + pulse * 0.18;
+    stick.core.material.opacity = 0.72 + pulse * 0.24;
+    stick.tip.material.opacity = 0.42 + pulse * 0.38;
+    stick.group.scale.setScalar(1 + pulse * 0.08);
+  }
+
+  function updateCheerRig(group, now, tick, forceHidden = false) {
+    const rig = group.userData.cheerRig;
+    const arms = group.userData.arms;
+    if (!rig || !arms) return false;
+    arms.left.rotation.copy(arms.leftBase);
+    arms.right.rotation.copy(arms.rightBase);
+    if (forceHidden || (rig.until || 0) <= now) {
+      rig.left.group.visible = false;
+      rig.right.group.visible = false;
+      return false;
+    }
+    const wave = Math.sin(tick * 0.018);
+    const bounce = Math.sin(tick * 0.027);
+    const pulse = 0.5 + Math.sin(tick * 0.042) * 0.5;
+    arms.left.rotation.set(0.34 + bounce * 0.08, 0.02, -1.08 + wave * 0.48);
+    arms.right.rotation.set(0.34 - bounce * 0.08, -0.02, 1.08 + wave * 0.48);
+    setCheerStickPose(rig.left, "left", wave, 0.02 + Math.abs(wave) * 0.05, pulse);
+    setCheerStickPose(rig.right, "right", wave, 0.02 + Math.abs(wave) * 0.05, 1 - pulse * 0.7);
+    return true;
   }
 
   function spawnFireworkBurst(effect, origin, color, count, power, delay = 0) {
@@ -3811,12 +8468,36 @@
     };
   }
 
+  function levelToastTokens(data, upward) {
+    const oldLevel = Number(data?.old_level);
+    const newLevel = Number(data?.new_level);
+    const rawDelta = Number(data?.delta);
+    const fallbackDelta = Number.isFinite(oldLevel) && Number.isFinite(newLevel) ? newLevel - oldLevel : NaN;
+    const delta = Number.isFinite(rawDelta) ? rawDelta : fallbackDelta;
+    return {
+      old_level: Number.isFinite(oldLevel) ? oldLevel : "",
+      new_level: Number.isFinite(newLevel) ? newLevel : "",
+      level: Number.isFinite(newLevel) ? newLevel : "",
+      delta: Number.isFinite(delta) && delta > 0 ? `+${delta}` : (Number.isFinite(delta) ? delta : ""),
+      direction: upward ? "up" : "down",
+      reason: String(data?.reason || ""),
+    };
+  }
+
+  function showLevelEventToast(data, participant, upward) {
+    const name = eventDisplayName(data?.name || participant?.name || data?.username || participant?.username);
+    const template = upward ? state.toastSettings?.levelUpTemplate : state.toastSettings?.levelDownTemplate;
+    const fallback = upward ? LEVEL_UP_TEMPLATE_DEFAULT : LEVEL_DOWN_TEMPLATE_DEFAULT;
+    showEventToast(
+      toastMessageParts(template, name, fallback, levelToastTokens(data, upward)),
+      upward ? "level-up" : "level-down",
+      participant ? participantColor(participant) : (data?.color || "")
+    );
+  }
+
   function triggerLevelEffect(data) {
-    if (!state.three?.scene || !window.THREE) return;
     const key = speakerKey(data, true) || speakerKey(data);
     if (!key) return;
-    const char = state.characters.get(key);
-    if (!char) return;
     const participant = state.participants.get(key);
     const nextLevel = Number(data.new_level);
     if (participant && Number.isFinite(nextLevel)) {
@@ -3824,11 +8505,17 @@
       participant.level_label = data.level_label || (participant.is_host ? "Lv. 99" : `Lv. ${nextLevel}`);
       renderParticipants();
     }
-    const origin = (char.userData.target || char.position).clone();
     const upward = String(data.direction || "").toLowerCase() !== "down" && Number(data.new_level || 0) >= Number(data.old_level || 0);
+    showLevelEventToast(data, participant, upward);
+    if (isRealJailed(key)) return;
+    if (!state.three?.scene || !window.THREE) return;
+    const char = state.characters.get(key);
+    if (!char) return;
+    const origin = (char.userData.target || char.position).clone();
     const color = upward ? new THREE.Color(0xffd45c) : new THREE.Color(0x7fb6ff);
     const group = new THREE.Group();
     group.position.copy(origin);
+    group.scale.setScalar(characterPrisonScale(key));
     const effects = state.three.effects || [];
     for (let i = effects.length - 1; i >= 0; i--) {
       const effect = effects[i];
@@ -3984,6 +8671,7 @@
     if (!state.three?.scene || !window.THREE) return;
     const key = speakerKey(data, true) || speakerKey(data);
     if (!key) return;
+    if (isRealJailed(key)) return;
     const char = state.characters.get(key);
     if (!char) return;
     const now = performance.now();
@@ -3992,6 +8680,7 @@
     const origin = (char.userData.target || char.position).clone();
     const group = new THREE.Group();
     group.position.copy(origin);
+    group.scale.setScalar(characterPrisonScale(key));
     const participant = state.participants.get(key);
     const baseColor = new THREE.Color(data.color || (participant ? participantColor(participant) : "#ffd66b"));
     const sparkGeo = new THREE.SphereGeometry(0.032, 8, 6);
@@ -4009,6 +8698,7 @@
     state.three.effects = state.three.effects || [];
     state.three.effects.push({
       type: "fireworks",
+      key,
       variant: "orbit-pop",
       group,
       rockets: [],
@@ -4025,6 +8715,28 @@
       const old = state.three.effects.shift();
       old?.group?.parent?.remove(old.group);
     }
+  }
+
+  function triggerCheerEffect(data) {
+    const key = speakerKey(data, true) || speakerKey(data);
+    if (!key) return;
+    const char = state.characters.get(key);
+    if (!char?.userData?.cheerRig) return;
+    const now = performance.now();
+    if (String(data.action || "").toLowerCase() === "stop") {
+      char.userData.cheerRig.until = 0;
+      updateCheerRig(char, now, now, true);
+      return;
+    }
+    if (isRealJailed(key)) {
+      char.userData.cheerRig.until = 0;
+      updateCheerRig(char, now, now, true);
+      return;
+    }
+    const rawSeconds = Number(data.duration_sec);
+    const durationSec = clamp(Number.isFinite(rawSeconds) ? rawSeconds : CHEER_DEFAULT_SEC, 0.1, CHEER_MAX_SEC);
+    char.userData.cheerRig.startedAt = now;
+    char.userData.cheerRig.until = now + durationSec * 1000;
   }
 
   function connectVideochat() {
@@ -4065,6 +8777,10 @@
           triggerFireworks(data);
           return;
         }
+        if (data.type === "videochat_effect" && data.effect === "cheer") {
+          triggerCheerEffect(data);
+          return;
+        }
         if (data.type === "videochat_effect" && data.effect === "level") {
           triggerLevelEffect(data);
           return;
@@ -4087,6 +8803,276 @@
     ws.onerror = () => { try { ws.close(); } catch (_) {} };
   }
 
+  function createJailCage() {
+    const group = new THREE.Group();
+    group.visible = false;
+    const center = realJailCenter();
+    group.position.set(center.x, 0, center.z);
+    group.rotation.y = realJailYaw();
+
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0x8a94a6,
+      roughness: 0.38,
+      metalness: 0.55,
+    });
+    const darkSteel = new THREE.MeshStandardMaterial({
+      color: 0x343b48,
+      roughness: 0.58,
+      metalness: 0.42,
+    });
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x1c2430,
+      roughness: 0.82,
+      metalness: 0.1,
+    });
+
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(2.72, 0.08, 2.14), floorMat);
+    floor.position.y = 0.02;
+    group.add(floor);
+
+    const halfX = 1.34;
+    const halfZ = 0.98;
+    const barGeo = new THREE.CylinderGeometry(0.026, 0.026, 1.78, 10);
+    const barKeys = new Set();
+    const addBar = (x, z) => {
+      const key = `${x.toFixed(3)}:${z.toFixed(3)}`;
+      if (barKeys.has(key)) return;
+      barKeys.add(key);
+      const bar = new THREE.Mesh(barGeo, steel);
+      bar.position.set(x, 0.92, z);
+      group.add(bar);
+    };
+    for (let i = 0; i < 8; i += 1) {
+      const x = -halfX + i * ((halfX * 2) / 7);
+      addBar(x, -halfZ);
+      addBar(x, halfZ);
+    }
+    for (let i = 0; i < 7; i += 1) {
+      const z = -halfZ + i * ((halfZ * 2) / 6);
+      addBar(-halfX, z);
+      addBar(halfX, z);
+    }
+
+    const railGeoX = new THREE.BoxGeometry(2.78, 0.06, 0.06);
+    const railGeoZ = new THREE.BoxGeometry(0.06, 0.06, 2.08);
+    for (const y of [0.18, 1.72]) {
+      const front = new THREE.Mesh(railGeoX, darkSteel);
+      front.position.set(0, y, -halfZ);
+      const back = new THREE.Mesh(railGeoX, darkSteel);
+      back.position.set(0, y, halfZ);
+      const left = new THREE.Mesh(railGeoZ, darkSteel);
+      left.position.set(-halfX, y, 0);
+      const right = new THREE.Mesh(railGeoZ, darkSteel);
+      right.position.set(halfX, y, 0);
+      group.add(front, back, left, right);
+    }
+
+    const sign = new THREE.Mesh(
+      new THREE.BoxGeometry(1.18, 0.3, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x493f35, roughness: 0.7 })
+    );
+    sign.position.set(0, 1.98, -1.04);
+    const signLabel = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.08, 0.24),
+      createJailSignMaterial()
+    );
+    signLabel.position.set(0, 1.98, -1.075);
+    signLabel.rotation.y = Math.PI;
+    signLabel.userData.jailSignLabel = true;
+    group.add(sign, signLabel);
+
+    return group;
+  }
+
+  function createJailPlacePreview() {
+    const group = createJailCage();
+    group.visible = false;
+    group.userData.isPlacePreview = true;
+    group.traverse((obj) => {
+      if (!obj.material) return;
+      obj.material = obj.material.clone();
+      if (obj.material.color) obj.material.color.lerp(new THREE.Color(0x83dcff), 0.55);
+      obj.material.transparent = true;
+      obj.material.opacity = 0.34;
+      obj.material.depthWrite = false;
+      if ("emissive" in obj.material) {
+        obj.material.emissive = new THREE.Color(0x0d6b92);
+        obj.material.emissiveIntensity = 0.18;
+      }
+    });
+    updateJailSignLabel(group);
+    return group;
+  }
+
+  function createCharacterPlacePreview() {
+    const group = new THREE.Group();
+    group.visible = false;
+    group.userData.isPlacePreview = true;
+    const ghostMat = new THREE.MeshStandardMaterial({
+      color: 0x76d6ff,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.6,
+      depthWrite: false,
+      emissive: 0x0d536b,
+      emissiveIntensity: 0.16,
+    });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.26, 0.44, 5, 12), ghostMat.clone());
+    body.position.y = 0.56;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 18, 14), ghostMat.clone());
+    head.position.y = 1.05;
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false });
+    eyeMat.userData.previewTint = false;
+    const eyeGeo = new THREE.SphereGeometry(0.022, 8, 6);
+    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+    const eyeR = new THREE.Mesh(eyeGeo, eyeMat.clone());
+    eyeL.userData.previewTint = false;
+    eyeR.userData.previewTint = false;
+    eyeL.position.set(-0.068, 1.07, 0.195);
+    eyeR.position.set(0.068, 1.07, 0.195);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.34, 0.46, 42),
+      new THREE.MeshBasicMaterial({
+        color: 0x76d6ff,
+        transparent: true,
+        opacity: 0.46,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    ring.userData.previewTint = false;
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.018;
+    group.add(body, head, eyeL, eyeR, ring);
+    return group;
+  }
+
+  function characterClawMetrics(scale = 1) {
+    const s = clamp(Number(scale) || 1, 0.18, 1.15);
+    const sizeT = clamp((s - 0.18) / 0.97, 0, 1);
+    const headTopY = 1.46 * s;
+    const grabClearance = 0.28 + s * 0.12;
+    return {
+      scale: s,
+      highHeadY: 3.05,
+      grabHeadY: headTopY + grabClearance,
+      maxBend: 0.9 + (0.54 - 0.9) * sizeT,
+      releaseHop: 0.075 * s,
+      sway: 0.018 * Math.max(0.45, s),
+    };
+  }
+
+  function createCharacterClawRig() {
+    const root = new THREE.Group();
+    root.visible = false;
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0xb8c7d8,
+      metalness: 0.72,
+      roughness: 0.24,
+      emissive: 0x15283a,
+      emissiveIntensity: 0.08,
+    });
+    const darkSteel = new THREE.MeshStandardMaterial({
+      color: 0x435061,
+      metalness: 0.62,
+      roughness: 0.32,
+    });
+    const cableMat = new THREE.MeshStandardMaterial({
+      color: 0xd9e8f5,
+      metalness: 0.8,
+      roughness: 0.18,
+    });
+    const glowMat = makeFireworkMaterial(new THREE.Color(0x8bdcff), 0.22);
+
+    const carriage = new THREE.Group();
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.08, 0.12), darkSteel);
+    const block = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.26), steel);
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), makeFireworkMaterial(new THREE.Color(0x8bdcff), 0.78));
+    block.position.y = -0.08;
+    lamp.position.set(0, -0.22, 0.12);
+    carriage.add(rail, block, lamp);
+    root.add(carriage);
+
+    const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1, 10), cableMat);
+    cable.position.y = -0.5;
+    root.add(cable);
+
+    const head = new THREE.Group();
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.14, 18, 12), steel);
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.014, 8, 36), darkSteel);
+    collar.rotation.x = Math.PI / 2;
+    head.add(hub, collar);
+
+    const upperGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.28, 10);
+    const lowerGeo = new THREE.CylinderGeometry(0.02, 0.024, 0.28, 10);
+    const jointGeo = new THREE.SphereGeometry(0.032, 10, 8);
+    const tipGeo = new THREE.SphereGeometry(0.04, 12, 8);
+    const prongs = [];
+    for (let i = 0; i < 4; i += 1) {
+      const angle = i * Math.PI / 2 + Math.PI / 4;
+      const pivot = new THREE.Group();
+      pivot.userData.angle = angle;
+      pivot.userData.openRadius = 0.34;
+      pivot.userData.hingeY = -0.28;
+      pivot.userData.fingerLength = 0.28;
+      pivot.rotation.y = Math.PI / 2 - angle;
+      const arm = new THREE.Mesh(upperGeo, steel);
+      arm.position.set(0, -0.14, 0);
+      const joint = new THREE.Mesh(jointGeo, darkSteel);
+      joint.position.set(0, pivot.userData.hingeY, 0);
+      const finger = new THREE.Mesh(lowerGeo, steel);
+      const tip = new THREE.Mesh(tipGeo, steel);
+      pivot.userData.finger = finger;
+      pivot.userData.tip = tip;
+      pivot.add(arm, joint, finger, tip);
+      head.add(pivot);
+      prongs.push(pivot);
+    }
+    root.add(head);
+
+    const grabRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.016, 8, 72), glowMat);
+    grabRing.rotation.x = Math.PI / 2;
+    grabRing.visible = false;
+    root.add(grabRing);
+
+    root.userData.claw = { cable, head, prongs, grabRing };
+    return root;
+  }
+
+  function updateCharacterClawRigPose(worldX, worldZ, headY, close, pulse = 0, metrics = characterClawMetrics(1)) {
+    const rig = state.three?.characterClawRig;
+    const data = rig?.userData?.claw;
+    if (!rig || !data) return false;
+    const topY = metrics.highHeadY;
+    const cableLength = Math.max(0.16, topY - headY);
+    rig.visible = true;
+    rig.position.set(worldX, topY, worldZ);
+    data.cable.position.y = -cableLength / 2;
+    data.cable.scale.set(1, cableLength, 1);
+    data.head.position.y = -cableLength;
+    data.grabRing.position.set(0, -cableLength - 0.4, 0);
+    data.grabRing.visible = close > 0.08;
+    data.grabRing.scale.setScalar(0.62 + close * 0.28 + Math.sin(pulse) * 0.02);
+    data.grabRing.material.opacity = (0.08 + close * 0.2) * (0.8 + Math.sin(pulse * 1.7) * 0.2);
+    for (const prong of data.prongs) {
+      const angle = prong.userData.angle;
+      const hingeY = prong.userData.hingeY;
+      const length = prong.userData.fingerLength;
+      const bend = 0.03 + (metrics.maxBend - 0.03) * close;
+      prong.position.set(Math.cos(angle) * prong.userData.openRadius, 0, Math.sin(angle) * prong.userData.openRadius);
+      prong.rotation.set(0, Math.PI / 2 - angle, 0);
+      prong.userData.finger.position.set(0, hingeY - Math.cos(bend) * length * 0.5, -Math.sin(bend) * length * 0.5);
+      prong.userData.finger.rotation.set(bend, 0, 0);
+      prong.userData.tip.position.set(0, hingeY - Math.cos(bend) * length, -Math.sin(bend) * length);
+    }
+    return true;
+  }
+
+  function hideCharacterClawRig() {
+    const rig = state.three?.characterClawRig;
+    if (rig) rig.visible = false;
+  }
+
   function initThree() {
     if (!window.THREE) return;
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
@@ -4095,7 +9081,9 @@
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 80);
-    if (Number.isFinite(Number(state.view.fov))) camera.fov = Number(state.view.fov);
+    if (Number.isFinite(Number(state.view.fov))) {
+      camera.fov = clamp(Number(state.view.fov), CAMERA_FOV_MIN, CAMERA_FOV_MAX);
+    }
     scene.add(camera);
 
     const hemi = new THREE.HemisphereLight(0x6f88c8, 0x183c28, 1.05);
@@ -4230,10 +9218,20 @@
     glow.position.z = 0.25;
     scene.add(glow);
 
-    state.three = { renderer, scene, camera, fireLight, effects: [] };
+    const jailGroup = createJailCage();
+    scene.add(jailGroup);
+    const jailPlacePreview = createJailPlacePreview();
+    scene.add(jailPlacePreview);
+    const characterPlacePreview = createCharacterPlacePreview();
+    scene.add(characterPlacePreview);
+    const characterClawRig = createCharacterClawRig();
+    scene.add(characterClawRig);
+
+    state.three = { renderer, scene, camera, fireLight, jailGroup, jailPlacePreview, characterPlacePreview, characterClawRig, effects: [] };
 
     function updateCamera() {
       const v = state.view;
+      clampCameraView();
       const x = Math.sin(v.yaw) * v.distance;
       const z = Math.cos(v.yaw) * v.distance;
       camera.position.set(v.target.x + x, v.height, v.target.z + z);
@@ -4243,11 +9241,45 @@
     state.cameraUpdate = updateCamera;
 
     window.addEventListener("keydown", (ev) => {
+      if (state.characterDriveMode && ev.key === "Escape") {
+        setCharacterDriveMode(false);
+        ev.preventDefault();
+        return;
+      }
+      if (forwardGameKeyboardEvent(ev, true)) return;
+      const key = ev.key.toLowerCase();
+      if (state.characterDriveMode) {
+        if (isTextInputTarget(ev.target)) {
+          state.keys.clear();
+          return;
+        }
+        if (key === " " || ev.code === "Space") {
+          if (!ev.repeat) triggerCharacterDriveJump();
+          ev.preventDefault();
+          return;
+        }
+        if (key === "q" || key === "e" || key === "a" || key === "d" || key === "w" || key === "s") {
+          state.keys.add(key);
+          ev.preventDefault();
+        }
+        return;
+      }
+      if (state.characterPlaceMode && ev.key === "Escape") {
+        setCharacterPlaceMode(false);
+        setCharacterMoveAdjusting(false);
+        ev.preventDefault();
+        return;
+      }
+      if (state.prisonPlaceMode && ev.key === "Escape") {
+        setRealJailPlaceMode(false);
+        setPrisonTransformAdjusting(false);
+        ev.preventDefault();
+        return;
+      }
       if (isEditableTarget(ev.target)) {
         state.keys.clear();
         return;
       }
-      const key = ev.key.toLowerCase();
       if (ev.shiftKey && ["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
         const step = ev.ctrlKey ? 3 : 18;
         if (key === "arrowleft") state.view.screenOffsetX -= step;
@@ -4268,11 +9300,27 @@
     });
 
     window.addEventListener("keyup", (ev) => {
-      if (isEditableTarget(ev.target)) {
-        state.keys.delete(ev.key.toLowerCase());
+      if (forwardGameKeyboardEvent(ev, false)) return;
+      const key = ev.key.toLowerCase();
+      if (state.characterDriveMode) {
+        if (isTextInputTarget(ev.target)) {
+          state.keys.delete(key);
+          return;
+        }
+        if (key === " " || ev.code === "Space") {
+          ev.preventDefault();
+          return;
+        }
+        if (key === "q" || key === "e" || key === "a" || key === "d" || key === "w" || key === "s") {
+          state.keys.delete(key);
+          ev.preventDefault();
+        }
         return;
       }
-      const key = ev.key.toLowerCase();
+      if (isEditableTarget(ev.target)) {
+        state.keys.delete(key);
+        return;
+      }
       if (key === "q" || key === "e" || key === "a" || key === "d" || key === "w" || key === "s") {
         state.keys.delete(key);
         ev.preventDefault();
@@ -4282,11 +9330,50 @@
     window.addEventListener("wheel", (ev) => {
       if (isEditableTarget(ev.target)) return;
       const pitch = Math.atan2(state.view.height - state.view.target.y, state.view.distance);
-      state.view.distance = Math.min(13, Math.max(4.8, state.view.distance + ev.deltaY * 0.004));
-      state.view.height = clamp(state.view.target.y + Math.tan(pitch) * state.view.distance, 1.4, 8);
+      state.view.distance = clamp(state.view.distance + ev.deltaY * 0.004, CAMERA_DISTANCE_MIN, CAMERA_DISTANCE_MAX);
+      state.view.height = clamp(state.view.target.y + Math.tan(pitch) * state.view.distance, CAMERA_HEIGHT_MIN, CAMERA_HEIGHT_MAX);
       updateCamera();
       saveCameraSettings();
     }, { passive: true });
+
+    window.addEventListener("pointermove", (ev) => {
+      if (state.characterPlaceMode) {
+        if (isJailPlacementBlockedTarget(ev.target)) hideCharacterPlacePreview();
+        else updateCharacterPlacePreviewFromEvent(ev);
+        return;
+      }
+      if (state.prisonPlaceMode) {
+        if (isJailPlacementBlockedTarget(ev.target)) hideRealJailPlacePreview();
+        else updateRealJailPlacePreviewFromEvent(ev);
+      }
+    }, true);
+
+    window.addEventListener("pointerdown", (ev) => {
+      if (!state.characterPlaceMode || ev.button !== 0) return;
+      if (isJailPlacementBlockedTarget(ev.target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      setCharacterMoveAdjusting(true);
+      setCharacterPlacementFromEvent(ev);
+      setCharacterPlaceMode(false);
+      setCharacterMoveAdjusting(false);
+      syncCharacterMoveWidget({ persist: true, render: false });
+      renderParticipants();
+      refreshOpenCharacterMoveWidget();
+    }, true);
+
+    window.addEventListener("pointerdown", (ev) => {
+      if (!state.prisonPlaceMode || ev.button !== 0) return;
+      if (isJailPlacementBlockedTarget(ev.target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      setPrisonTransformAdjusting(true);
+      setRealJailPositionFromEvent(ev);
+      setRealJailPlaceMode(false);
+      setPrisonTransformAdjusting(false);
+      syncRealJailTransform({ persist: true, render: false });
+      renderParticipants();
+    }, true);
 
     window.addEventListener("mousedown", (ev) => {
       if (ev.button !== 1) return;
@@ -4339,7 +9426,9 @@
     updateCamera();
 
     function frame(t) {
-      if (
+      if (state.characterDriveMode) {
+        updateCharacterDriveFromKeys(t);
+      } else if (
         state.keys.has("q") || state.keys.has("e") ||
         state.keys.has("a") || state.keys.has("d") ||
         state.keys.has("w") || state.keys.has("s")
@@ -4349,11 +9438,12 @@
           (state.keys.has("q") || state.keys.has("a") ? 1 : 0);
         const pitchDir = (state.keys.has("w") ? 1 : 0) - (state.keys.has("s") ? 1 : 0);
         state.view.yaw += yawDir * 0.018;
-        state.view.height = clamp(state.view.height + pitchDir * 0.035, 1.4, 8);
+        state.view.height = clamp(state.view.height + pitchDir * 0.035, CAMERA_HEIGHT_MIN, CAMERA_HEIGHT_MAX);
         updateCamera();
         saveCameraSettings();
       }
       const now = performance.now();
+      const characterCount = displayedParticipantCount();
       flameOuter.scale.set(1 + Math.sin(t * 0.009) * 0.08, 1 + Math.sin(t * 0.012) * 0.12, 1);
       flameInner.scale.set(1 + Math.cos(t * 0.013) * 0.07, 1 + Math.cos(t * 0.011) * 0.1, 1);
       fireLight.intensity = 3.5 + Math.sin(t * 0.017) * 0.55;
@@ -4396,12 +9486,28 @@
           effects.splice(i, 1);
         }
       }
+      if (state.three.jailGroup) {
+        const hasActiveRealJailCharacter = Array.from(state.characters.values())
+          .some((group) => group?.userData?.prisonKind === "real" && !group.userData.leavingUntil);
+        const hasLeavingRealJail = Array.from(state.characters.values())
+          .some((group) => group?.userData?.prisonKind === "real" && group.userData.leavingUntil);
+        applyRealJailPosition();
+        applyRealJailPresence(hasActiveRealJailCharacter || hasLeavingRealJail);
+      }
+      let characterClawRigUsed = false;
       for (const group of state.characters.values()) {
-        const speaking = (group.userData.speakingUntil || 0) > now;
-        const fireHopping = (group.userData.fireHopUntil || 0) > now;
-        const levelMotion = levelCharacterMotion(group, now);
-        const characterActive = speaking || fireHopping;
-        if (group.userData.leavingUntil) {
+        const realJailed = group.userData.prisonKind === "real";
+        const prisonScale = Number(group.userData.prisonScale) || 1;
+        const groupLayoutCount = Number(group.userData.layoutCount) || characterCount;
+        const speaking = !realJailed && (group.userData.speakingUntil || 0) > now;
+        const fireHopping = !realJailed && (group.userData.fireHopUntil || 0) > now;
+        const leaving = !!group.userData.leavingUntil;
+        const cheerActive = realJailed ? updateCheerRig(group, now, t, true) : updateCheerRig(group, now, t, leaving);
+        const levelMotion = realJailed
+          ? { active: false, kind: "", offsetY: 0, scale: 1, tiltZ: 0, pulse: 0 }
+          : levelCharacterMotion(group, now);
+        const characterActive = speaking || fireHopping || cheerActive;
+        if (leaving) {
           const start = group.userData.leavingStartedAt || now;
           const progress = clamp((now - start) / Math.max(1, group.userData.leavingUntil - start), 0, 1);
           const from = group.userData.leaveFrom || group.position;
@@ -4411,10 +9517,14 @@
           group.position.lerpVectors(from, to, eased);
           if (mode === "ascend") group.position.y += Math.sin(progress * Math.PI) * 0.24;
           const ghost = 1 - progress;
-          const exitScale = characterScale(state.participants.size, false) * (mode === "ascend" ? (1 - progress * 0.38) : 1);
+          const exitScale = characterScale(groupLayoutCount, false) * prisonScale * (mode === "ascend" ? (1 - progress * 0.38) : 1);
           group.scale.setScalar(Math.max(0.18, exitScale));
           group.traverse((obj) => {
             if (!obj.material) return;
+            if (obj.userData.isCheerStick) {
+              obj.visible = false;
+              return;
+            }
             if (obj.userData.isGroundShadow) {
               obj.visible = true;
               setChildWorldPose(
@@ -4466,51 +9576,145 @@
         const target = group.userData.target;
         if (target) {
           const enterStart = group.userData.enterStartedAt || now;
-          const mode = group.userData.entryEffect || "drop";
+          const mode = realJailed ? "drop" : (group.userData.entryEffect || "drop");
           const duration = entryDurationForMode(mode);
           const progress = clamp((now - enterStart) / duration, 0, 1);
           const entering = !group.userData.enterDone && progress < 1;
           const eased = mode === "drop" ? progress * progress : 1 - Math.pow(1 - progress, 2.4);
           const hop = mode === "drop" ? 0 : Math.sin(progress * Math.PI * 5) * (1 - progress) * 0.075;
+          const claw = group.userData.clawMove;
+          let clawActive = false;
+          let clawProgress = 0;
           let enteringDropY = null;
-          if (entering && group.userData.enterFrom) {
+          if (claw) {
+            clawProgress = clamp((now - claw.start) / Math.max(1, claw.duration || 1), 0, 1);
+            const from = claw.from || group.position;
+            const to = claw.to || target;
+            const metrics = characterClawMetrics(claw.scale || group.scale?.x || 1);
+            const highHeadY = metrics.highHeadY;
+            const grabHeadY = metrics.grabHeadY;
+            const carryY = Math.max(0.45, highHeadY - grabHeadY);
+            let x = from.x;
+            let z = from.z;
+            let y = 0;
+            let headY = highHeadY;
+            let close = 0;
+            if (clawProgress < 0.25) {
+              headY = grabHeadY + (highHeadY - grabHeadY) * (1 - easeInOut(clawProgress / 0.25));
+            } else if (clawProgress < 0.36) {
+              const p = easeOutCubic((clawProgress - 0.25) / 0.11);
+              headY = grabHeadY + Math.sin(p * Math.PI) * 0.03;
+              close = p;
+            } else if (clawProgress < 0.52) {
+              const p = easeInOut((clawProgress - 0.36) / 0.16);
+              headY = grabHeadY + (highHeadY - grabHeadY) * p;
+              close = 1;
+              y = carryY * p;
+            } else if (clawProgress < 0.74) {
+              const p = easeInOut((clawProgress - 0.52) / 0.22);
+              x = from.x + (to.x - from.x) * p;
+              z = from.z + (to.z - from.z) * p;
+              const sway = Math.sin((now - claw.start) * 0.012 + (claw.sway || 0));
+              y = carryY + Math.abs(sway) * metrics.sway;
+              headY = highHeadY + Math.abs(Math.sin((now - claw.start) * 0.009)) * 0.012;
+              close = 1;
+            } else if (clawProgress < 0.88) {
+              const p = easeInOut((clawProgress - 0.74) / 0.14);
+              x = to.x;
+              z = to.z;
+              y = carryY * (1 - p);
+              headY = highHeadY + (grabHeadY - highHeadY) * p;
+              close = 1;
+            } else if (clawProgress < 0.95) {
+              const p = easeOutCubic((clawProgress - 0.88) / 0.07);
+              x = to.x;
+              z = to.z;
+              y = Math.sin(p * Math.PI) * metrics.releaseHop;
+              headY = grabHeadY;
+              close = 1 - p;
+            } else {
+              const p = easeOutCubic((clawProgress - 0.95) / 0.05);
+              x = to.x;
+              z = to.z;
+              headY = grabHeadY + (highHeadY - grabHeadY) * p;
+              close = 0;
+            }
+            const clawX = clawProgress < 0.52 ? from.x : (clawProgress < 0.74 ? x : to.x);
+            const clawZ = clawProgress < 0.52 ? from.z : (clawProgress < 0.74 ? z : to.z);
+            const carryActive = clawProgress > 0.36 && clawProgress < 0.88;
+            const subtleSway = carryActive ? Math.sin(now * 0.014 + (claw.sway || 0)) * 0.028 * Math.max(0.55, metrics.scale) : 0;
+            characterClawRigUsed = updateCharacterClawRigPose(clawX + subtleSway, clawZ, headY, close, t * 0.02, metrics) || characterClawRigUsed;
+            group.position.set(x + subtleSway, y, z);
+            clawActive = clawProgress < 1;
+            if (!clawActive) {
+              group.position.copy(target);
+              delete group.userData.clawMove;
+            }
+          } else if (entering && group.userData.enterFrom) {
             group.position.lerpVectors(group.userData.enterFrom, target, eased);
             if (mode === "drop") enteringDropY = group.position.y;
           } else {
             const settleAlpha = now < (state.layoutSettlingUntil || 0) ? 0.045 : 0.18;
             group.position.lerp(target, settleAlpha);
           }
-          const bob = Math.sin(t * 0.003 + hashString(group.userData.key)) * 0.018 + (characterActive ? Math.sin(t * 0.02) * 0.035 : 0);
-          group.position.y = (enteringDropY ?? 0) + hop + bob + levelMotion.offsetY;
-          group.rotation.z = levelMotion.tiltZ;
-          group.scale.setScalar(characterScale(state.participants.size, characterActive) * levelMotion.scale);
+          const driveMoving = now < Number(group.userData.driveMoveUntil || 0);
+          const driveHop = driveMoving ? Math.abs(Math.sin(t * 0.024)) * 0.085 : 0;
+          const jumpStart = Number(group.userData.driveJumpStart || 0);
+          const jumpUntil = Number(group.userData.driveJumpUntil || 0);
+          const jumpProgress = now < jumpUntil && jumpUntil > jumpStart
+            ? clamp((now - jumpStart) / (jumpUntil - jumpStart), 0, 1)
+            : 1;
+          const driveJump = jumpProgress < 1 ? Math.sin(jumpProgress * Math.PI) * 0.38 * Math.max(0.24, prisonScale) : 0;
+          const bob = Math.sin(t * 0.003 + hashString(group.userData.key)) * 0.018
+            + (characterActive ? Math.sin(t * 0.02) * 0.035 : 0)
+            + driveHop
+            + driveJump;
+          if (clawActive) {
+            group.position.y += 0;
+          } else {
+            group.position.y = (enteringDropY ?? 0) + hop + bob + levelMotion.offsetY;
+          }
+          const driveTilt = driveMoving ? Math.sin(t * 0.026) * 0.06 : 0;
+          group.rotation.z = clawActive ? 0 : levelMotion.tiltZ + driveTilt;
+          group.userData.clawActiveFrame = clawActive;
+          group.scale.setScalar(characterScale(groupLayoutCount, characterActive) * prisonScale * levelMotion.scale);
           group.traverse((obj) => {
             if (!obj.material) return;
+            if (obj.userData.isCheerStick) return;
             if (obj.userData.isGroundShadow) {
               obj.visible = true;
+              const shadowX = clawActive ? group.position.x : target.x;
+              const shadowZ = clawActive ? group.position.z : target.z;
               setChildWorldPose(
                 obj,
                 group,
-                new THREE.Vector3(target.x, 0.015, target.z),
+                new THREE.Vector3(shadowX, 0.015, shadowZ),
                 new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0))
               );
               obj.material.opacity = 0.22;
               return;
             }
             if (obj.userData.isEffectBeam) {
+              const inv = 1 / Math.max(0.001, group.scale.x);
+              if (clawActive) {
+                obj.visible = false;
+                obj.material.opacity = 0;
+                return;
+              }
               obj.visible = entering && mode === "drop" && progress < 0.96;
               obj.material.color.setHex(0xffd36b);
               obj.material.opacity = obj.visible ? (0.82 - progress * 0.32) : 0;
-              const inv = 1 / Math.max(0.001, group.scale.x);
-              const radius = (0.52 / 0.34) * inv;
-              const worldHeight = 3.35;
+              const entryFxScale = realJailed ? prisonScale : 1;
+              const radius = (0.52 / 0.34) * entryFxScale * inv;
+              const worldHeight = 3.35 * entryFxScale;
               setChildWorldPose(obj, group, new THREE.Vector3(target.x, worldHeight / 2, target.z));
               const length = worldHeight * inv;
               obj.scale.set(radius, length, radius);
             } else if (obj.userData.isEffectFlare) {
-              obj.visible = false;
-              obj.material.color.setHex(0xffcf4a);
-              obj.material.opacity = 0;
+              if (clawActive) {
+                obj.visible = false;
+                obj.material.opacity = 0;
+              }
             } else if (entering && mode === "fade") {
               obj.material.transparent = true;
               obj.material.opacity = progress;
@@ -4522,9 +9726,10 @@
             if (group.userData.pendingLeave) beginCharacterLeave(group.userData.key, group, now);
           }
         }
-        const stillEntering = !group.userData.enterDone;
+        const stillEntering = !group.userData.enterDone || !!group.userData.clawActiveFrame;
         group.traverse((obj) => {
           if (!obj.material) return;
+          if (obj.userData.isCheerStick) return;
           if (obj.userData.isGroundShadow) {
             if (target) {
               setChildWorldPose(
@@ -4560,10 +9765,12 @@
           }
         });
         if (!stillEntering) {
-          group.scale.setScalar(characterScale(state.participants.size, characterActive) * levelMotion.scale);
-          group.rotation.z = levelMotion.tiltZ;
+          group.scale.setScalar(characterScale(groupLayoutCount, characterActive) * prisonScale * levelMotion.scale);
+          const driveMoving = now < Number(group.userData.driveMoveUntil || 0);
+          group.rotation.z = levelMotion.tiltZ + (driveMoving ? Math.sin(t * 0.026) * 0.06 : 0);
         }
       }
+      if (!characterClawRigUsed) hideCharacterClawRig();
       renderer.render(scene, camera);
       renderParticipants();
       requestAnimationFrame(frame);

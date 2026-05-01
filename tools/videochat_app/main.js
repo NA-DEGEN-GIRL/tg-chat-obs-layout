@@ -1,13 +1,52 @@
-const { app, BrowserWindow, Menu, powerSaveBlocker, shell } = require("electron");
+const { app, BrowserView, BrowserWindow, Menu, ipcMain, powerSaveBlocker, shell } = require("electron");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const DEFAULT_BASE_URL = "http://127.0.0.1:9393/";
-const WINDOW_STATE_FILE = path.join(REPO_ROOT, "data", "videochat_app_window.json");
 const KEEP_RENDERING_DEFAULT = !process.argv.includes("--allow-throttle");
 
-app.setPath("userData", path.join(REPO_ROOT, "data", "videochat_app_profile"));
+function earlyArgValue(name) {
+  const prefix = `--${name}=`;
+  const found = process.argv.find((arg) => arg.startsWith(prefix));
+  return found ? found.slice(prefix.length) : "";
+}
+
+function platformAppDataDir() {
+  if (process.platform === "win32" && process.env.APPDATA) return process.env.APPDATA;
+  if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support");
+  if (process.env.XDG_CONFIG_HOME) return process.env.XDG_CONFIG_HOME;
+  return path.join(os.homedir(), ".config");
+}
+
+function resolveAppDataRoot() {
+  const explicit = earlyArgValue("data-dir") || process.env.TG_VIDEOCHAT_APP_DATA_DIR || "";
+  if (explicit.trim()) return path.resolve(explicit.trim());
+  if (app.isPackaged) {
+    return path.join(platformAppDataDir(), "tg-chat-obs-layout", "videochat_app");
+  }
+  return path.join(REPO_ROOT, "data");
+}
+
+function copyIfMissing(source, target) {
+  try {
+    if (!source || !target || source === target) return;
+    if (!fs.existsSync(source) || fs.existsSync(target)) return;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(source, target, { recursive: true });
+  } catch (_) {}
+}
+
+const LEGACY_APP_DATA_ROOT = path.join(REPO_ROOT, "data");
+const APP_DATA_ROOT = resolveAppDataRoot();
+const USER_DATA_DIR = path.join(APP_DATA_ROOT, "profile");
+const WINDOW_STATE_FILE = path.join(APP_DATA_ROOT, "videochat_app_window.json");
+
+copyIfMissing(path.join(LEGACY_APP_DATA_ROOT, "videochat_app_profile"), USER_DATA_DIR);
+copyIfMissing(path.join(LEGACY_APP_DATA_ROOT, "videochat_app_window.json"), WINDOW_STATE_FILE);
+fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+app.setPath("userData", USER_DATA_DIR);
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 if (KEEP_RENDERING_DEFAULT) {
   app.commandLine.appendSwitch("disable-renderer-backgrounding");
@@ -23,6 +62,8 @@ let overlayUiHidden = false;
 let keepRendering = KEEP_RENDERING_DEFAULT;
 let saveWindowTimer = null;
 let powerSaveBlockerId = null;
+const browserViews = new Map();
+let browserPermissionHandlerReady = false;
 
 function argValue(name) {
   const prefix = `--${name}=`;
@@ -154,6 +195,215 @@ function stopKeepRenderingGuards() {
   powerSaveBlockerId = null;
 }
 
+function sendBrowserEvent(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send("electron-browser:event", payload);
+  } catch (_) {}
+}
+
+function normalizeBrowserId(value) {
+  const id = String(value || "web").trim().toLowerCase();
+  return id === "youtube" ? "youtube" : "web";
+}
+
+function browserIdFromPayload(payload) {
+  if (typeof payload === "string") return normalizeBrowserId(payload);
+  return normalizeBrowserId(payload?.id);
+}
+
+function getBrowserEntry(rawId = "web") {
+  const id = normalizeBrowserId(rawId);
+  const entry = browserViews.get(id);
+  if (!entry) return null;
+  if (!entry.view || entry.view.webContents.isDestroyed()) {
+    browserViews.delete(id);
+    return null;
+  }
+  return entry;
+}
+
+function sendBrowserLog(rawId, level, message, extra = {}) {
+  const id = normalizeBrowserId(rawId);
+  sendBrowserEvent({
+    type: "log",
+    id,
+    level,
+    message: String(message || ""),
+    ...extra,
+  });
+}
+
+function sendBrowserStatus(rawId, extra = {}) {
+  const id = normalizeBrowserId(rawId);
+  const entry = getBrowserEntry(id);
+  if (!entry) return;
+  const wc = entry.view.webContents;
+  sendBrowserEvent({
+    type: "status",
+    id,
+    url: wc.getURL(),
+    title: wc.getTitle(),
+    canGoBack: wc.canGoBack(),
+    canGoForward: wc.canGoForward(),
+    loading: wc.isLoading(),
+    ...extra,
+  });
+}
+
+function isOverlayIpc(event) {
+  return !!mainWindow && event.sender === mainWindow.webContents;
+}
+
+function sanitizeBrowserBounds(bounds) {
+  const source = bounds && typeof bounds === "object" ? bounds : {};
+  const content = mainWindow?.getContentBounds() || { width: 1600, height: 900 };
+  const x = Math.max(0, Math.round(Number(source.x) || 0));
+  const y = Math.max(0, Math.round(Number(source.y) || 0));
+  const width = Math.max(1, Math.round(Number(source.width) || 1));
+  const height = Math.max(1, Math.round(Number(source.height) || 1));
+  return {
+    x: Math.min(x, Math.max(0, content.width - 1)),
+    y: Math.min(y, Math.max(0, content.height - 1)),
+    width: Math.min(width, Math.max(1, content.width - x)),
+    height: Math.min(height, Math.max(1, content.height - y)),
+  };
+}
+
+function configureBrowserSession(view) {
+  if (browserPermissionHandlerReady) return;
+  browserPermissionHandlerReady = true;
+  view.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(["clipboard-read", "media", "fullscreen", "display-capture"].includes(permission));
+  });
+}
+
+function handleBrowserConsole(rawId, _event, levelOrDetails, message, line, sourceId) {
+  const id = normalizeBrowserId(rawId);
+  const details = typeof levelOrDetails === "object" && levelOrDetails
+    ? levelOrDetails
+    : { level: levelOrDetails, message, lineNumber: line, sourceId };
+  const levels = ["verbose", "info", "warning", "error"];
+  const level = typeof details.level === "number" ? levels[details.level] || String(details.level) : String(details.level || "info");
+  sendBrowserLog(id, level, details.message || "", {
+    source: details.sourceId || details.source || "",
+    line: Number(details.lineNumber || details.line || 0) || 0,
+  });
+}
+
+function ensureBrowserView(rawId = "web") {
+  const id = normalizeBrowserId(rawId);
+  const current = getBrowserEntry(id);
+  if (current) return current;
+  const view = new BrowserView({
+    webPreferences: {
+      partition: "persist:tg-native-browser",
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: !keepRendering,
+    },
+  });
+  const entry = { id, view, attached: false };
+  browserViews.set(id, entry);
+  configureBrowserSession(view);
+  const wc = view.webContents;
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      wc.loadURL(url).catch((exc) => sendBrowserLog(id, "error", `popup navigation failed: ${exc.message || exc}`));
+    }
+    return { action: "deny" };
+  });
+  wc.on("console-message", (...args) => handleBrowserConsole(id, ...args));
+  wc.on("did-start-loading", () => sendBrowserStatus(id, { loading: true }));
+  wc.on("did-stop-loading", () => sendBrowserStatus(id, { loading: false }));
+  wc.on("page-title-updated", (_event, title) => sendBrowserStatus(id, { title }));
+  wc.on("did-navigate", () => sendBrowserStatus(id));
+  wc.on("did-navigate-in-page", () => sendBrowserStatus(id));
+  wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) {
+      sendBrowserLog(id, "error", `load failed ${errorCode}: ${errorDescription}`, { source: validatedURL || "" });
+      sendBrowserStatus(id, { loading: false, url: validatedURL || wc.getURL() });
+    }
+  });
+  return entry;
+}
+
+function attachBrowserView(rawId = "web") {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const entry = ensureBrowserView(rawId);
+  if (!entry) return null;
+  if (!entry.attached) {
+    mainWindow.addBrowserView(entry.view);
+    entry.attached = true;
+  }
+  if (typeof mainWindow.setTopBrowserView === "function") {
+    mainWindow.setTopBrowserView(entry.view);
+  }
+  return entry;
+}
+
+function pauseBrowserMedia(rawId = "web") {
+  const entry = getBrowserEntry(rawId);
+  if (!entry) return;
+  entry.view.webContents.executeJavaScript(
+    "window.postMessage({ type: 'tg-youtube-command', command: 'pauseVideo', args: [] }, '*'); document.querySelectorAll('video,audio').forEach((el) => { try { el.pause(); } catch (_) {} });",
+    true,
+  ).catch(() => {});
+}
+
+function detachBrowserView(rawId = "web", destroy = false) {
+  const id = normalizeBrowserId(rawId);
+  const entry = getBrowserEntry(id);
+  if (!entry) return;
+  if (mainWindow && entry.attached) {
+    try {
+      mainWindow.removeBrowserView(entry.view);
+    } catch (_) {}
+  }
+  entry.attached = false;
+  if (!destroy) return;
+  try {
+    if (!entry.view.webContents.isDestroyed()) {
+      if (typeof entry.view.webContents.destroy === "function") entry.view.webContents.destroy();
+      else entry.view.webContents.close();
+    }
+  } catch (_) {}
+  browserViews.delete(id);
+}
+
+function detachAllBrowserViews(destroy = false) {
+  for (const id of Array.from(browserViews.keys())) {
+    detachBrowserView(id, destroy);
+  }
+}
+
+function updateBrowserView(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const id = browserIdFromPayload(payload);
+  if (!payload || payload.visible === false) {
+    if (payload?.pause) pauseBrowserMedia(id);
+    detachBrowserView(id, false);
+    return;
+  }
+  const targetUrl = normalizeUrl(payload.url);
+  if (!targetUrl) return;
+  const entry = attachBrowserView(id);
+  if (!entry) return;
+  const view = entry.view;
+  view.setBounds(sanitizeBrowserBounds(payload.bounds));
+  view.setAutoResize({ width: false, height: false, horizontal: false, vertical: false });
+  if (view.webContents.getURL() !== targetUrl) {
+    view.webContents.loadURL(targetUrl).catch((exc) => {
+      sendBrowserLog(id, "error", `load failed: ${exc.message || exc}`, { source: targetUrl });
+      sendBrowserStatus(id, { loading: false, url: targetUrl });
+    });
+  } else {
+    sendBrowserStatus(id);
+  }
+}
+
 function unavailableHtml(targetUrl) {
   const escaped = escapeHtml(targetUrl);
   return `<!doctype html>
@@ -189,11 +439,23 @@ async function injectToolbar() {
       body.tg-app-ui-hidden #topic-controls,
       body.tg-app-ui-hidden #avatar-controls,
       body.tg-app-ui-hidden #chat-controls,
-      body.tg-app-ui-hidden #chat-send-panel,
       body.tg-app-ui-hidden .effect-control,
       body.tg-app-ui-hidden .topic-resize-handle,
       body.tg-app-ui-hidden .toast-resize-handle {
         display: none !important;
+      }
+      body.tg-app-ui-hidden #chat-panel:not(.chat-hidden) #chat-send-panel:not([hidden]) {
+        display: flex !important;
+        opacity: 0;
+        transform: translateY(14px);
+        pointer-events: none;
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+      body.tg-app-ui-hidden #chat-panel:not(.chat-hidden):hover #chat-send-panel:not([hidden]),
+      body.tg-app-ui-hidden #chat-panel:not(.chat-hidden) #chat-send-panel:not([hidden]):focus-within {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
       }
       #tg-app-toolbar {
         position: fixed;
@@ -229,17 +491,24 @@ async function injectToolbar() {
     await mainWindow.webContents.executeJavaScript(`
       (() => {
         let toolbar = document.getElementById("tg-app-toolbar");
+        const toolbarHtml = '<button id="tg-app-toggle-ui" type="button" title="hide/show overlay UI">UI</button><button id="tg-app-reload" type="button" title="reload">R</button>';
         if (!toolbar) {
           toolbar = document.createElement("div");
           toolbar.id = "tg-app-toolbar";
-          toolbar.innerHTML = '<button id="tg-app-toggle-ui" type="button" title="hide/show overlay UI">UI</button><button id="tg-app-reload" type="button" title="reload">R</button>';
           document.body.appendChild(toolbar);
-          document.getElementById("tg-app-toggle-ui").addEventListener("click", () => {
+        }
+        toolbar.innerHTML = toolbarHtml;
+        const bindOnce = (id, handler) => {
+          const button = document.getElementById(id);
+          if (!button || button.dataset.tgAppBound === "1") return;
+          button.dataset.tgAppBound = "1";
+          button.addEventListener("click", handler);
+        };
+        bindOnce("tg-app-toggle-ui", () => {
             document.body.classList.toggle("tg-app-ui-hidden");
             document.getElementById("tg-app-toggle-ui").classList.toggle("active", document.body.classList.contains("tg-app-ui-hidden"));
-          });
-          document.getElementById("tg-app-reload").addEventListener("click", () => location.reload());
-        }
+        });
+        bindOnce("tg-app-reload", () => location.reload());
         document.body.classList.toggle("tg-app-ui-hidden", ${overlayUiHidden ? "true" : "false"});
         document.getElementById("tg-app-toggle-ui")?.classList.toggle("active", document.body.classList.contains("tg-app-ui-hidden"));
       })();
@@ -297,6 +566,46 @@ function createMenu() {
   ]);
 }
 
+ipcMain.on("electron-browser:upsert", (event, payload) => {
+  if (!isOverlayIpc(event)) return;
+  updateBrowserView(payload || {});
+});
+
+ipcMain.on("electron-browser:close", (event, payload) => {
+  if (!isOverlayIpc(event)) return;
+  detachBrowserView(browserIdFromPayload(payload), true);
+});
+
+ipcMain.on("electron-browser:back", (event, payload) => {
+  const entry = getBrowserEntry(browserIdFromPayload(payload));
+  if (!isOverlayIpc(event) || !entry) return;
+  if (entry.view.webContents.canGoBack()) entry.view.webContents.goBack();
+});
+
+ipcMain.on("electron-browser:forward", (event, payload) => {
+  const entry = getBrowserEntry(browserIdFromPayload(payload));
+  if (!isOverlayIpc(event) || !entry) return;
+  if (entry.view.webContents.canGoForward()) entry.view.webContents.goForward();
+});
+
+ipcMain.on("electron-browser:reload", (event, payload) => {
+  const entry = getBrowserEntry(browserIdFromPayload(payload));
+  if (!isOverlayIpc(event) || !entry) return;
+  entry.view.webContents.reload();
+});
+
+ipcMain.on("electron-browser:devtools", (event, payload) => {
+  const entry = getBrowserEntry(browserIdFromPayload(payload));
+  if (!isOverlayIpc(event) || !entry) return;
+  entry.view.webContents.openDevTools({ mode: "detach" });
+});
+
+ipcMain.on("electron-browser:open-external", (event, url) => {
+  if (!isOverlayIpc(event)) return;
+  const targetUrl = normalizeUrl(url);
+  if (/^https?:\/\//i.test(targetUrl)) shell.openExternal(targetUrl);
+});
+
 function createWindow() {
   initializeMode();
   startKeepRenderingGuards();
@@ -324,6 +633,7 @@ function createWindow() {
     backgroundColor: "#07111f",
     autoHideMenuBar: true,
     webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -341,6 +651,7 @@ function createWindow() {
     event.preventDefault();
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
   });
+  mainWindow.webContents.on("did-start-loading", () => detachAllBrowserViews(false));
   mainWindow.webContents.on("did-finish-load", injectToolbar);
   mainWindow.on("resize", scheduleWindowStateSave);
   mainWindow.on("move", scheduleWindowStateSave);
@@ -365,7 +676,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", stopKeepRenderingGuards);
+app.on("before-quit", () => {
+  detachAllBrowserViews(true);
+  stopKeepRenderingGuards();
+});
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();

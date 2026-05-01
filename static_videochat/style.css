@@ -14,6 +14,21 @@ html, body {
     linear-gradient(180deg, #071225 0%, #0c1d32 44%, #122716 100%);
   font-family: 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+#chat-log .chat-text,
+#chat-log .chat-text *,
+#chat-log .reply-quote,
+#chat-log .reply-quote *,
+.electron-browser-debug-log,
+.electron-browser-debug-log * {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 body.viewer-mode #avatar-controls,
@@ -25,7 +40,10 @@ body.viewer-mode #chat-resize,
 body.viewer-mode #stream-preview-controls,
 body.viewer-mode #stream-preview-resize,
 body.viewer-mode #stream-viewer-bar,
-body.viewer-mode #stream-viewer-resize {
+body.viewer-mode #stream-viewer-resize,
+body.viewer-mode #widget-controls,
+body.viewer-mode .widget-header,
+body.viewer-mode .widget-resize {
   display: none !important;
 }
 
@@ -33,7 +51,35 @@ body.control-mode #avatar-controls {
   opacity: 0.92;
 }
 
+body.tg-app-ui-hidden #topic-controls,
+body.tg-app-ui-hidden #avatar-controls,
+body.tg-app-ui-hidden #chat-controls,
+body.tg-app-ui-hidden .effect-control,
+body.tg-app-ui-hidden .topic-resize-handle,
+body.tg-app-ui-hidden .toast-resize-handle {
+  display: none !important;
+}
+
+body.tg-app-ui-hidden #chat-panel:not(.chat-hidden) #chat-send-panel:not([hidden]) {
+  display: flex !important;
+  opacity: 0;
+  transform: translateY(14px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+body.tg-app-ui-hidden #chat-panel:not(.chat-hidden):hover #chat-send-panel:not([hidden]),
+body.tg-app-ui-hidden #chat-panel:not(.chat-hidden) #chat-send-panel:not([hidden]):focus-within {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
 body.viewer-mode #stream-preview-panel.empty {
+  display: none;
+}
+
+body.viewer-mode .overlay-widget.hidden-widget {
   display: none;
 }
 
@@ -289,6 +335,13 @@ body::after {
   cursor: pointer;
 }
 
+#subaccount-toggle.active,
+#subaccount-auto-toggle.active {
+  border-color: rgba(255, 210, 92, 0.48);
+  background: rgba(255, 210, 92, 0.16);
+  color: rgba(255, 244, 204, 0.95);
+}
+
 .effect-control {
   height: 32px;
   display: inline-flex;
@@ -431,6 +484,14 @@ body::after {
   border-color: rgba(255, 174, 91, 0.34);
 }
 
+#event-toasts[data-style="label"] .event-toast.level-up {
+  border-color: rgba(255, 211, 92, 0.44);
+}
+
+#event-toasts[data-style="label"] .event-toast.level-down {
+  border-color: rgba(126, 184, 255, 0.42);
+}
+
 #event-toasts[data-style="signal"] .event-toast {
   border-radius: calc(5px * var(--event-toast-scale, 1));
   border: 1px solid rgba(118, 214, 255, 0.24);
@@ -452,6 +513,30 @@ body::after {
   box-shadow:
     0 8px 26px rgba(0,0,0,0.34),
     0 0 36px rgba(235, 248, 255, 0.28);
+}
+
+.event-toast.level-up {
+  border-color: rgba(255, 211, 92, 0.44);
+  border-left-color: rgba(255, 211, 92, 0.9);
+  background:
+    linear-gradient(90deg, rgba(255, 211, 92, 0.26), transparent 40%),
+    rgba(22, 18, 10, 0.86);
+  color: rgba(255,248,225,0.98);
+  box-shadow:
+    0 8px 26px rgba(0,0,0,0.34),
+    0 0 30px rgba(255, 211, 92, 0.24);
+}
+
+.event-toast.level-down {
+  border-color: rgba(126, 184, 255, 0.38);
+  border-left-color: rgba(126, 184, 255, 0.86);
+  background:
+    linear-gradient(90deg, rgba(126, 184, 255, 0.22), transparent 40%),
+    rgba(9, 15, 24, 0.86);
+  color: rgba(235,245,255,0.97);
+  box-shadow:
+    0 8px 26px rgba(0,0,0,0.34),
+    0 0 30px rgba(126, 184, 255, 0.2);
 }
 
 .event-name {
@@ -514,6 +599,7 @@ body::after {
   z-index: 15800;
   pointer-events: auto;
   border-radius: 14px;
+  overflow: hidden;
   background: rgba(7, 12, 18, 0.62);
   border: 1px solid rgba(255,255,255,0.12);
   box-shadow:
@@ -623,10 +709,13 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
+  -webkit-overflow-scrolling: touch;
 }
 
 #stream-preview-list::-webkit-scrollbar {
@@ -644,6 +733,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 
 .stream-preview-item {
   width: 100%;
+  flex: 0 0 auto;
   min-height: 112px;
   display: block;
   padding: 7px;
@@ -1026,6 +1116,1773 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   overflow: hidden;
   cursor: move;
   touch-action: none;
+}
+
+#widget-controls {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 24600;
+  display: flex;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  background: rgba(7, 12, 18, 0.74);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.32);
+  pointer-events: auto;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#widget-controls.dragging {
+  opacity: 0.92;
+  box-shadow: 0 16px 38px rgba(0,0,0,0.42);
+}
+
+#widget-controls button {
+  height: 28px;
+  min-width: 54px;
+  padding: 0 10px;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.09);
+  color: rgba(255,255,255,0.86);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+#widget-controls-drag {
+  min-width: 34px !important;
+  cursor: move !important;
+}
+
+#widget-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 24400;
+  pointer-events: none;
+}
+
+.overlay-widget {
+  position: fixed;
+  min-width: 160px;
+  min-height: 72px;
+  border-radius: 14px;
+  overflow: hidden;
+  color: rgba(255,255,255,0.92);
+  background:
+    linear-gradient(180deg, rgba(12,18,27,0.86), rgba(5,9,15,0.84)),
+    radial-gradient(circle at 22% 0%, rgba(99, 216, 169, 0.18), transparent 38%);
+  border: 1px solid rgba(255,255,255,0.13);
+  box-shadow:
+    0 14px 34px rgba(0,0,0,0.36),
+    inset 0 0 0 1px rgba(255,255,255,0.035);
+  pointer-events: auto;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  cursor: move;
+  touch-action: none;
+}
+
+.overlay-widget.hidden-widget {
+  width: 128px !important;
+  height: 36px !important;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 999px;
+}
+
+.overlay-widget.dragging {
+  z-index: 24750;
+}
+
+.widget-header {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  opacity: 0.74;
+  transition: opacity 160ms ease;
+  cursor: move;
+}
+
+.overlay-widget:hover .widget-header,
+.overlay-widget.dragging .widget-header {
+  opacity: 0.96;
+}
+
+.widget-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.78);
+  font-size: 12px;
+  font-weight: 950;
+  line-height: 28px;
+  text-shadow: 0 2px 7px rgba(0,0,0,0.58);
+}
+
+.widget-header button {
+  flex: 0 0 auto;
+  height: 28px;
+  min-width: 30px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px;
+  background: rgba(8, 11, 16, 0.72);
+  color: rgba(255,255,255,0.84);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.overlay-widget.hidden-widget .widget-title,
+.overlay-widget.hidden-widget .widget-refresh,
+.overlay-widget.hidden-widget .price-font-down,
+.overlay-widget.hidden-widget .price-font-up,
+.overlay-widget.hidden-widget .widget-delete,
+.overlay-widget.hidden-widget .widget-body,
+.overlay-widget.hidden-widget .widget-drag-strip,
+.overlay-widget.hidden-widget .browser-widget-body,
+.overlay-widget.hidden-widget .browser-widget-url,
+.overlay-widget.hidden-widget .browser-widget-go,
+.overlay-widget.hidden-widget .browser-widget-proxy,
+.overlay-widget.hidden-widget .browser-widget-open,
+.overlay-widget.hidden-widget .electron-browser-widget-body,
+.overlay-widget.hidden-widget .electron-browser-url,
+.overlay-widget.hidden-widget .electron-browser-go,
+.overlay-widget.hidden-widget .electron-browser-back,
+.overlay-widget.hidden-widget .electron-browser-forward,
+.overlay-widget.hidden-widget .electron-browser-refresh,
+.overlay-widget.hidden-widget .electron-browser-open,
+.overlay-widget.hidden-widget .electron-browser-devtools,
+.overlay-widget.hidden-widget .electron-browser-debug-toggle,
+.overlay-widget.hidden-widget .electron-browser-stop,
+.overlay-widget.hidden-widget .game-widget-select,
+.overlay-widget.hidden-widget .game-widget-group,
+.overlay-widget.hidden-widget .game-widget-debug,
+.overlay-widget.hidden-widget .game-widget-stepper,
+.overlay-widget.hidden-widget .game-widget-speed-down,
+.overlay-widget.hidden-widget .game-widget-speed,
+.overlay-widget.hidden-widget .game-widget-speed-up,
+.overlay-widget.hidden-widget .game-widget-volume-wrap,
+.overlay-widget.hidden-widget .game-widget-savebar,
+.overlay-widget.hidden-widget .game-widget-load,
+.overlay-widget.hidden-widget .game-widget-new,
+.overlay-widget.hidden-widget .game-widget-save,
+.overlay-widget.hidden-widget .game-widget-layout-debug,
+.overlay-widget.hidden-widget .game-widget-stop,
+.overlay-widget.hidden-widget .game-widget-body,
+.overlay-widget.hidden-widget .game-widget-guide,
+.overlay-widget.hidden-widget .youtube-widget-body,
+.overlay-widget.hidden-widget .youtube-widget-query,
+.overlay-widget.hidden-widget .youtube-widget-search,
+.overlay-widget.hidden-widget .youtube-widget-open,
+.overlay-widget.hidden-widget .youtube-widget-stop,
+.overlay-widget.hidden-widget .prison-scale-control,
+.overlay-widget.hidden-widget .prison-widget-close,
+.overlay-widget.hidden-widget .prison-widget-body,
+.overlay-widget.hidden-widget .memo-widget-text,
+.overlay-widget.hidden-widget .widget-resize {
+  display: none;
+}
+
+.overlay-widget.hidden-widget .widget-header {
+  inset: 4px;
+  opacity: 0.96;
+}
+
+.overlay-widget.hidden-widget .widget-hide {
+  min-width: 120px;
+  height: 28px;
+}
+
+.overlay-widget.hidden-widget .widget-hide {
+  cursor: grab;
+}
+
+.overlay-widget.hidden-widget.dragging .widget-hide {
+  cursor: grabbing;
+}
+
+.widget-drag-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 24px;
+  z-index: 6;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.035) 42%, transparent);
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+}
+
+.widget-resize {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 30px;
+  height: 30px;
+  border-right: 4px solid rgba(255,255,255,0.48);
+  border-bottom: 4px solid rgba(255,255,255,0.48);
+  border-radius: 0 0 10px 0;
+  opacity: 0.66;
+  cursor: nwse-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 5;
+  filter: drop-shadow(0 0 8px rgba(0,0,0,0.55));
+}
+
+.overlay-widget:hover .widget-resize {
+  opacity: 1;
+}
+
+.widget-body {
+  position: absolute;
+  inset: 44px 10px 10px;
+  cursor: move;
+}
+
+.prison-widget {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(189, 255, 145, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(12, 20, 24, 0.9), rgba(5, 9, 15, 0.88));
+}
+
+.real-jail-widget {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(160, 174, 194, 0.18), transparent 36%),
+    linear-gradient(180deg, rgba(19, 23, 31, 0.92), rgba(6, 8, 12, 0.9));
+}
+
+.prison-widget-header {
+  min-height: 28px;
+}
+
+.prison-scale-control {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 999px;
+  background: rgba(8, 11, 16, 0.58);
+  color: rgba(255,255,255,0.72);
+  font-size: 11px;
+  font-weight: 900;
+  cursor: default;
+}
+
+.widget-header .prison-scale-step {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.86);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+.prison-scale-range {
+  width: 76px;
+  height: 18px;
+  accent-color: #a8e778;
+  cursor: pointer;
+}
+
+.prison-scale-value {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.9);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.prison-widget-body {
+  position: absolute;
+  inset: 44px 10px 10px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  cursor: default;
+  touch-action: auto;
+}
+
+.prison-widget-body.has-jail-control {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.prison-selected {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  min-height: 44px;
+  max-height: 100px;
+  overflow: auto;
+  padding: 7px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.prison-jail-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  min-height: 108px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  user-select: none;
+}
+
+body.jail-place-mode {
+  cursor: crosshair;
+}
+
+body.character-place-mode {
+  cursor: crosshair;
+}
+
+body.character-drive-mode {
+  cursor: default;
+}
+
+.jail-place-control,
+.jail-yaw-control,
+.jail-sign-control {
+  min-width: 0;
+  display: grid;
+  align-items: center;
+  gap: 6px;
+}
+
+.jail-place-control {
+  grid-template-columns: 62px 58px minmax(0, 1fr);
+}
+
+.jail-yaw-control {
+  grid-template-columns: 24px minmax(0, 1fr);
+  color: rgba(255,255,255,0.62);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.jail-sign-control {
+  grid-template-columns: 28px minmax(0, 1fr) 34px;
+  color: rgba(255,255,255,0.62);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.jail-sign-text {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.22);
+  color: rgba(255,255,255,0.9);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.jail-sign-text:focus {
+  border-color: rgba(255, 211, 106, 0.45);
+  box-shadow: 0 0 0 2px rgba(255, 211, 106, 0.12);
+}
+
+.jail-sign-color {
+  width: 34px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.22);
+  cursor: pointer;
+}
+
+.jail-place-toggle,
+.jail-reset {
+  min-width: 0;
+  width: 100%;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.86);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.jail-place-toggle:hover,
+.jail-reset:hover {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.2);
+}
+
+.jail-place-toggle:active,
+.jail-reset:active {
+  transform: translateY(1px);
+}
+
+.jail-place-toggle.active {
+  background: rgba(133, 224, 124, 0.22);
+  border-color: rgba(133, 224, 124, 0.42);
+  color: #d8ffd2;
+}
+
+.jail-yaw-range {
+  width: 100%;
+  min-width: 0;
+  height: 18px;
+  accent-color: #b9c5d6;
+  cursor: pointer;
+}
+
+.jail-position-output {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+  color: rgba(255,255,255,0.62);
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.character-move-widget {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(118, 214, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(12, 18, 26, 0.9), rgba(5, 9, 15, 0.88));
+}
+
+.character-move-body {
+  position: absolute;
+  inset: 44px 10px 10px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  cursor: default;
+}
+
+.character-move-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 52px 66px 74px;
+  align-items: center;
+  gap: 6px;
+  min-height: 64px;
+  padding: 7px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.character-move-selected,
+.character-placement-output {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.character-move-selected {
+  color: rgba(255,255,255,0.9);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.character-placement-output {
+  grid-column: 1 / -1;
+  color: rgba(255,255,255,0.62);
+  font-size: 10px;
+  font-weight: 850;
+  text-align: right;
+}
+
+.character-place-toggle,
+.character-drive-toggle,
+.character-yaw-auto,
+.character-placement-reset {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.86);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.character-place-toggle.active {
+  background: rgba(118, 214, 255, 0.22);
+  border-color: rgba(118, 214, 255, 0.42);
+  color: #dcf7ff;
+}
+
+.character-drive-toggle.active {
+  background: rgba(255, 211, 92, 0.22);
+  border-color: rgba(255, 211, 92, 0.44);
+  color: #fff0bd;
+}
+
+.character-yaw-control {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 7px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.14);
+  border: 1px solid rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.62);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.character-yaw-range {
+  width: 100%;
+  min-width: 0;
+  height: 18px;
+  accent-color: #76d6ff;
+}
+
+.character-move-card.placed {
+  border-color: rgba(118, 214, 255, 0.42);
+}
+
+.prison-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 4px 0 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--speaker-color, #ffe38c) 18%, rgba(8, 11, 16, 0.78));
+  border: 1px solid color-mix(in srgb, var(--speaker-color, #ffe38c) 42%, rgba(255,255,255,0.12));
+}
+
+.prison-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prison-chip button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.32);
+  color: rgba(255,255,255,0.9);
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.prison-roster {
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 7px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.prison-roster-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.88);
+  cursor: pointer;
+  text-align: left;
+}
+
+.prison-roster-card.selected {
+  background: color-mix(in srgb, var(--speaker-color, #ffe38c) 24%, rgba(255,255,255,0.08));
+  border-color: color-mix(in srgb, var(--speaker-color, #ffe38c) 58%, rgba(255,255,255,0.16));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+}
+
+.prison-roster-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  overflow: hidden;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--speaker-color, #ffe38c) 38%, rgba(0,0,0,0.34));
+  color: #111620;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.prison-roster-avatar img {
+  display: block;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  object-fit: cover !important;
+}
+
+.prison-roster-avatar.has-photo {
+  background: rgba(0,0,0,0.24);
+  color: transparent;
+}
+
+.prison-roster-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.prison-roster-name,
+.prison-roster-level {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prison-roster-name {
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.prison-roster-level {
+  color: rgba(255,255,255,0.58);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.prison-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.prison-actions button {
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  color: rgba(255,255,255,0.9);
+  font: 950 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.prison-commit {
+  background: rgba(133, 224, 124, 0.28);
+}
+
+.prison-clear {
+  background: rgba(255,255,255,0.08);
+}
+
+.prison-empty {
+  display: grid;
+  place-items: center;
+  min-height: 32px;
+  width: 100%;
+  color: rgba(255,255,255,0.54);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.game-widget {
+  border: 1px solid rgba(247, 250, 224, 0.24);
+  border-radius: 20px;
+  overflow: visible;
+  background:
+    radial-gradient(circle at 18% 5%, rgba(250, 255, 212, 0.28), transparent 26%),
+    linear-gradient(145deg, rgba(153, 158, 135, 0.96), rgba(89, 98, 92, 0.96) 58%, rgba(66, 76, 80, 0.96));
+  box-shadow:
+    inset 0 0 0 2px rgba(255,255,255,0.11),
+    inset -12px -14px 28px rgba(16, 25, 30, 0.24),
+    0 18px 42px rgba(0,0,0,0.42);
+}
+
+.game-widget-header {
+  gap: 5px;
+  min-height: 36px;
+  align-items: center;
+  flex-wrap: wrap;
+  pointer-events: auto;
+}
+
+.game-widget-header button {
+  height: 30px;
+  min-width: 36px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.game-widget-header .widget-hide,
+.game-widget-header .game-widget-stop {
+  min-width: 36px;
+}
+
+.game-widget-select {
+  flex: 0 1 170px;
+  min-width: 112px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid rgba(12, 20, 24, 0.34);
+  border-radius: 999px;
+  background: rgba(233, 236, 197, 0.72);
+  color: rgba(35, 43, 45, 0.94);
+  font: 900 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+.game-widget-group.active {
+  border-color: rgba(32, 70, 54, 0.48);
+  background: rgba(57, 126, 89, 0.42);
+  color: rgba(221, 255, 228, 0.98);
+}
+
+.game-widget-layout-debug.active {
+  border-color: rgba(255, 210, 101, 0.5);
+  background: rgba(255, 210, 101, 0.24);
+  color: #fff0a4;
+}
+
+.game-widget-stepper,
+.game-widget-savebar,
+.game-widget-volume-wrap {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(12, 20, 24, 0.28);
+  background: rgba(31, 39, 44, 0.42);
+  color: rgba(255,255,255,0.86);
+  overflow: hidden;
+}
+
+.game-widget-stepper button,
+.game-widget-savebar button {
+  height: 28px;
+  min-width: 30px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.game-widget-speed {
+  min-width: 42px;
+  padding: 0 6px;
+  text-align: center;
+  color: rgba(255, 242, 163, 0.98);
+  font: 950 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+.game-widget-savebar button + button,
+.game-widget-stepper button + .game-widget-speed,
+.game-widget-stepper .game-widget-speed + button {
+  border-left: 1px solid rgba(255,255,255,0.1);
+}
+
+.game-widget-volume-wrap {
+  gap: 6px;
+  padding: 0 8px;
+  user-select: none;
+}
+
+.game-widget-volume-wrap span {
+  flex: 0 0 auto;
+  font: 950 11px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+}
+
+.game-widget-volume {
+  width: 72px;
+  accent-color: #d64f7f;
+}
+
+.game-widget-volume-value {
+  min-width: 34px;
+  text-align: right;
+}
+
+.game-widget-body {
+  position: absolute;
+  inset: 82px 12px 12px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 9px;
+  min-width: 0;
+  min-height: 0;
+  cursor: default;
+}
+
+.game-widget-body.game-widget-debug-on {
+  grid-template-rows: minmax(0, 1fr) 96px;
+}
+
+.gameboy-console {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 128px;
+  gap: 8px;
+  padding: 18px 18px 12px;
+  border-radius: 18px 18px 42px 18px;
+  border: 2px solid rgba(33, 39, 39, 0.7);
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(255,255,255,0.06) 1px, transparent 1px),
+    linear-gradient(145deg, #bbc0aa, #858c82 58%, #626f73);
+  background-size: 8px 8px, 8px 8px, auto;
+  box-shadow:
+    inset 0 0 0 4px rgba(255,255,255,0.08),
+    inset -9px -11px 20px rgba(24, 35, 38, 0.26),
+    0 12px 24px rgba(0,0,0,0.24);
+}
+
+.gameboy-screen {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 14px 14px 28px 14px;
+  border: 2px solid rgba(22, 26, 30, 0.9);
+  background:
+    linear-gradient(90deg, transparent 0 10%, rgba(124, 32, 68, 0.54) 10% 26%, transparent 26% 100%),
+    linear-gradient(145deg, #262c35, #111820);
+  box-shadow:
+    inset 0 0 0 5px rgba(7, 10, 13, 0.55),
+    0 8px 20px rgba(0,0,0,0.25);
+}
+
+.game-widget-guide {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  user-select: none;
+  position: relative;
+}
+
+.gameboy-manual-tab {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  right: auto;
+  width: 104px;
+  height: 74px;
+  display: grid;
+  grid-template-rows: 1fr 24px;
+  place-items: center;
+  padding: 8px 10px 7px 20px;
+  border: 3px solid #2a302c;
+  border-left-width: 8px;
+  border-radius: 0 12px 12px 0;
+  background:
+    linear-gradient(90deg, rgba(45, 54, 47, 0.18) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(45, 54, 47, 0.14) 1px, transparent 1px),
+    #f3df8a;
+  background-size: 8px 8px, 8px 8px, auto;
+  color: #293126;
+  box-shadow: 6px 8px 0 rgba(0,0,0,0.18);
+  font-size: 11px;
+  font-weight: 950;
+  z-index: 24830;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.gameboy-manual-tab strong {
+  width: 26px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #293126;
+  border-radius: 5px;
+  background: #324139;
+  color: #f9e994;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.game-widget[data-manual-open="true"] .gameboy-manual-tab {
+  display: none;
+}
+
+.game-widget[data-manual-open="true"] {
+  z-index: 24820;
+}
+
+.gameboy-manual-panel[hidden] {
+  display: none;
+}
+
+.gameboy-manual-panel {
+  position: absolute;
+  left: 12px;
+  top: 96px;
+  z-index: 24840;
+  --game-manual-scale: 1;
+  width: min(calc(440px * var(--game-manual-scale)), calc(100vw - 24px));
+  background: transparent;
+  pointer-events: auto;
+}
+
+.gameboy-manual-card {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  padding: calc(38px * var(--game-manual-scale)) calc(18px * var(--game-manual-scale)) calc(16px * var(--game-manual-scale));
+  border: 4px solid #293126;
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(41, 49, 38, 0.15) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(41, 49, 38, 0.15) 1px, transparent 1px),
+    #f3df8a;
+  background-size: 9px 9px, 9px 9px, auto;
+  color: #2d342a;
+  box-shadow: 0 12px 0 rgba(0,0,0,0.24);
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  cursor: grab;
+  user-select: none;
+}
+
+.gameboy-manual-card.dragging {
+  cursor: grabbing;
+}
+
+.gameboy-manual-drag {
+  position: absolute;
+  left: 12px;
+  top: 9px;
+  right: calc(48px * var(--game-manual-scale));
+  height: calc(20px * var(--game-manual-scale));
+  display: flex;
+  align-items: center;
+  color: rgba(45, 52, 42, 0.68);
+  font-size: calc(11px * var(--game-manual-scale));
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
+.gameboy-manual-card h3 {
+  margin: 0 calc(34px * var(--game-manual-scale)) calc(10px * var(--game-manual-scale)) 0;
+  color: #273027;
+  font-size: calc(24px * var(--game-manual-scale));
+  font-weight: 950;
+  line-height: 1.08;
+}
+
+.gameboy-manual-card p {
+  margin: 0 0 calc(14px * var(--game-manual-scale));
+  color: #3f4938;
+  font-size: calc(15px * var(--game-manual-scale));
+  font-weight: 950;
+  line-height: 1.45;
+}
+
+.gameboy-manual-grid {
+  display: grid;
+  grid-template-columns: calc(96px * var(--game-manual-scale)) minmax(0, 1fr);
+  gap: calc(8px * var(--game-manual-scale));
+  font-size: calc(16px * var(--game-manual-scale));
+  line-height: 1;
+}
+
+.gameboy-manual-grid span {
+  display: grid;
+  place-items: center;
+  min-height: calc(30px * var(--game-manual-scale));
+  border: 3px solid #293126;
+  background: #33413b;
+  color: #f8e98f;
+  font-weight: 950;
+}
+
+.gameboy-manual-grid b {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: calc(30px * var(--game-manual-scale));
+  padding: 0 calc(9px * var(--game-manual-scale));
+  border: 3px solid rgba(41, 49, 38, 0.48);
+  background: rgba(255,255,255,0.24);
+  font-weight: 950;
+}
+
+.gameboy-manual-card small {
+  display: block;
+  margin-top: calc(14px * var(--game-manual-scale));
+  color: #5e3f35;
+  font-size: calc(12px * var(--game-manual-scale));
+  font-weight: 950;
+  line-height: 1.4;
+}
+
+.gameboy-manual-close {
+  position: absolute;
+  right: calc(10px * var(--game-manual-scale));
+  top: calc(10px * var(--game-manual-scale));
+  width: calc(30px * var(--game-manual-scale));
+  height: calc(30px * var(--game-manual-scale));
+  border: 3px solid #293126;
+  border-radius: 5px;
+  background: #b64b5e;
+  color: #fff4b6;
+  font: 950 calc(16px * var(--game-manual-scale))/1 "Cascadia Mono", "Consolas", monospace;
+  cursor: pointer;
+}
+
+.gameboy-manual-resize {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: calc(28px * var(--game-manual-scale));
+  height: calc(28px * var(--game-manual-scale));
+  border: 0;
+  border-right: calc(4px * var(--game-manual-scale)) solid rgba(45, 52, 42, 0.78);
+  border-bottom: calc(4px * var(--game-manual-scale)) solid rgba(45, 52, 42, 0.78);
+  background: transparent;
+  cursor: nwse-resize;
+}
+
+.gameboy-manual-resize.dragging {
+  filter: brightness(1.24);
+}
+
+.gameboy-control-deck {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 128px minmax(110px, 1fr) 150px;
+  align-items: start;
+  gap: 14px;
+  padding-top: 2px;
+  padding-bottom: 0;
+}
+
+.gameboy-btn {
+  border: 0;
+  color: rgba(242, 245, 233, 0.96);
+  font: 950 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  transition: transform 80ms ease, box-shadow 80ms ease, filter 80ms ease;
+}
+
+.gameboy-btn.is-pressed,
+.gameboy-btn:active {
+  transform: translateY(3px) scale(0.98);
+  filter: brightness(1.22);
+}
+
+.gameboy-dpad {
+  position: relative;
+  width: 112px;
+  height: 112px;
+}
+
+.gameboy-dpad::before {
+  content: "";
+  position: absolute;
+  left: 36px;
+  top: 36px;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: #22282d;
+  box-shadow: inset 0 2px 0 rgba(255,255,255,0.08);
+  z-index: 0;
+}
+
+.gameboy-dpad-btn {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #3c4449, #171c20);
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,0.1),
+    0 5px 0 #0b0f12,
+    0 9px 12px rgba(0,0,0,0.28);
+  z-index: 1;
+}
+
+.gameboy-dpad-btn.is-pressed,
+.gameboy-dpad-btn:active {
+  box-shadow:
+    inset 0 2px 5px rgba(0,0,0,0.44),
+    0 2px 0 #0b0f12,
+    0 5px 8px rgba(0,0,0,0.22);
+}
+
+.dpad-up {
+  left: 36px;
+  top: 0;
+}
+
+.dpad-down {
+  left: 36px;
+  top: 70px;
+}
+
+.dpad-left {
+  left: 0;
+  top: 36px;
+}
+
+.dpad-right {
+  right: 0;
+  top: 36px;
+}
+
+.gameboy-system-buttons {
+  align-self: start;
+  display: flex;
+  justify-content: center;
+  gap: 11px;
+  padding-top: 42px;
+  padding-bottom: 0;
+}
+
+.gameboy-system-btn {
+  min-width: 70px;
+  height: 24px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #777f83, #3e484d);
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,0.12),
+    0 4px 0 #22282b,
+    0 8px 10px rgba(0,0,0,0.22);
+  color: rgba(248, 251, 238, 0.9);
+  font-size: 10px;
+}
+
+.gameboy-system-btn.is-pressed,
+.gameboy-system-btn:active {
+  box-shadow:
+    inset 0 2px 5px rgba(0,0,0,0.36),
+    0 1px 0 #22282b,
+    0 5px 7px rgba(0,0,0,0.18);
+}
+
+.gameboy-action-buttons {
+  align-self: start;
+  display: grid;
+  grid-template-columns: repeat(2, 58px);
+  gap: 16px;
+  justify-content: end;
+  align-items: center;
+  transform: rotate(-14deg);
+  padding-top: 18px;
+  padding-right: 8px;
+}
+
+.gameboy-action-btn {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 24%, #f26a98, #8e224c 68%, #56152c);
+  box-shadow:
+    inset 0 3px 0 rgba(255,255,255,0.16),
+    0 6px 0 #3b1325,
+    0 11px 14px rgba(0,0,0,0.3);
+  font-size: 20px;
+}
+
+.gameboy-action-btn.is-pressed,
+.gameboy-action-btn:active {
+  box-shadow:
+    inset 0 4px 8px rgba(0,0,0,0.38),
+    0 2px 0 #3b1325,
+    0 6px 9px rgba(0,0,0,0.24);
+}
+
+.game-widget-frame {
+  position: absolute;
+  left: 18px;
+  top: 16px;
+  right: auto;
+  bottom: auto;
+  width: calc(100% - 36px);
+  height: calc(100% - 43px);
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  display: block;
+  border: 2px solid rgba(4, 7, 9, 0.92);
+  border-radius: 9px;
+  background: #030712;
+  z-index: 1;
+}
+
+body.widget-drag-active .game-widget-frame {
+  pointer-events: none;
+}
+
+.game-widget-status {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: 20px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(7, 10, 12, 0.38);
+  border: 1px solid rgba(255,255,255,0.07);
+  color: rgba(213, 224, 216, 0.76);
+  font-size: 10px;
+  font-weight: 900;
+  z-index: 3;
+}
+
+.game-widget-debug-log {
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(126, 224, 255, 0.18);
+  background: rgba(0,0,0,0.44);
+  color: rgba(201, 238, 255, 0.82);
+  font: 700 10px/1.38 "Cascadia Mono", "Consolas", monospace;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.game-widget-body.game-widget-debug-on .game-widget-debug-log {
+  display: block;
+}
+
+.price-widget {
+  background:
+    radial-gradient(circle at 15% 8%, rgba(255, 214, 106, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(13, 19, 29, 0.88), rgba(5, 9, 15, 0.86));
+}
+
+.price-widget-body {
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.price-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 126px;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.065);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.price-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  align-items: baseline;
+}
+
+.price-symbol {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.9);
+  font-size: calc(18px * var(--price-text-scale, 1));
+  font-weight: 950;
+  line-height: 1;
+}
+
+.price-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f7f9fd;
+  font-size: calc(18px * var(--price-text-scale, 1));
+  font-weight: 950;
+  letter-spacing: 0;
+  text-align: right;
+}
+
+.price-change {
+  grid-column: 2;
+  justify-self: end;
+  text-align: right;
+  color: rgba(255,255,255,0.72);
+  font-size: calc(11px * var(--price-text-scale, 1));
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.price-row.up .price-change,
+.price-row.up .price-value,
+.price-row.up .price-spark path {
+  color: #5edb8f;
+  stroke: #5edb8f;
+}
+
+.price-row.down .price-change,
+.price-row.down .price-value,
+.price-row.down .price-spark path {
+  color: #ff7474;
+  stroke: #ff7474;
+}
+
+.price-spark {
+  width: 126px;
+  height: 34px;
+  overflow: visible;
+}
+
+.price-spark path {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.price-widget-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: rgba(255,255,255,0.66);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.memo-widget {
+  background:
+    radial-gradient(circle at 82% 12%, rgba(110, 154, 255, 0.18), transparent 36%),
+    linear-gradient(180deg, rgba(13, 18, 27, 0.88), rgba(5, 9, 15, 0.86));
+}
+
+.memo-widget-text {
+  position: absolute;
+  inset: 44px 10px 10px;
+  width: auto;
+  height: auto;
+  resize: none;
+  border: 0;
+  outline: 0;
+  border-radius: 10px;
+  padding: 10px 11px;
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.9);
+  font: 750 18px/1.35 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+
+.browser-widget {
+  background:
+    radial-gradient(circle at 82% 8%, rgba(80, 185, 255, 0.18), transparent 38%),
+    linear-gradient(180deg, rgba(12, 18, 27, 0.9), rgba(5, 9, 15, 0.88));
+}
+
+.browser-widget-header {
+  top: 28px;
+  gap: 4px;
+}
+
+.browser-widget-url {
+  flex: 1 1 auto;
+  min-width: 92px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  outline: 0;
+  background: rgba(4, 8, 13, 0.72);
+  color: rgba(255,255,255,0.9);
+  font: 800 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: text;
+}
+
+.browser-widget-header button {
+  min-width: 34px;
+}
+
+.browser-widget-proxy,
+.browser-widget-open {
+  min-width: 48px !important;
+}
+
+.browser-widget-body {
+  position: absolute;
+  inset: 68px 8px 8px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(2, 5, 9, 0.9);
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: default;
+}
+
+.browser-widget-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.browser-widget-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: rgba(255,255,255,0.62);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.electron-browser-widget {
+  background:
+    radial-gradient(circle at 82% 9%, rgba(112, 184, 255, 0.2), transparent 38%),
+    linear-gradient(180deg, rgba(9, 17, 27, 0.93), rgba(4, 7, 12, 0.91));
+}
+
+.electron-browser-widget-header {
+  top: 28px;
+  gap: 4px;
+}
+
+.electron-browser-url {
+  flex: 1 1 auto;
+  min-width: 118px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  outline: 0;
+  background: rgba(4, 8, 13, 0.72);
+  color: rgba(255,255,255,0.92);
+  font: 800 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: text;
+}
+
+.electron-browser-widget-header button {
+  min-width: 34px;
+}
+
+.electron-browser-widget-header button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.electron-browser-open,
+.electron-browser-devtools,
+.electron-browser-debug-toggle {
+  min-width: 48px !important;
+}
+
+.electron-browser-debug-toggle.active {
+  background: rgba(112, 184, 255, 0.28);
+  color: #d9ecff;
+}
+
+.electron-browser-widget-body {
+  position: absolute;
+  inset: 68px 8px 8px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 7px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #05070c;
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: default;
+}
+
+.electron-browser-widget.debug-widget .electron-browser-widget-body {
+  grid-template-rows: minmax(0, 1fr) 116px;
+}
+
+.electron-browser-viewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #05070c;
+}
+
+.electron-browser-title {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  z-index: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.66);
+  font-size: 12px;
+  font-weight: 850;
+  pointer-events: none;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+}
+
+.electron-browser-fallback {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  text-align: center;
+  color: rgba(255,255,255,0.62);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.electron-browser-debug-log {
+  display: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 7px 8px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: rgba(2, 5, 9, 0.92);
+  color: rgba(235,244,255,0.86);
+  font: 700 11px/1.35 'Cascadia Code', 'Consolas', monospace;
+  user-select: text;
+  touch-action: auto;
+}
+
+.electron-browser-widget.debug-widget .electron-browser-debug-log {
+  display: block;
+}
+
+.electron-browser-log,
+.electron-browser-log-empty {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.electron-browser-log.error {
+  color: #ff9a9a;
+}
+
+.electron-browser-log.warning,
+.electron-browser-log.warn {
+  color: #ffd98a;
+}
+
+.electron-browser-log.info {
+  color: #a9cfff;
+}
+
+.electron-browser-log-empty {
+  color: rgba(255,255,255,0.48);
+}
+
+.youtube-widget {
+  background:
+    radial-gradient(circle at 86% 8%, rgba(255, 60, 60, 0.22), transparent 36%),
+    linear-gradient(180deg, rgba(16, 17, 23, 0.92), rgba(5, 7, 12, 0.9));
+}
+
+.youtube-widget-header {
+  top: 28px;
+  gap: 4px;
+}
+
+.youtube-widget-query {
+  flex: 1 1 auto;
+  min-width: 110px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 999px;
+  outline: 0;
+  background: rgba(4, 8, 13, 0.72);
+  color: rgba(255,255,255,0.92);
+  font: 800 12px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: text;
+}
+
+.youtube-widget-header button {
+  min-width: 34px;
+}
+
+.youtube-widget-open {
+  min-width: 48px !important;
+}
+
+.youtube-widget-body {
+  position: absolute;
+  inset: 68px 8px 8px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: #05070c;
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: default;
+}
+
+.youtube-player {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+.youtube-native-player {
+  position: relative;
+  overflow: hidden;
+}
+
+.youtube-native-player .youtube-widget-empty {
+  pointer-events: none;
+}
+
+.youtube-widget-results {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.youtube-result {
+  width: 100%;
+  min-height: 74px;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 9px;
+  background: rgba(255,255,255,0.055);
+  color: rgba(255,255,255,0.92);
+  cursor: pointer;
+  text-align: left;
+}
+
+.youtube-result:hover {
+  border-color: rgba(255, 80, 80, 0.36);
+  background: rgba(255, 80, 80, 0.11);
+}
+
+.youtube-result img {
+  width: 112px;
+  aspect-ratio: 16 / 9;
+  border-radius: 7px;
+  object-fit: cover;
+  background: #111;
+}
+
+.youtube-result-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.youtube-result-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.youtube-result-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.58);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.youtube-widget-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: rgba(255,255,255,0.62);
+  font-size: 14px;
+  font-weight: 850;
 }
 
 #chat-panel {
@@ -1504,6 +3361,13 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   vertical-align: baseline;
 }
 
+.chat-header,
+.chat-separator,
+.stt-label {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 @keyframes chat-line-dissolve {
   0% { clip-path: inset(0 0 0 0 round 14px); }
   100% { clip-path: inset(0 0 100% 0 round 14px); }
@@ -1570,6 +3434,10 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 
 .chat-text {
   color: rgba(255,255,255,0.92);
+}
+
+.chat-separator {
+  color: rgba(255,255,255,0.62);
 }
 
 .stt-label {
@@ -1709,7 +3577,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   position: absolute;
   width: 104px;
   height: 112px;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(var(--avatar-prison-scale, 1));
   transform-origin: 50% 78%;
   transition: opacity 300ms ease, transform 180ms ease;
   will-change: left, top;
@@ -1717,13 +3585,13 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 
 .avatar.speaking {
   z-index: 22000;
-  transform: translate(-50%, -50%) scale(1.06);
+  transform: translate(-50%, -50%) scale(var(--avatar-speaking-prison-scale, 1.06));
 }
 
 .avatar .bubble-stack {
   position: absolute;
   left: 50%;
-  bottom: 122px;
+  bottom: calc(122px + var(--bubble-card-gap-px, 0px));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1776,6 +3644,31 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   transform: translateY(0) scale(1);
 }
 
+.avatar.mini-prisoner .identity-card {
+  box-shadow:
+    0 8px 26px rgba(0,0,0,0.42),
+    0 0 16px color-mix(in srgb, var(--speaker-color, #ffe38c) 26%, transparent);
+}
+
+.avatar.real-prisoner {
+  filter: grayscale(0.18) saturate(0.72) brightness(0.88);
+}
+
+.avatar.real-prisoner .identity-card {
+  background:
+    linear-gradient(180deg, rgba(41, 45, 54, 0.82), rgba(13, 16, 22, 0.86)),
+    radial-gradient(circle at 20% 0%, rgba(174, 186, 205, 0.18), transparent 38%);
+  border-color: rgba(185, 198, 214, 0.2);
+  color: rgba(232, 236, 242, 0.74);
+}
+
+.avatar.real-prisoner .bubble.show {
+  background: rgba(19, 22, 29, 0.88);
+  border-color: rgba(150, 163, 181, 0.32);
+  color: rgba(207, 214, 224, 0.72);
+  text-shadow: none;
+}
+
 .avatar .bubble.leaving {
   opacity: 0;
   transform: translateY(-8px) scale(0.98);
@@ -1792,6 +3685,11 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   border-right: 1px solid rgba(255, 232, 137, 0.45);
   border-bottom: 1px solid rgba(255, 232, 137, 0.45);
   transform: translateX(-50%) rotate(45deg);
+}
+
+.avatar.real-prisoner .bubble:last-child::after {
+  background: rgba(19, 22, 29, 0.88);
+  border-color: rgba(150, 163, 181, 0.32);
 }
 
 .avatar .bubble.photo {

@@ -1,0 +1,1300 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Internal Game</title>
+  <style>
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #030712;
+      color: rgba(255,255,255,0.84);
+      font-family: Pretendard, "Noto Sans KR", "Segoe UI", system-ui, sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: stretch;
+    }
+
+    #game-shell {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      background:
+        radial-gradient(circle at 18% 6%, rgba(106, 255, 176, 0.14), transparent 34%),
+        linear-gradient(180deg, #07111e, #02040a);
+    }
+
+    #game {
+      position: absolute;
+      inset: 0;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #game > div,
+    #game > section,
+    #game .ejs_player,
+    #game .ejs_game,
+    #game [class*="emulator"],
+    #game [class*="player"],
+    #game [class*="screen"] {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      box-sizing: border-box !important;
+      margin: 0 !important;
+      overflow: hidden !important;
+    }
+
+    #game > div,
+    #game > section {
+      position: absolute !important;
+      inset: 0 !important;
+    }
+
+    #game canvas,
+    #game video {
+      position: absolute !important;
+      inset: 0 !important;
+      display: block !important;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      margin: auto !important;
+      object-fit: contain !important;
+      image-rendering: pixelated;
+    }
+
+    .ejs_control_bar,
+    .ejs_controls,
+    .ejs_bottom_bar,
+    .ejs_menu_bar,
+    .ejs_volume,
+    .ejs_volume_bar,
+    .ejs_fast_forward,
+    .ejs_fastForward,
+    .ejs_notification,
+    .ejs_message,
+    [class*="ejs_notification"],
+    [class*="ejs_message"],
+    [class*="ejs_toast"],
+    [class*="fast-forward"],
+    [class*="fastForward"],
+    [class*="notification"],
+    [class*="toast"],
+    #game [class*="control"],
+    #game [class*="toolbar"],
+    #game [class*="menu_bar"],
+    #game [class*="bottom_bar"],
+    #game [class*="volume"],
+    #game [class*="message"] {
+      display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+
+    #game .ejs_start_button,
+    #game [class*="start"][class*="button"],
+    #game button[title*="Start"],
+    #game button[aria-label*="Start"] {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      right: auto !important;
+      bottom: auto !important;
+      transform: none !important;
+      width: 1px !important;
+      min-width: 1px !important;
+      max-width: 1px !important;
+      height: 1px !important;
+      min-height: 1px !important;
+      border: 0 !important;
+      background: transparent !important;
+      color: transparent !important;
+      box-shadow: none !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+      z-index: 1 !important;
+    }
+
+    #game [class*="start-screen"],
+    #game [class*="startScreen"],
+    #game [class*="start"] {
+      align-items: center !important;
+      justify-content: center !important;
+    }
+
+    #status {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      display: flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.42);
+      color: rgba(255,255,255,0.72);
+      font-size: 11px;
+      font-weight: 850;
+      line-height: 1.2;
+      pointer-events: none;
+      transition: opacity 180ms ease;
+      z-index: 20;
+    }
+
+    #cover {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      box-sizing: border-box;
+      pointer-events: auto;
+      z-index: 35;
+      transition: opacity 180ms ease, transform 180ms ease;
+    }
+
+    .cover-card {
+      width: min(640px, 100%);
+      min-height: min(240px, calc(100vh - 80px));
+      display: grid;
+      grid-template-columns: 136px minmax(0, 1fr);
+      gap: 24px;
+      align-items: center;
+      padding: 22px;
+      box-sizing: border-box;
+      border-radius: 18px;
+      border: 3px solid rgba(20, 25, 30, 0.92);
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        radial-gradient(circle at 20% 10%, rgba(255, 219, 83, 0.22), transparent 38%),
+        linear-gradient(145deg, rgba(67, 72, 64, 0.94), rgba(21, 31, 34, 0.9));
+      background-size: 8px 8px, 8px 8px, auto, auto;
+      box-shadow:
+        0 18px 48px rgba(0,0,0,0.36),
+        inset 0 0 0 3px rgba(222, 205, 126, 0.18);
+    }
+
+    body.game-running #cover {
+      opacity: 0;
+      transform: translateY(-10px) scale(0.98);
+      pointer-events: none;
+    }
+
+    .cover-art {
+      width: 112px;
+      height: 132px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      border: 3px solid rgba(16, 19, 20, 0.86);
+      background:
+        linear-gradient(90deg, rgba(41, 60, 38, 0.22) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(41, 60, 38, 0.22) 1px, transparent 1px),
+        linear-gradient(180deg, #d8c06a 0%, #b59b45 58%, #6d673e 100%);
+      background-size: 7px 7px, 7px 7px, auto;
+      box-shadow:
+        inset 0 0 0 4px rgba(245, 224, 122, 0.18),
+        inset 0 -18px 0 rgba(60, 66, 42, 0.2);
+      overflow: hidden;
+    }
+
+    .cover-art::before {
+      content: "GB";
+      position: absolute;
+      left: 7px;
+      top: 6px;
+      color: rgba(34, 42, 34, 0.64);
+      font: 950 10px/1 "Cascadia Mono", "Consolas", monospace;
+      letter-spacing: 0;
+    }
+
+    .cover-art::after {
+      content: "";
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      top: 34px;
+      bottom: 18px;
+      border: 3px solid rgba(28, 31, 28, 0.82);
+      background:
+        linear-gradient(90deg, rgba(31, 39, 31, 0.28) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(31, 39, 31, 0.22) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(251, 231, 119, 0.8), rgba(103, 101, 57, 0.72));
+      background-size: 6px 6px, 6px 6px, auto;
+      box-shadow:
+        inset 0 0 0 3px rgba(255,255,255,0.12),
+        0 8px 0 rgba(28, 31, 28, 0.38);
+    }
+
+    .cover-meta {
+      min-width: 0;
+    }
+
+    .cover-label {
+      color: rgba(236, 224, 157, 0.72);
+      font-size: 13px;
+      font-weight: 900;
+      margin-bottom: 7px;
+    }
+
+    .cover-title {
+      color: rgba(255, 236, 135, 0.94);
+      font-size: clamp(28px, 6.2vw, 46px);
+      font-weight: 950;
+      line-height: 1.05;
+      word-break: keep-all;
+    }
+
+    .cover-sub {
+      margin-top: 9px;
+      color: rgba(224, 232, 204, 0.68);
+      font-size: 15px;
+      font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .cover-start {
+      grid-column: 1 / -1;
+      justify-self: center;
+      width: min(360px, 88%);
+      min-height: 58px;
+      border: 5px solid #20251f;
+      border-radius: 0;
+      background: #dbc867;
+      color: #1f271f;
+      box-shadow:
+        inset 0 0 0 6px rgba(255,255,255,0.2),
+        0 8px 0 #20251f,
+        0 18px 24px rgba(0,0,0,0.28);
+      font: 950 28px/1 "Cascadia Mono", "Consolas", monospace;
+      cursor: pointer;
+    }
+
+    .cover-start:active {
+      transform: translateY(4px);
+      box-shadow:
+        inset 0 0 0 6px rgba(255,255,255,0.16),
+        0 3px 0 #20251f,
+        0 10px 16px rgba(0,0,0,0.22);
+    }
+
+    #layout-debug {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      z-index: 60;
+      display: none;
+      max-width: min(560px, calc(100% - 20px));
+      max-height: min(360px, calc(100% - 20px));
+      overflow: auto;
+      padding: 8px 10px;
+      border: 1px solid rgba(118, 255, 180, 0.36);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.78);
+      color: #b8ffd0;
+      font: 700 11px/1.35 "Cascadia Mono", "Consolas", monospace;
+      white-space: pre-wrap;
+      pointer-events: auto;
+      user-select: text;
+    }
+
+    body.layout-debug #layout-debug {
+      display: block;
+    }
+
+    body.game-ready #status {
+      opacity: 0;
+    }
+
+    body.debug-status.game-ready:hover #status,
+    body.debug-status.game-ready:focus-within #status {
+      opacity: 1;
+    }
+
+    body.game-running:not(.debug-status) #status {
+      display: none;
+    }
+  </style>
+</head>
+<body tabindex="0">
+  <main id="game-shell">
+    <div id="game"></div>
+    <div id="cover">
+      <div class="cover-card">
+        <div class="cover-art">
+        </div>
+        <div class="cover-meta">
+          <div class="cover-label">내부게임</div>
+          <div class="cover-title">포켓몬 골드</div>
+          <div class="cover-sub">START를 눌러 시작</div>
+        </div>
+        <button id="cover-start" class="cover-start" type="button">START</button>
+      </div>
+    </div>
+    <div id="status">게임 로딩 중...</div>
+    <pre id="layout-debug"></pre>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const status = document.getElementById("status");
+      const body = document.body;
+      const game = document.getElementById("game");
+      const cover = document.getElementById("cover");
+      const coverStart = document.getElementById("cover-start");
+      const layoutDebugPanel = document.getElementById("layout-debug");
+      const safeName = (value) => String(value || "")
+        .split(/[\\/]/)
+        .pop()
+        .replace(/[^\w .()+@-]/g, "")
+        .trim()
+        .slice(0, 160);
+      const rom = safeName(params.get("rom") || "pk_gold.gb") || "pk_gold.gb";
+      const ext = rom.split(".").pop().toLowerCase();
+      const gameName = (rom.replace(/\.[^.]+$/, "") || "game").replace(/[^\w .()+@-]/g, "_");
+      const romUrl = `/api/game/rom/${encodeURIComponent(rom)}`;
+      const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+      let inputQueue = Promise.resolve();
+      let lastStatusAt = 0;
+      let autoLoadState = params.get("autoload") !== "0";
+      let gameStarted = false;
+      let pendingStateLoad = false;
+      const stateStoreKey = `${coreForRom()}:${rom}:slot1`;
+      const debugStatus = params.get("debug") === "1";
+      let layoutDebug = params.get("layout") === "1";
+      let currentSpeed = normalizeSpeed(params.get("speed") || 1);
+      let currentVolume = normalizeVolume(params.get("volume") || 75);
+      let fastForwardActive = false;
+      body.classList.toggle("debug-status", debugStatus);
+      body.classList.toggle("layout-debug", layoutDebug);
+      const displayTitle = rom.toLowerCase() === "pk_gold.gb" ? "포켓몬 골드" : (rom.replace(/\.[^.]+$/, "") || "게임");
+      if (cover) {
+        cover.querySelector(".cover-title").textContent = displayTitle;
+      }
+
+      const keySpecs = {
+        up: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+        down: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+        left: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+        right: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+        a: { key: "z", code: "KeyZ", keyCode: 90 },
+        b: { key: "x", code: "KeyX", keyCode: 88 },
+        select: { key: "v", code: "KeyV", keyCode: 86 },
+        start: { key: "Enter", code: "Enter", keyCode: 13 },
+      };
+
+      function setStatus(text, hold = false) {
+        if (!status) return;
+        status.textContent = text;
+        lastStatusAt = Date.now();
+        body.classList.remove("game-ready");
+        if (!hold) {
+          const delay = debugStatus ? 1300 : 450;
+          window.setTimeout(() => {
+            if (Date.now() - lastStatusAt >= delay - 100) body.classList.add("game-ready");
+          }, delay);
+        }
+      }
+
+      function sendParent(type, detail = {}) {
+        try {
+          window.parent?.postMessage({ type, ...detail }, location.origin);
+        } catch (_) {}
+      }
+
+      function sendGameStatus(statusName, message = "", detail = {}) {
+        sendParent("tg-game-status", {
+          status: statusName,
+          message: String(message || "").slice(0, 500),
+          rom,
+          ...detail,
+        });
+      }
+
+      function rectText(name, node) {
+        if (!node || typeof node.getBoundingClientRect !== "function") return `${name}: missing`;
+        const rect = node.getBoundingClientRect();
+        const tag = node.tagName ? node.tagName.toLowerCase() : "node";
+        const cls = node.className ? `.${String(node.className).replace(/\s+/g, ".").slice(0, 60)}` : "";
+        return `${name}: ${Math.round(rect.width)}x${Math.round(rect.height)} @ ${Math.round(rect.left)},${Math.round(rect.top)} ${tag}${cls}`;
+      }
+
+      function reportLayoutDebug(reason = "layout") {
+        if (!layoutDebug || !layoutDebugPanel) return;
+        const first = game.firstElementChild;
+        const second = first?.firstElementChild;
+        const canvas = game.querySelector("canvas");
+        const video = game.querySelector("video");
+        const startButton = findEmulatorStartButton();
+        const lines = [
+          `reason: ${reason}`,
+          `viewport: ${window.innerWidth}x${window.innerHeight} dpr ${window.devicePixelRatio || 1}`,
+          rectText("shell", document.getElementById("game-shell")),
+          rectText("game", game),
+          rectText("first", first),
+          rectText("second", second),
+          rectText("canvas", canvas),
+          canvas ? `canvas-bitmap: ${canvas.width}x${canvas.height}` : "canvas-bitmap: missing",
+          rectText("video", video),
+          rectText("cover", cover),
+          rectText("ejs-start", startButton),
+        ];
+        layoutDebugPanel.textContent = lines.join("\n");
+        sendGameStatus("layout-debug", lines.slice(0, 8).join(" | "));
+      }
+
+      function findEmulatorStartButton() {
+        const selectors = [
+          "#game .ejs_start_button",
+          "#game [class*='start'][class*='button']",
+          "#game button[title*='Start']",
+          "#game button[aria-label*='Start']",
+          "#game button",
+        ];
+        for (const selector of selectors) {
+          for (const node of document.querySelectorAll(selector)) {
+            if (!(node instanceof HTMLElement)) continue;
+            const text = String(node.textContent || "").toLowerCase();
+            const cls = String(node.className || "").toLowerCase();
+            const title = String(node.getAttribute("title") || "").toLowerCase();
+            const label = String(node.getAttribute("aria-label") || "").toLowerCase();
+            if (selector === "#game button" && !(text.includes("start") || cls.includes("start") || title.includes("start") || label.includes("start"))) {
+              continue;
+            }
+            return node;
+          }
+        }
+        return null;
+      }
+
+      function clickEmulatorStart(attempt = 0) {
+        const button = findEmulatorStartButton();
+        if (button) {
+          setStatus("게임 시작 요청");
+          button.click();
+          reportLayoutDebug("cover-start");
+          return true;
+        }
+        if (attempt < 12) {
+          setStatus("START 버튼 대기 중");
+          window.setTimeout(() => clickEmulatorStart(attempt + 1), 180);
+          return false;
+        }
+        setStatus("START 버튼을 찾지 못함", true);
+        sendGameStatus("start-missing", "emulator start button not found");
+        reportLayoutDebug("start-missing");
+        return false;
+      }
+
+      function compactLogArgs(args) {
+        return Array.from(args).map((item) => {
+          if (item instanceof Error) return item.stack || item.message;
+          if (typeof item === "string") return item;
+          try {
+            return JSON.stringify(item);
+          } catch (_) {
+            return String(item);
+          }
+        }).join(" ").slice(0, 700);
+      }
+
+      coverStart?.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        clickEmulatorStart();
+      });
+
+      for (const level of ["log", "warn", "error"]) {
+        const original = console[level]?.bind(console);
+        if (!original) continue;
+        console[level] = (...args) => {
+          original(...args);
+          sendGameStatus(`console-${level}`, compactLogArgs(args));
+        };
+      }
+
+      function coreForRom() {
+        if (ext === "gba") return "gba";
+        if (ext === "nes") return "nes";
+        if (ext === "sfc" || ext === "smc") return "snes";
+        return "gb";
+      }
+
+      function normalizeSpeed(value) {
+        const speeds = [1, 1.5, 2, 3, 4];
+        const number = Number(value);
+        if (!Number.isFinite(number)) return 1;
+        return speeds.reduce((best, speed) => (
+          Math.abs(speed - number) < Math.abs(best - number) ? speed : best
+        ), 1);
+      }
+
+      function normalizeVolume(value) {
+        let number = Number(value);
+        if (!Number.isFinite(number)) return 0.75;
+        if (number > 1) number /= 100;
+        return Math.min(1, Math.max(0, number));
+      }
+
+      function speedLabel(value) {
+        const speed = normalizeSpeed(value);
+        return `x${Number.isInteger(speed) ? speed : speed.toFixed(1)}`;
+      }
+
+      const RETROARCH_OSD_OPTIONS = [
+        {
+          name: "notification_show_fast_forward",
+          title: "Fast Forward Notification",
+          options: ["false", "true"],
+          default: "false",
+        },
+        {
+          name: "video_font_enable",
+          title: "OSD Text Messages",
+          options: ["false", "true"],
+          default: "false",
+        },
+        {
+          name: "video_message_bgcolor_enable",
+          title: "OSD Message Background",
+          options: ["false", "true"],
+          default: "false",
+        },
+        {
+          name: "menu_enable_widgets",
+          title: "RetroArch Menu Widgets",
+          options: ["false", "true"],
+          default: "false",
+        },
+        {
+          name: "notification_show_when_menu_is_alive",
+          title: "Menu Alive Notifications",
+          options: ["false", "true"],
+          default: "false",
+        },
+      ];
+      const RETROARCH_CFG_PATCH = Object.fromEntries(
+        RETROARCH_OSD_OPTIONS.map((option) => [option.name, option.default])
+      );
+
+      function escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }
+
+      function installRetroarchOsdOptions() {
+        window.EJS_retroarchOpts = RETROARCH_OSD_OPTIONS;
+        window.EJS_defaultOptions = {
+          ...(window.EJS_defaultOptions || {}),
+          ...RETROARCH_CFG_PATCH,
+        };
+        const emulator = window.EJS_emulator;
+        if (!emulator) return false;
+        emulator.retroarchOpts = RETROARCH_OSD_OPTIONS;
+        emulator.defaultOptions = {
+          ...(emulator.defaultOptions || {}),
+          ...RETROARCH_CFG_PATCH,
+        };
+        if (emulator.config) {
+          emulator.config.defaultOptions = {
+            ...(emulator.config.defaultOptions || {}),
+            ...RETROARCH_CFG_PATCH,
+          };
+        }
+        return true;
+      }
+
+      const FAST_FORWARD_TEXT_RE = /fast\s*[- ]\s*forward\.?/i;
+
+      function removeFastForwardDomText() {
+        if (!document.body) return 0;
+        const matches = [];
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+          acceptNode(node) {
+            const text = String(node.nodeValue || "");
+            return FAST_FORWARD_TEXT_RE.test(text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          },
+        });
+        while (walker.nextNode()) matches.push(walker.currentNode);
+        let removed = 0;
+        for (const textNode of matches) {
+          let target = null;
+          let el = textNode.parentElement;
+          while (el && el !== document.body && el.id !== "game-shell" && el.id !== "game") {
+            const tag = String(el.tagName || "").toLowerCase();
+            if (tag === "script" || tag === "style") break;
+            const text = String(el.textContent || "").trim();
+            if (text.length > 180 || !FAST_FORWARD_TEXT_RE.test(text)) break;
+            target = el;
+            el = el.parentElement;
+          }
+          if (target) {
+            target.remove();
+            removed += 1;
+          } else {
+            textNode.nodeValue = String(textNode.nodeValue || "").replace(FAST_FORWARD_TEXT_RE, "");
+            removed += 1;
+          }
+        }
+        return removed;
+      }
+
+      let fastForwardTextScrubTimer = 0;
+      function scrubFastForwardTextSoon(duration = 2600) {
+        removeFastForwardDomText();
+        if (fastForwardTextScrubTimer) return;
+        const startedAt = Date.now();
+        fastForwardTextScrubTimer = window.setInterval(() => {
+          removeFastForwardDomText();
+          if (Date.now() - startedAt >= duration) {
+            window.clearInterval(fastForwardTextScrubTimer);
+            fastForwardTextScrubTimer = 0;
+          }
+        }, 80);
+      }
+
+      function hideEmulatorToolbar() {
+        removeFastForwardDomText();
+        const selectors = [
+          ".ejs_control_bar",
+          ".ejs_controls",
+          ".ejs_bottom_bar",
+          ".ejs_menu_bar",
+          ".ejs_volume",
+          ".ejs_volume_bar",
+          ".ejs_fast_forward",
+          ".ejs_fastForward",
+          ".ejs_notification",
+          ".ejs_message",
+          "[class*='ejs_notification']",
+          "[class*='ejs_message']",
+          "[class*='ejs_toast']",
+          "[class*='control']",
+          "[class*='toolbar']",
+          "[class*='menu_bar']",
+          "[class*='bottom_bar']",
+          "[class*='volume']",
+          "[class*='fast-forward']",
+          "[class*='fastForward']",
+          "[class*='notification']",
+          "[class*='message']",
+          "[class*='toast']",
+        ];
+        for (const node of document.querySelectorAll(selectors.join(","))) {
+          if (!(node instanceof HTMLElement)) continue;
+          const text = String(node.textContent || "").toLowerCase();
+          const cls = String(node.className || "").toLowerCase();
+          const id = String(node.id || "").toLowerCase();
+          const looksLikeStart = text.includes("start") || cls.includes("start") || id.includes("start");
+          if (looksLikeStart) continue;
+          if (text.includes("fast") || text.includes("forward")) {
+            node.style.setProperty("display", "none", "important");
+          }
+          node.style.setProperty("display", "none", "important");
+          node.style.setProperty("opacity", "0", "important");
+          node.style.setProperty("visibility", "hidden", "important");
+          node.style.setProperty("pointer-events", "none", "important");
+        }
+        removeFastForwardDomText();
+      }
+
+      function patchRetroarchConfigText(text) {
+        const lines = String(text || "").split(/\r?\n/);
+        for (const [key, value] of Object.entries(RETROARCH_CFG_PATCH)) {
+          const nextLine = `${key} = "${value}"`;
+          const re = new RegExp(`^\\s*#?\\s*${escapeRegExp(key)}\\s*=`);
+          const index = lines.findIndex((line) => re.test(line));
+          if (index >= 0) lines[index] = nextLine;
+          else lines.push(nextLine);
+        }
+        return lines.join("\n");
+      }
+
+      function patchRetroarchRuntimeConfig() {
+        installRetroarchOsdOptions();
+        let patched = false;
+        for (const target of managerCandidates()) {
+          const fs = target?.FS;
+          if (!fs) continue;
+          const path = "/home/web_user/.config/retroarch/retroarch.cfg";
+          try {
+            let text = "";
+            try {
+              const raw = fs.readFile(path);
+              text = new TextDecoder().decode(raw);
+            } catch (_) {}
+            const patchedText = patchRetroarchConfigText(text);
+            if (typeof target.writeFile === "function") target.writeFile(path, patchedText);
+            else fs.writeFile(path, patchedText);
+            patched = true;
+          } catch (_) {}
+        }
+        return patched;
+      }
+
+      function hideEmulatorToolbarSoon() {
+        hideEmulatorToolbar();
+        for (const delay of [50, 160, 420, 900, 1600]) {
+          window.setTimeout(hideEmulatorToolbar, delay);
+        }
+      }
+
+      let osdSuppressTimer = 0;
+      function suppressRetroarchOsdSoon(duration = 2800) {
+        patchRetroarchRuntimeConfig();
+        hideEmulatorToolbar();
+        scrubFastForwardTextSoon(duration);
+        if (osdSuppressTimer) return;
+        const startedAt = Date.now();
+        osdSuppressTimer = window.setInterval(() => {
+          patchRetroarchRuntimeConfig();
+          hideEmulatorToolbar();
+          removeFastForwardDomText();
+          if (Date.now() - startedAt >= duration) {
+            window.clearInterval(osdSuppressTimer);
+            osdSuppressTimer = 0;
+          }
+        }, 90);
+      }
+
+      function fitGameViewport() {
+        const wrappers = game.querySelectorAll(
+          ":scope > div, :scope > section, :scope > div > div, .ejs_player, .ejs_game, [class*='emulator'], [class*='player'], [class*='screen']"
+        );
+        for (const node of wrappers) {
+          if (!(node instanceof HTMLElement)) continue;
+          node.style.setProperty("width", "100%", "important");
+          node.style.setProperty("height", "100%", "important");
+          node.style.setProperty("max-width", "none", "important");
+          node.style.setProperty("max-height", "none", "important");
+          node.style.setProperty("box-sizing", "border-box", "important");
+          node.style.setProperty("margin", "0", "important");
+          node.style.setProperty("overflow", "hidden", "important");
+          if (node.parentElement === game) {
+            node.style.setProperty("position", "absolute", "important");
+            node.style.setProperty("inset", "0", "important");
+          }
+        }
+        for (const node of game.querySelectorAll("canvas, video")) {
+          if (!(node instanceof HTMLElement)) continue;
+          node.style.setProperty("width", "100%", "important");
+          node.style.setProperty("height", "100%", "important");
+          node.style.setProperty("max-width", "100%", "important");
+          node.style.setProperty("max-height", "100%", "important");
+          node.style.setProperty("position", "absolute", "important");
+          node.style.setProperty("inset", "0", "important");
+          node.style.setProperty("margin", "auto", "important");
+          node.style.setProperty("object-fit", "contain", "important");
+        }
+        reportLayoutDebug("fit");
+        window.dispatchEvent(new Event("resize"));
+        callFirst("resize");
+      }
+
+      function fitGameViewportSoon() {
+        fitGameViewport();
+        for (const delay of [60, 160, 340, 700, 1200]) {
+          window.setTimeout(fitGameViewport, delay);
+        }
+      }
+
+      let fitRequestTimer = 0;
+      function requestFitGameViewport(reason = "mutation") {
+        if (fitRequestTimer) return;
+        fitRequestTimer = window.setTimeout(() => {
+          fitRequestTimer = 0;
+          hideEmulatorToolbar();
+          fitGameViewport();
+          reportLayoutDebug(reason);
+        }, 90);
+      }
+
+      const toolbarObserver = new MutationObserver(() => {
+        hideEmulatorToolbar();
+        requestFitGameViewport("mutation");
+      });
+      toolbarObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+      if (window.ResizeObserver) {
+        const resizeObserver = new ResizeObserver(() => requestFitGameViewport("resize"));
+        resizeObserver.observe(game);
+        resizeObserver.observe(document.getElementById("game-shell"));
+      }
+
+      function openStateDb() {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open("tg-videochat-game-states", 1);
+          request.onupgradeneeded = () => {
+            request.result.createObjectStore("states", { keyPath: "key" });
+          };
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
+        });
+      }
+
+      async function stateDbAction(mode, callback) {
+        const db = await openStateDb();
+        try {
+          return await new Promise((resolve, reject) => {
+            const tx = db.transaction("states", mode);
+            const store = tx.objectStore("states");
+            const request = callback(store);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error("IndexedDB action failed"));
+          });
+        } finally {
+          db.close();
+        }
+      }
+
+      function statePayloadSize(value) {
+        if (!value) return 0;
+        if (typeof value.byteLength === "number") return value.byteLength;
+        if (typeof value.length === "number") return value.length;
+        if (value.state) return statePayloadSize(value.state);
+        if (value.save) return statePayloadSize(value.save);
+        return 1;
+      }
+
+      function statePayloadForLoad(record) {
+        return record?.value || record?.state || null;
+      }
+
+      async function readStoredState() {
+        return stateDbAction("readonly", (store) => store.get(stateStoreKey));
+      }
+
+      async function writeStoredState(value) {
+        const size = statePayloadSize(value);
+        if (!size) throw new Error("empty state");
+        const record = {
+          key: stateStoreKey,
+          rom,
+          core: coreForRom(),
+          savedAt: Date.now(),
+          size,
+          value,
+        };
+        await stateDbAction("readwrite", (store) => store.put(record));
+        return record;
+      }
+
+      function eventTargets() {
+        const canvas = document.querySelector("canvas");
+        const active = document.activeElement;
+        return [active, canvas, game, body, document, window].filter((target, index, arr) => {
+          return target && arr.indexOf(target) === index;
+        });
+      }
+
+      function dispatchKey(type, spec) {
+        const init = {
+          key: spec.key,
+          code: spec.code,
+          keyCode: spec.keyCode,
+          which: spec.keyCode,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        };
+        for (const target of eventTargets()) {
+          try {
+            target.dispatchEvent(new KeyboardEvent(type, init));
+          } catch (_) {}
+        }
+      }
+
+      async function tapCommand(command) {
+        const spec = keySpecs[command];
+        if (!spec) return;
+        dispatchKey("keydown", spec);
+        await sleep(95);
+        dispatchKey("keyup", spec);
+        await sleep(55);
+      }
+
+      function queueCommands(commands) {
+        const filtered = Array.isArray(commands) ? commands.filter((command) => keySpecs[command]) : [];
+        if (!filtered.length) return;
+        inputQueue = inputQueue.then(async () => {
+          for (const command of filtered) await tapCommand(command);
+        });
+      }
+
+      function managerCandidates() {
+        const ejs = window.EJS_emulator;
+        return [
+          ejs?.gameManager,
+          ejs?.manager,
+          ejs?.emulator?.gameManager,
+          ejs,
+          window.gameManager,
+        ].filter(Boolean);
+      }
+
+      async function callFirst(method, args = []) {
+        for (const target of managerCandidates()) {
+          if (typeof target?.[method] !== "function") continue;
+          try {
+            await target[method](...args);
+            return true;
+          } catch (_) {}
+        }
+        return false;
+      }
+
+      async function callFirstValue(method, args = []) {
+        for (const target of managerCandidates()) {
+          if (typeof target?.[method] !== "function") continue;
+          try {
+            const value = await target[method](...args);
+            return { ok: true, value };
+          } catch (_) {}
+        }
+        return { ok: false, value: null };
+      }
+
+      function applyFastForwardState(target, fast) {
+        const setterMethods = [
+          "setFastForward",
+          "setFastForwardEnabled",
+          "setFastForwardState",
+          "setFastForwarding",
+        ];
+        for (const method of setterMethods) {
+          if (typeof target?.[method] !== "function") continue;
+          try {
+            target[method](fast);
+            fastForwardActive = fast;
+            return method;
+          } catch (_) {}
+        }
+        if (typeof target?.toggleFastForward === "function" && fastForwardActive !== fast) {
+          suppressRetroarchOsdSoon(3600);
+          try {
+            target.toggleFastForward(fast);
+            fastForwardActive = fast;
+            suppressRetroarchOsdSoon(4200);
+            return "toggleFastForward";
+          } catch (_) {}
+        }
+        return "";
+      }
+
+      async function applyGameSpeed(value) {
+        currentSpeed = normalizeSpeed(value);
+        suppressRetroarchOsdSoon(2200);
+        const fast = currentSpeed > 1;
+        let applied = false;
+        const methods = [];
+        for (const target of managerCandidates()) {
+          try {
+            for (const method of ["setSpeed", "setEmulationSpeed", "setPlaybackRate"]) {
+              if (typeof target?.[method] !== "function") continue;
+              target[method](currentSpeed);
+              methods.push(method);
+              applied = true;
+            }
+            if (typeof target?.setFastForwardRatio === "function") {
+              target.setFastForwardRatio(currentSpeed);
+              methods.push("setFastForwardRatio");
+              applied = true;
+            }
+            const fastMethod = applyFastForwardState(target, fast);
+            if (fastMethod) {
+              methods.push(fastMethod);
+              applied = true;
+            }
+          } catch (_) {}
+        }
+        if (debugStatus) setStatus(`속도 ${speedLabel(currentSpeed)}`);
+        sendGameStatus("speed", speedLabel(currentSpeed), { applied, methods: methods.join(",") });
+        suppressRetroarchOsdSoon(4200);
+        hideEmulatorToolbarSoon();
+        for (const delay of [250, 800, 1600]) {
+          window.setTimeout(() => {
+            suppressRetroarchOsdSoon(1000);
+          }, delay);
+        }
+        return applied;
+      }
+
+      async function applyGameVolume(value) {
+        currentVolume = normalizeVolume(value);
+        window.EJS_volume = currentVolume;
+        let applied = false;
+        for (const target of managerCandidates()) {
+          try {
+            if (typeof target?.setVolume === "function") {
+              target.setVolume(currentVolume);
+              applied = true;
+            } else if (target && typeof target === "object" && "volume" in target) {
+              target.volume = currentVolume;
+              applied = true;
+            }
+            if (target?.config && typeof target.config === "object") {
+              target.config.volume = currentVolume;
+              applied = true;
+            }
+          } catch (_) {}
+        }
+        sendGameStatus("volume", `${Math.round(currentVolume * 100)}%`, { applied });
+        return applied;
+      }
+
+      async function saveGame(reason = "manual") {
+        try {
+          const snapshot = await callFirstValue("getState");
+          if (snapshot.ok && statePayloadSize(snapshot.value)) {
+            const record = await writeStoredState(snapshot.value);
+            await callFirst("quickSave", [1]);
+            await callFirst("saveSaveFiles");
+            setStatus("상태 세이브 저장됨");
+            sendGameStatus("state-saved", `${record.size} bytes`, { reason });
+            return true;
+          }
+        } catch (err) {
+          const message = err?.message || String(err || "state save error");
+          setStatus(`상태 저장 실패: ${message}`);
+          sendGameStatus("state-save-error", message, { reason });
+          return false;
+        }
+        const savedNative = await callFirst("saveSaveFiles");
+        const savedState = await callFirst("quickSave", [1]);
+        const saved = savedNative || savedState;
+        setStatus(saved ? "임시 quick state 저장됨" : "저장할 상태 없음");
+        sendGameStatus(saved ? "quick-state-saved" : "state-save-missing", reason, { reason });
+        return saved;
+      }
+
+      async function loadGame() {
+        const hasLoader = managerCandidates().some((target) => typeof target?.loadState === "function");
+        if (!gameStarted || !hasLoader) {
+          pendingStateLoad = true;
+          setStatus("start 후 상태 세이브 로드");
+          sendGameStatus("state-load-pending", "waiting for game start");
+          return false;
+        }
+        try {
+          const stored = await readStoredState();
+          const payload = statePayloadForLoad(stored);
+          if (payload && statePayloadSize(payload)) {
+            const loaded = await callFirst("loadState", [payload]);
+            setStatus(loaded ? "상태 세이브 로드" : "상태 세이브 로드 실패");
+            sendGameStatus(loaded ? "state-loaded" : "state-load-failed", stored.size ? `${stored.size} bytes` : "slot 1");
+            return loaded;
+          }
+        } catch (err) {
+          const message = err?.message || String(err || "state load error");
+          setStatus(`상태 로드 실패: ${message}`);
+          sendGameStatus("state-load-failed", message);
+          return false;
+        }
+        setStatus("불러올 상태 세이브 없음");
+        sendGameStatus("state-load-missing", "slot 1");
+        return false;
+      }
+
+      async function resetGame() {
+        const reset = await callFirst("restart");
+        if (!reset) await callFirst("reset");
+        setStatus(reset ? "처음부터 시작" : "새 게임은 페이지 재로드로 시작");
+        sendGameStatus(reset ? "reset" : "reset-reload", rom);
+        if (!reset) {
+          const next = new URL(location.href);
+          next.searchParams.set("autoload", "0");
+          location.replace(next.toString());
+        }
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin) return;
+        const payload = event.data || {};
+        if (payload.type === "tg-game-input") {
+          queueCommands(payload.commands);
+          if (debugStatus) setStatus(`${payload.name || "chat"}: ${(payload.commands || []).join(" ")}`);
+        } else if (payload.type === "tg-game-key") {
+          const spec = Object.values(keySpecs).find((item) => item.key === payload.key && item.code === payload.code);
+          if (spec) dispatchKey(payload.down ? "keydown" : "keyup", spec);
+        } else if (payload.type === "tg-game-save") {
+          saveGame(payload.reason || "widget");
+        } else if (payload.type === "tg-game-load") {
+          loadGame();
+        } else if (payload.type === "tg-game-new") {
+          autoLoadState = false;
+          resetGame();
+        } else if (payload.type === "tg-game-speed") {
+          applyGameSpeed(payload.speed);
+        } else if (payload.type === "tg-game-volume") {
+          applyGameVolume(payload.volume);
+        } else if (payload.type === "tg-game-layout-debug") {
+          layoutDebug = !!payload.enabled;
+          body.classList.toggle("layout-debug", layoutDebug);
+          reportLayoutDebug(layoutDebug ? "debug-on" : "debug-off");
+        } else if (payload.type === "tg-game-resize") {
+          fitGameViewportSoon();
+        }
+      });
+
+      window.addEventListener("pointerdown", () => body.focus({ preventScroll: true }));
+      window.addEventListener("beforeunload", () => {
+        sendGameStatus("beforeunload", "game iframe unloading");
+        saveGame("unload");
+      });
+      window.addEventListener("error", (event) => {
+        const target = event.target;
+        if (target && target !== window && target instanceof HTMLElement) {
+          const src = target.getAttribute("src") || target.getAttribute("href") || target.tagName;
+          setStatus(`리소스 로드 오류: ${src}`, true);
+          sendGameStatus("error", `resource load error: ${src}`);
+          return;
+        }
+        const locationText = event.filename ? ` (${event.filename}:${event.lineno || 0})` : "";
+        const message = `${event.message || "script error"}${locationText}`;
+        setStatus(message, true);
+        sendGameStatus("error", message);
+      }, true);
+      window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason?.message || event.reason || "unhandled rejection";
+        setStatus(String(reason), true);
+        sendGameStatus("error", String(reason));
+      });
+
+      window.EJS_player = "#game";
+      window.EJS_gameUrl = romUrl;
+      window.EJS_gameName = `tg-${gameName}`;
+      window.EJS_core = coreForRom();
+      window.EJS_pathtodata = "https://cdn.emulatorjs.org/stable/data/";
+      window.EJS_startOnLoaded = false;
+      window.EJS_disableAutoLang = true;
+      window.EJS_volume = currentVolume;
+      window.EJS_DEBUG_XX = true;
+      window.EJS_startButtonName = "start";
+      window.EJS_fixedSaveInterval = 5000;
+      installRetroarchOsdOptions();
+      const retroarchOptionPoll = window.setInterval(() => {
+        installRetroarchOsdOptions();
+        patchRetroarchRuntimeConfig();
+        if (gameStarted) window.clearInterval(retroarchOptionPoll);
+      }, 120);
+      window.setTimeout(() => window.clearInterval(retroarchOptionPoll), 60000);
+      window.EJS_Buttons = {
+        playPause: false,
+        play: false,
+        pause: false,
+        restart: false,
+        mute: false,
+        unmute: false,
+        settings: false,
+        fullscreen: false,
+        enterFullscreen: false,
+        exitFullscreen: false,
+        saveState: false,
+        loadState: false,
+        screenRecord: false,
+        gamepad: false,
+        volume: false,
+        saveSavFiles: false,
+        loadSavFiles: false,
+        quickSave: false,
+        quickLoad: false,
+        screenshot: false,
+        cacheManager: false,
+        exitEmulation: false,
+        cheat: false,
+      };
+      window.EJS_ready = () => {
+        installRetroarchOsdOptions();
+        patchRetroarchRuntimeConfig();
+        fitGameViewportSoon();
+        setStatus(`${rom} 준비됨`);
+        sendGameStatus("ready", rom);
+      };
+      window.EJS_onGameStart = () => {
+        gameStarted = true;
+        body.classList.add("game-running");
+        patchRetroarchRuntimeConfig();
+        hideEmulatorToolbarSoon();
+        fitGameViewportSoon();
+        setStatus(`${rom} 실행 중`);
+        sendGameStatus("started", rom);
+        window.setTimeout(() => applyGameSpeed(currentSpeed), 700);
+        window.setTimeout(() => applyGameVolume(currentVolume), 760);
+        if (autoLoadState || pendingStateLoad) {
+          pendingStateLoad = false;
+          window.setTimeout(loadGame, 900);
+        }
+      };
+      window.EJS_onSaveState = (event) => {
+        const payload = Array.isArray(event) ? event[1] : (event?.state || event);
+        if (!statePayloadSize(payload)) return;
+        writeStoredState(payload)
+          .then((record) => sendGameStatus("state-saved", `${record.size} bytes`, { reason: "toolbar" }))
+          .catch((err) => sendGameStatus("state-save-error", err?.message || String(err || "save error")));
+      };
+      window.EJS_onSaveUpdate = () => {
+        setStatus("게임 저장됨");
+        sendGameStatus("saved", rom);
+      };
+
+      async function probeRom() {
+        setStatus(`ROM 확인 중: ${rom}`);
+        sendGameStatus("rom-probe", romUrl);
+        const response = await fetch(romUrl, { cache: "no-store" });
+        const size = response.headers.get("content-length") || "";
+        try {
+          await response.body?.cancel?.();
+        } catch (_) {}
+        if (!response.ok) {
+          throw new Error(`ROM HTTP ${response.status} ${response.statusText || ""}`.trim());
+        }
+        sendGameStatus("rom-ok", size ? `${rom} ${size} bytes` : rom);
+      }
+
+      function loadEmulator() {
+        const loader = document.createElement("script");
+        loader.src = "https://cdn.emulatorjs.org/stable/data/loader.js";
+        loader.async = true;
+        loader.crossOrigin = "anonymous";
+        loader.onload = () => {
+          setStatus("EmulatorJS 로더 로드됨");
+          sendGameStatus("loader-loaded", loader.src);
+        };
+        loader.onerror = () => {
+          setStatus("EmulatorJS 로드 실패", true);
+          sendGameStatus("loader-error", loader.src);
+        };
+        document.body.appendChild(loader);
+      }
+
+      probeRom()
+        .then(loadEmulator)
+        .catch((err) => {
+          const message = err?.message || String(err || "ROM probe failed");
+          setStatus(`ROM 로드 실패: ${message}`, true);
+          sendGameStatus("rom-error", message);
+        });
+    })();
+  </script>
+</body>
+</html>

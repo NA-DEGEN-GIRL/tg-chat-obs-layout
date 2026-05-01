@@ -27,12 +27,33 @@ npm start -- --hide-ui
 npm start -- --always-on-top
 npm start -- --allow-throttle
 npm start -- --reset-window
+npm start -- --data-dir=C:\Users\you\AppData\Roaming\tg-chat-obs-layout\videochat_app
 npm start -- --width=1920 --height=1080
 ```
 
-The app opens in control mode by default. Window size, position, fullscreen, always-on-top, control mode, and hidden UI state are saved under the repo-local `data/` directory.
+The app opens in control mode by default. Window size, position, fullscreen, always-on-top, control mode, hidden UI state, and Electron browser login cookies are saved in a stable app data directory. Development runs use the repo-local `data/` directory. Packaged Windows builds use `%APPDATA%\tg-chat-obs-layout\videochat_app` so rebuilding or replacing the portable exe does not reset login state. Set `TG_VIDEOCHAT_APP_DATA_DIR` or pass `--data-dir=...` to force a different shared data directory.
 
 By default the app asks Chromium to keep rendering while the window is covered or backgrounded. This is meant to reduce frozen OBS Window Capture frames when another fullscreen program is active. Use `--allow-throttle` only if you want Electron/Chromium to use its normal background throttling behavior.
+
+## Native Web Widget
+
+The overlay still requires the local 9393 server. The Electron app is the Windows-native display shell that loads that server.
+
+The `web` widget in the overlay uses an Electron `BrowserView`, so it only renders inside this app. The old iframe browser code is kept for fallback work, but its toolbar button is hidden. In Chrome or OBS Browser Source, native web browsing is excluded and the widget shows a fallback message. Use the Windows Electron app as the broadcast/capture surface when testing this widget.
+
+Chat links open in this native web widget when the overlay is running inside Electron. YouTube search results stay inside the dedicated `youtube` widget, but the player area also uses the Electron browser profile so logged-in YouTube sessions and Premium can be reused after signing in once.
+
+Widget controls:
+
+- `go`: load the URL in the native browser view.
+- `<` / `>` / `R`: back, forward, reload.
+- `open`: open the current URL in the external default browser.
+- `dev`: open DevTools for the native browser view.
+- `debug`: show console/load logs inside the widget so errors can be copied from the overlay.
+- `hide`: detach the native view without destroying the page.
+- `x`: close and destroy the native view. The generic `web` widget also clears its URL so the next open starts blank.
+
+Regular overlay changes under `static_videochat/` only need a page refresh. Rebuild the Windows app only when files under `tools/videochat_app/` change.
 
 ## Run From WSLg
 

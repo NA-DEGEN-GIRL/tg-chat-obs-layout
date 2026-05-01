@@ -19,7 +19,7 @@ from urllib.parse import quote, urlparse
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 import level_system as level_core
@@ -39,6 +39,8 @@ AVATARS_DIR = BASE_DIR / "data" / "telethon" / "profile_photos"
 PHOTOS_DIR = BASE_DIR / "data" / "photos"
 STICKERS_DIR = BASE_DIR / "data" / "stickers"
 ANIMATIONS_DIR = BASE_DIR / "data" / "animations"
+GAME_ROM_DIR = BASE_DIR / "data" / "rom"
+GAME_ROM_EXTS = {".gb", ".gbc", ".gba", ".nes", ".sfc", ".smc", ".zip"}
 LEVELS_FILE = BASE_DIR / "data" / "videochat_levels.json"
 OVERLAY_SETTINGS_FILE = BASE_DIR / "data" / "videochat_overlay_settings.json"
 DIAGNOSTIC_LOG_FILE = BASE_DIR / "data" / "videochat_overlay_diag.log"
@@ -68,6 +70,7 @@ VIDEOCHAT_TGCALLS_AUTO_JOIN = level_core.env_bool(os.getenv("VIDEOCHAT_TGCALLS_A
 VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN = level_core.env_bool(os.getenv("VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN"), True)
 VIDEOCHAT_DIAGNOSTICS_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_DIAGNOSTICS_ENABLED"), True)
 VIDEOCHAT_DIAG_INTERVAL_SEC = max(1.0, float(os.getenv("VIDEOCHAT_DIAG_INTERVAL_SEC", "5") or "5"))
+TGCALLS_IDENTITY_REFRESH_SEC = 30.0
 VIDEOCHAT_STREAM_CHUNK_LIMIT = min(
     1_048_576,
     max(65_536, int(os.getenv("VIDEOCHAT_STREAM_CHUNK_LIMIT", "524288"))),
@@ -77,11 +80,21 @@ TD_API_HASH = os.getenv("TD_API_HASH", "").strip()
 TD_PHONE = os.getenv("TD_PHONE", "").strip()
 TGCALLS_SESSION = os.getenv("TGCALLS_SESSION", "data/telethon/videochat_receiver").strip()
 TGCALLS_PHONE = os.getenv("TGCALLS_PHONE", "").strip()
+VIDEOCHAT_SUBACCOUNT_USER_ID = os.getenv("VIDEOCHAT_SUBACCOUNT_USER_ID", "").strip()
+VIDEOCHAT_SUBACCOUNT_USERNAME = os.getenv("VIDEOCHAT_SUBACCOUNT_USERNAME", "").strip().lstrip("@")
+VIDEOCHAT_SUBACCOUNT_NAME = os.getenv("VIDEOCHAT_SUBACCOUNT_NAME", "").strip()
 TGCALLS_MJPEG_FPS = max(1, min(30, int(os.getenv("TGCALLS_MJPEG_FPS", "30") or "30")))
 TGCALLS_MJPEG_QUALITY = max(35, min(95, int(os.getenv("TGCALLS_MJPEG_QUALITY", "82") or "82")))
 TGCALLS_MJPEG_WIDTH = max(0, int(os.getenv("TGCALLS_MJPEG_WIDTH", "1280") or "1280"))
 TGCALLS_MJPEG_HEIGHT = max(0, int(os.getenv("TGCALLS_MJPEG_HEIGHT", "720") or "720"))
 TGCALLS_MJPEG_KEEPALIVE_SEC = max(1.0, min(15.0, float(os.getenv("TGCALLS_MJPEG_KEEPALIVE_SEC", "2.5") or "2.5")))
+MARKET_PRICE_CACHE_SEC = max(5.0, min(120.0, float(os.getenv("MARKET_PRICE_CACHE_SEC", "30") or "30")))
+MARKET_PRICE_SYMBOLS = [
+    ("BTC-USD", "BTC"),
+    ("ETH-USD", "ETH"),
+    ("^NDX", "NASDAQ100"),
+]
+YOUTUBE_SEARCH_CACHE_SEC = max(5.0, min(300.0, float(os.getenv("YOUTUBE_SEARCH_CACHE_SEC", "60") or "60")))
 
 
 def chat_api_base() -> str:
@@ -138,6 +151,8 @@ stream_channel_reason = "not_checked"
 tgcalls_frame_state: dict[int, dict] = {}
 tgcalls_jpeg_cache: dict[int, dict] = {}
 tgcalls_jpeg_locks: dict[int, asyncio.Lock] = {}
+market_prices_cache: dict = {"updated_at": 0.0, "assets": []}
+youtube_search_cache: dict[str, dict] = {}
 tgcalls_mjpeg_active_clients = 0
 tgcalls_mjpeg_total_clients = 0
 tgcalls_mjpeg_encoded_frames = 0
@@ -147,6 +162,9 @@ tgcalls_joined_chat_id = 0
 tgcalls_receiver_app = None
 tgcalls_receiver_client = None
 tgcalls_frame_handler_func = None
+tgcalls_receiver_identity: dict = {}
+tgcalls_receiver_identity_checked_at = 0.0
+tgcalls_receiver_auto_started = False
 tgcalls_receiver_requested = VIDEOCHAT_TGCALLS_PREVIEW_ENABLED
 tgcalls_receiver_status: dict = {
     "enabled": VIDEOCHAT_TGCALLS_PREVIEW_ENABLED,
@@ -199,6 +217,75 @@ def tgcalls_session_path() -> Path:
 def tgcalls_login_command() -> str:
     session = clean_env(TGCALLS_SESSION) or "data/telethon/videochat_receiver"
     return f"uv run python tgcalls_videochat_probe.py --session \"{session}\" --login-only"
+
+
+def tgcalls_session_file_path() -> Path:
+    session_path = tgcalls_session_path()
+    session_text = str(session_path)
+    if session_text.endswith(".session"):
+        return session_path
+    return Path(f"{session_text}.session")
+
+
+def tgcalls_identity_from_user(user) -> dict:
+    return {
+        "id": str(getattr(user, "id", "") or ""),
+        "username": str(getattr(user, "username", "") or ""),
+        "name": " ".join(
+            part
+            for part in [
+                str(getattr(user, "first_name", "") or "").strip(),
+                str(getattr(user, "last_name", "") or "").strip(),
+            ]
+            if part
+        ).strip(),
+    }
+
+
+def tgcalls_receiver_identity_known() -> bool:
+    identity = tgcalls_receiver_identity if isinstance(tgcalls_receiver_identity, dict) else {}
+    return any(str(identity.get(key) or "").strip() for key in ("id", "username", "name"))
+
+
+async def ensure_tgcalls_receiver_identity() -> dict:
+    global tgcalls_receiver_identity, tgcalls_receiver_identity_checked_at
+    if tgcalls_receiver_identity_known():
+        return tgcalls_receiver_identity
+    if VIDEOCHAT_SUBACCOUNT_USER_ID or VIDEOCHAT_SUBACCOUNT_USERNAME or VIDEOCHAT_SUBACCOUNT_NAME:
+        return tgcalls_receiver_identity
+    if tgcalls_receiver_client is not None:
+        try:
+            tgcalls_receiver_identity = tgcalls_identity_from_user(await tgcalls_receiver_client.get_me())
+        except Exception as exc:
+            print(f"[videochat:tgcalls] active receiver identity unavailable: {exc}", flush=True)
+        return tgcalls_receiver_identity
+    now = time.time()
+    if now - tgcalls_receiver_identity_checked_at < TGCALLS_IDENTITY_REFRESH_SEC:
+        return tgcalls_receiver_identity
+    tgcalls_receiver_identity_checked_at = now
+    if not TD_API_ID or not TD_API_HASH:
+        return tgcalls_receiver_identity
+    if not tgcalls_session_file_path().exists():
+        return tgcalls_receiver_identity
+    try:
+        from telethon import TelegramClient
+    except ImportError:
+        return tgcalls_receiver_identity
+
+    client = None
+    try:
+        client = TelegramClient(str(tgcalls_session_path()), int(TD_API_ID), TD_API_HASH)
+        await client.connect()
+        if not await client.is_user_authorized():
+            return tgcalls_receiver_identity
+        tgcalls_receiver_identity = tgcalls_identity_from_user(await client.get_me())
+    except Exception as exc:
+        print(f"[videochat:tgcalls] receiver identity check failed: {exc}", flush=True)
+    finally:
+        if client is not None:
+            with suppress(Exception):
+                await client.disconnect()
+    return tgcalls_receiver_identity
 
 
 def diagnostic_log(event: str, **fields) -> None:
@@ -379,11 +466,73 @@ async def set_overlay_settings(payload: dict) -> dict | None:
     }
     save_overlay_settings_state()
     await broadcast(overlay_settings_state)
+    await ensure_tgcalls_receiver_identity()
+    await reconcile_tgcalls_auto_join("settings_update", subaccount_present=videochat_state_has_subaccount())
     return overlay_settings_state
+
+
+def bool_setting(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"0", "false", "off", "no", "n"}:
+        return False
+    if text in {"1", "true", "on", "yes", "y"}:
+        return True
+    return default
+
+
+def tgcalls_auto_join_enabled() -> bool:
+    settings = overlay_settings_state.get("settings") if isinstance(overlay_settings_state, dict) else {}
+    avatar = settings.get("avatar") if isinstance(settings, dict) and isinstance(settings.get("avatar"), dict) else {}
+    return bool_setting(avatar.get("subaccountAutoJoin"), VIDEOCHAT_TGCALLS_AUTO_JOIN)
 
 
 def participant_level_key(user_id: str, username: str, name: str) -> str:
     return level_core.level_key(user_id, username, name)
+
+
+def participant_is_subaccount(user_id: str, username: str, name: str) -> bool:
+    normalized_user_id = str(user_id or "").strip()
+    normalized_username = (username or "").strip().lstrip("@").lower()
+    normalized_name = (name or "").strip().lower()
+    if VIDEOCHAT_SUBACCOUNT_USER_ID and normalized_user_id and normalized_user_id == VIDEOCHAT_SUBACCOUNT_USER_ID:
+        return True
+    if VIDEOCHAT_SUBACCOUNT_USERNAME and normalized_username and normalized_username == VIDEOCHAT_SUBACCOUNT_USERNAME.lower():
+        return True
+    if VIDEOCHAT_SUBACCOUNT_NAME and normalized_name and normalized_name == VIDEOCHAT_SUBACCOUNT_NAME.lower():
+        return True
+    identity = tgcalls_receiver_identity if isinstance(tgcalls_receiver_identity, dict) else {}
+    identity_id = str(identity.get("id") or "").strip()
+    identity_username = str(identity.get("username") or "").strip().lstrip("@").lower()
+    identity_name = str(identity.get("name") or "").strip().lower()
+    return bool(
+        (identity_id and normalized_user_id and identity_id == normalized_user_id)
+        or (identity_username and normalized_username and identity_username == normalized_username)
+        or (identity_name and normalized_name and identity_name == normalized_name)
+    )
+
+
+def participant_row_is_subaccount(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return bool(row.get("is_subaccount")) or participant_is_subaccount(
+        str(row.get("id") or row.get("user_id") or ""),
+        str(row.get("username") or ""),
+        str(row.get("name") or ""),
+    )
+
+
+def rows_include_subaccount(rows) -> bool:
+    return any(participant_row_is_subaccount(row) for row in rows or [])
+
+
+def videochat_state_has_subaccount() -> bool:
+    return rows_include_subaccount(videochat_state.get("participants") or [])
 
 
 def level_for_participant(
@@ -515,6 +664,7 @@ def normalize_participants(items, *, collect_notifications: bool = True) -> list
             "level_label": level_label,
             "level_system_enabled": VIDEOCHAT_LEVEL_SYSTEM_ENABLED,
             "is_host": is_host,
+            "is_subaccount": participant_is_subaccount(user_id, username, name),
             "role": role,
             "roles": roles,
         })
@@ -1052,7 +1202,7 @@ async def cleanup_tgcalls_receiver(app, client, joined_chat_id: int = 0) -> None
 
 
 async def run_tgcalls_receiver() -> None:
-    global tgcalls_joined_chat_id, tgcalls_receiver_status, tgcalls_receiver_app, tgcalls_receiver_client, tgcalls_frame_handler_func
+    global tgcalls_joined_chat_id, tgcalls_receiver_status, tgcalls_receiver_app, tgcalls_receiver_client, tgcalls_frame_handler_func, tgcalls_receiver_identity
     if not tgcalls_receiver_requested:
         return
     try:
@@ -1114,6 +1264,14 @@ async def run_tgcalls_receiver() -> None:
             flush=True,
         )
         return
+
+    try:
+        me = await client.get_me()
+        tgcalls_receiver_identity = tgcalls_identity_from_user(me)
+        if videochat_state.get("participants"):
+            await set_videochat_snapshot(videochat_state.get("participants") or [], source="tgcalls_identity", notify_levels=False)
+    except Exception as exc:
+        print(f"[videochat:tgcalls] receiver identity unavailable: {exc}", flush=True)
 
     app = PyTgCalls(client)
     tgcalls_receiver_app = app
@@ -1244,9 +1402,6 @@ async def run_telethon_watcher() -> None:
             password = getpass.getpass("Telegram 2FA password: ")
             await client.sign_in(password=password)
 
-    if VIDEOCHAT_TGCALLS_PREVIEW_ENABLED and tgcalls_receiver_task is None:
-        tgcalls_receiver_task = asyncio.create_task(run_tgcalls_receiver(), name="videochat-tgcalls-receiver")
-
     last_snapshot = ""
     call = None
     try:
@@ -1260,11 +1415,16 @@ async def run_telethon_watcher() -> None:
                         await asyncio.sleep(VIDEOCHAT_WATCH_INTERVAL)
                         continue
                 rows = await collect_participants(client, call)
+                await ensure_tgcalls_receiver_identity()
+                subaccount_present = rows_include_subaccount(rows)
                 active_stream_rows = [row for row in rows if row.get("video") or row.get("screen")]
-                if active_stream_rows and VIDEOCHAT_TGCALLS_AUTO_JOIN and (
-                    tgcalls_receiver_task is None or tgcalls_receiver_task.done()
-                ):
-                    await start_tgcalls_receiver("auto_active_stream")
+                auto_join_enabled = tgcalls_auto_join_enabled()
+                if auto_join_enabled or subaccount_present:
+                    if tgcalls_receiver_task is None or tgcalls_receiver_task.done():
+                        reason = "auto_resolved_call" if auto_join_enabled else "auto_subaccount_present"
+                        await start_tgcalls_receiver(reason)
+                else:
+                    await reconcile_tgcalls_auto_join("watcher_auto_disabled", subaccount_present=subaccount_present)
                 if active_stream_rows:
                     channels = await collect_stream_channels(client, call)
                 else:
@@ -1294,10 +1454,11 @@ async def run_telethon_watcher() -> None:
 
 
 async def start_tgcalls_receiver(reason: str = "api") -> dict:
-    global tgcalls_receiver_task, tgcalls_receiver_requested, tgcalls_receiver_status
+    global tgcalls_receiver_task, tgcalls_receiver_requested, tgcalls_receiver_status, tgcalls_receiver_auto_started
     tgcalls_receiver_requested = True
     if tgcalls_receiver_task is not None and not tgcalls_receiver_task.done():
         return tgcalls_receiver_status
+    tgcalls_receiver_auto_started = str(reason or "").startswith("auto")
     tgcalls_receiver_status = {
         "enabled": True,
         "running": True,
@@ -1311,9 +1472,10 @@ async def start_tgcalls_receiver(reason: str = "api") -> dict:
 
 
 async def stop_tgcalls_receiver(reason: str = "api") -> dict:
-    global tgcalls_receiver_task, tgcalls_receiver_requested, tgcalls_receiver_status, tgcalls_joined_chat_id
+    global tgcalls_receiver_task, tgcalls_receiver_requested, tgcalls_receiver_status, tgcalls_joined_chat_id, tgcalls_receiver_auto_started
     global tgcalls_receiver_app, tgcalls_receiver_client, tgcalls_frame_handler_func
     tgcalls_receiver_requested = False
+    tgcalls_receiver_auto_started = False
     if tgcalls_receiver_task is not None and not tgcalls_receiver_task.done():
         tgcalls_receiver_task.cancel()
         try:
@@ -1341,6 +1503,16 @@ async def stop_tgcalls_receiver(reason: str = "api") -> dict:
     return tgcalls_receiver_status
 
 
+async def reconcile_tgcalls_auto_join(reason: str = "settings", *, subaccount_present: bool = False) -> None:
+    global tgcalls_receiver_auto_started
+    if tgcalls_auto_join_enabled() or subaccount_present:
+        return
+    if tgcalls_receiver_auto_started and tgcalls_receiver_task is not None and not tgcalls_receiver_task.done():
+        await stop_tgcalls_receiver(f"auto_disabled:{reason}")
+    else:
+        tgcalls_receiver_auto_started = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global watcher_task, tgcalls_receiver_task, diagnostic_task, level_store, level_store_mtime, overlay_settings_state
@@ -1355,7 +1527,7 @@ async def lifespan(app: FastAPI):
     watcher_task = asyncio.create_task(run_telethon_watcher(), name="videochat-telethon-watcher")
     if VIDEOCHAT_DIAGNOSTICS_ENABLED:
         diagnostic_task = asyncio.create_task(diagnostic_watchdog(), name="videochat-diagnostic-watchdog")
-        diagnostic_log("startup", port=WEB_PORT, auto_join=VIDEOCHAT_TGCALLS_AUTO_JOIN)
+        diagnostic_log("startup", port=WEB_PORT, auto_join=tgcalls_auto_join_enabled())
     try:
         yield
     finally:
@@ -1411,6 +1583,16 @@ app.mount("/avatars", StaticFiles(directory=str(AVATARS_DIR)), name="avatars")
 app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
 app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
 app.mount("/animations", StaticFiles(directory=str(ANIMATIONS_DIR)), name="animations")
+
+
+@app.middleware("http")
+async def no_store_development_static(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/static/", "/shared/")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1473,6 +1655,201 @@ def require_local_request(request: Request) -> None:
     host = request.client.host if request.client else ""
     if host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="local requests only")
+
+
+def fetch_market_chart(symbol: str, label: str) -> dict:
+    encoded = urllib.parse.quote(symbol, safe="")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=1d&interval=15m"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "tg-chat-obs-layout/market-widget",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as res:
+        payload = json.loads(res.read().decode("utf-8"))
+    result = ((payload.get("chart") or {}).get("result") or [None])[0] or {}
+    meta = result.get("meta") or {}
+    timestamps = result.get("timestamp") or []
+    quote = (((result.get("indicators") or {}).get("quote") or [None])[0] or {})
+    closes = quote.get("close") or []
+    points = [
+        [int(ts), float(close)]
+        for ts, close in zip(timestamps, closes)
+        if close is not None
+    ][-36:]
+    if points:
+        price = float(meta.get("regularMarketPrice") or points[-1][1])
+    else:
+        price = float(meta.get("regularMarketPrice") or 0)
+    previous = meta.get("chartPreviousClose")
+    if previous is None and points:
+        previous = points[0][1]
+    previous = float(previous or price or 0)
+    change = price - previous
+    change_pct = (change / previous * 100.0) if previous else 0.0
+    return {
+        "symbol": symbol,
+        "label": label,
+        "currency": meta.get("currency") or "USD",
+        "price": price,
+        "change": change,
+        "change_pct": change_pct,
+        "points": points,
+        "updated_at": time.time(),
+    }
+
+
+def fetch_market_prices_uncached() -> dict:
+    assets = []
+    errors = []
+    for symbol, label in MARKET_PRICE_SYMBOLS:
+        try:
+            assets.append(fetch_market_chart(symbol, label))
+        except Exception as exc:
+            errors.append({"symbol": symbol, "error": f"{exc.__class__.__name__}: {exc}"})
+    return {
+        "type": "market_prices",
+        "updated_at": time.time(),
+        "assets": assets,
+        "errors": errors,
+    }
+
+
+async def get_market_prices_cached(force: bool = False) -> dict:
+    global market_prices_cache
+    now = time.time()
+    if (
+        not force
+        and market_prices_cache.get("assets")
+        and now - float(market_prices_cache.get("updated_at") or 0.0) < MARKET_PRICE_CACHE_SEC
+    ):
+        return market_prices_cache
+    payload = await asyncio.to_thread(fetch_market_prices_uncached)
+    if payload.get("assets"):
+        market_prices_cache = payload
+    elif not market_prices_cache.get("assets"):
+        market_prices_cache = payload
+    return market_prices_cache
+
+
+def youtube_text(node) -> str:
+    if isinstance(node, str):
+        return node.strip()
+    if not isinstance(node, dict):
+        return ""
+    if node.get("simpleText"):
+        return str(node.get("simpleText") or "").strip()
+    parts = []
+    for run in node.get("runs") or []:
+        if isinstance(run, dict) and run.get("text"):
+            parts.append(str(run.get("text") or ""))
+    return "".join(parts).strip()
+
+
+def youtube_best_thumbnail(node) -> str:
+    thumbnails = []
+    if isinstance(node, dict):
+        thumbnails = node.get("thumbnails") or []
+    if not isinstance(thumbnails, list) or not thumbnails:
+        return ""
+    best = max(
+        (thumb for thumb in thumbnails if isinstance(thumb, dict) and thumb.get("url")),
+        key=lambda thumb: int(thumb.get("width") or 0),
+        default={},
+    )
+    return str(best.get("url") or "").split("?", 1)[0]
+
+
+def collect_youtube_video_renderers(node, out: list[dict]) -> None:
+    if isinstance(node, dict):
+        renderer = node.get("videoRenderer")
+        if isinstance(renderer, dict):
+            video_id = str(renderer.get("videoId") or "")
+            title = youtube_text(renderer.get("title"))
+            if video_id and title:
+                out.append({
+                    "video_id": video_id,
+                    "title": title,
+                    "channel": youtube_text(renderer.get("ownerText") or renderer.get("longBylineText") or renderer.get("shortBylineText")),
+                    "duration": youtube_text(renderer.get("lengthText")),
+                    "published": youtube_text(renderer.get("publishedTimeText")),
+                    "thumbnail": youtube_best_thumbnail(renderer.get("thumbnail")),
+                })
+        for value in node.values():
+            collect_youtube_video_renderers(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            collect_youtube_video_renderers(item, out)
+
+
+def parse_youtube_initial_data(text: str) -> dict:
+    markers = ("var ytInitialData = ", "ytInitialData = ")
+    for marker in markers:
+        index = text.find(marker)
+        if index < 0:
+            continue
+        start = index + len(marker)
+        try:
+            data, _offset = json.JSONDecoder().raw_decode(text[start:])
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("ytInitialData not found")
+
+
+def fetch_youtube_search_uncached(query: str, limit: int = 8) -> dict:
+    query = (query or "").strip()
+    if not query:
+        return {"type": "youtube_search", "query": "", "results": [], "updated_at": time.time()}
+    params = urllib.parse.urlencode({"search_query": query, "hl": "ko", "gl": "KR"})
+    req = urllib.request.Request(
+        f"https://www.youtube.com/results?{params}",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=10) as res:
+        html_text = res.read(3_500_000).decode("utf-8", errors="replace")
+    data = parse_youtube_initial_data(html_text)
+    collected: list[dict] = []
+    collect_youtube_video_renderers(data, collected)
+    deduped = []
+    seen = set()
+    for item in collected:
+        video_id = item.get("video_id")
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return {
+        "type": "youtube_search",
+        "query": query,
+        "results": deduped,
+        "updated_at": time.time(),
+    }
+
+
+async def get_youtube_search_cached(query: str, limit: int = 8) -> dict:
+    key = f"{(query or '').strip().lower()}:{limit}"
+    now = time.time()
+    cached = youtube_search_cache.get(key)
+    if cached and now - float(cached.get("updated_at") or 0.0) < YOUTUBE_SEARCH_CACHE_SEC:
+        return cached
+    payload = await asyncio.to_thread(fetch_youtube_search_uncached, query, limit)
+    youtube_search_cache[key] = payload
+    return payload
 
 
 def validate_proxy_target(raw_url: str) -> urllib.parse.ParseResult:
@@ -1669,6 +2046,131 @@ async def proxy_fire_settings_update(request: Request):
     return await proxy_chat_api("POST", "/api/fire/settings", request)
 
 
+@app.get("/api/market/prices")
+async def get_market_prices(request: Request, refresh: int = 0):
+    require_local_request(request)
+    payload = await get_market_prices_cached(force=bool(refresh))
+    return JSONResponse(payload, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@app.get("/api/youtube/search")
+async def get_youtube_search(request: Request, q: str = "", limit: int = 8):
+    require_local_request(request)
+    safe_limit = max(1, min(12, int(limit or 8)))
+    payload = await get_youtube_search_cached(q, safe_limit)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+def local_game_roms() -> list[dict]:
+    if not GAME_ROM_DIR.is_dir():
+        return []
+    rows = []
+    for path in sorted(GAME_ROM_DIR.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_file() or path.suffix.lower() not in GAME_ROM_EXTS:
+            continue
+        rows.append({
+            "file": path.name,
+            "name": path.stem.replace("_", " ").replace("-", " "),
+            "size": path.stat().st_size,
+        })
+    return rows
+
+
+def resolve_game_rom_file(rom_name: str) -> Path:
+    safe_name = Path(str(rom_name or "")).name
+    path = (GAME_ROM_DIR / safe_name).resolve()
+    if path.parent != GAME_ROM_DIR.resolve() or path.suffix.lower() not in GAME_ROM_EXTS:
+        raise HTTPException(status_code=400, detail="invalid ROM name")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="local ROM not found")
+    return path
+
+
+@app.get("/api/game/roms")
+async def get_game_roms(request: Request):
+    require_local_request(request)
+    return JSONResponse(
+        {"roms": local_game_roms()},
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/api/game/rom/{rom_name}")
+async def get_game_rom(request: Request, rom_name: str):
+    require_local_request(request)
+    path = resolve_game_rom_file(rom_name)
+    return FileResponse(
+        str(path),
+        media_type="application/octet-stream",
+        filename=path.name,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/api/youtube/player", response_class=HTMLResponse)
+async def get_youtube_player(request: Request, video_id: str = ""):
+    require_local_request(request)
+    safe_video_id = video_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", safe_video_id):
+        raise HTTPException(status_code=400, detail="invalid video_id")
+    origin = str(request.base_url).rstrip("/")
+    params = {
+        "autoplay": "1",
+        "rel": "0",
+        "modestbranding": "1",
+        "playsinline": "1",
+        "enablejsapi": "1",
+        "origin": origin,
+    }
+    embed_url = f"https://www.youtube.com/embed/{urllib.parse.quote(safe_video_id)}?{urllib.parse.urlencode(params)}"
+    escaped_embed_url = html.escape(embed_url, quote=True)
+    escaped_origin = html.escape(origin, quote=True)
+    page = f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="origin-when-cross-origin">
+  <title>YouTube Player</title>
+  <style>
+    html, body {{ margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }}
+    iframe {{ display: block; width: 100%; height: 100%; border: 0; background: #000; }}
+  </style>
+</head>
+<body>
+  <iframe
+    id="player"
+    src="{escaped_embed_url}"
+    title="YouTube player"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+    allowfullscreen
+    referrerpolicy="origin-when-cross-origin"></iframe>
+  <script>
+    window.__TG_YOUTUBE_ORIGIN__ = "{escaped_origin}";
+    window.addEventListener("message", (event) => {{
+      const frame = document.getElementById("player");
+      if (!frame || !frame.contentWindow) return;
+      if (!event.data || event.data.type !== "tg-youtube-command") return;
+      try {{
+        frame.contentWindow.postMessage(JSON.stringify({{
+          event: "command",
+          func: event.data.command,
+          args: event.data.args || [],
+        }}), "https://www.youtube.com");
+      }} catch (_) {{}}
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(
+        page,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Referrer-Policy": "origin-when-cross-origin",
+        },
+    )
+
+
 @app.get("/api/videochat/streams")
 async def get_videochat_streams(request: Request):
     require_local_request(request)
@@ -1676,6 +2178,10 @@ async def get_videochat_streams(request: Request):
         **stream_channels_state,
         "tgcalls": {
             **tgcalls_receiver_status,
+            "requested": tgcalls_receiver_requested,
+            "auto_join": tgcalls_auto_join_enabled(),
+            "auto_started": tgcalls_receiver_auto_started,
+            "subaccount_present": videochat_state_has_subaccount(),
             "sources": [
                 {
                     "ssrc": key,
@@ -1697,6 +2203,9 @@ async def get_tgcalls_status(request: Request):
     return {
         **tgcalls_receiver_status,
         "requested": tgcalls_receiver_requested,
+        "auto_join": tgcalls_auto_join_enabled(),
+        "auto_started": tgcalls_receiver_auto_started,
+        "subaccount_present": videochat_state_has_subaccount(),
         "login_command": tgcalls_receiver_status.get("login_command") or tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
     }
@@ -1709,6 +2218,9 @@ async def post_tgcalls_start(request: Request):
     return {
         **status,
         "requested": tgcalls_receiver_requested,
+        "auto_join": tgcalls_auto_join_enabled(),
+        "auto_started": tgcalls_receiver_auto_started,
+        "subaccount_present": videochat_state_has_subaccount(),
         "login_command": status.get("login_command") or tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
     }
@@ -1721,6 +2233,9 @@ async def post_tgcalls_stop(request: Request):
     return {
         **status,
         "requested": tgcalls_receiver_requested,
+        "auto_join": tgcalls_auto_join_enabled(),
+        "auto_started": tgcalls_receiver_auto_started,
+        "subaccount_present": videochat_state_has_subaccount(),
         "login_command": tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
     }

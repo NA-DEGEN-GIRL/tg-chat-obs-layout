@@ -73,6 +73,8 @@ FORCE_LEVEL_DOWN_TEMPLATE = os.getenv(
 ).strip() or "관리자가 {name}(@{username}) 레벨을 강제로 {delta} 내렸습니다. 현재 Lv. {level}"
 VIDEOCHAT_FIRE_USER_COOLDOWN_SEC = float(os.getenv("VIDEOCHAT_FIRE_USER_COOLDOWN_SEC", "3") or "3")
 VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC = float(os.getenv("VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC", "1") or "1")
+VIDEOCHAT_CHEER_DEFAULT_SEC = 5.0
+VIDEOCHAT_CHEER_MAX_SEC = 600.0
 VIDEOCHAT_BOT_NAMES = {
     x.strip().lower()
     for x in os.getenv("VIDEOCHAT_BOT_NAMES", "na_stream_bot").split(",")
@@ -237,6 +239,8 @@ DEFAULT_LEVEL_REASONS: dict[int, str] = {
     0: "기본 방문자",
     1: "커뮤니티 말하기 조건 만족",
     2: "비디오챗 접속 조건 만족",
+    3: "비디오챗 응원 효과 사용",
+    4: "응원봉과 폭죽 효과 모두 사용",
     99: "방장 고정 레벨",
 }
 _level_reasons: dict[int, str] = dict(DEFAULT_LEVEL_REASONS)
@@ -2804,21 +2808,38 @@ def level_usage(command: str) -> str:
     return "사용법: 답글로 /check_level 또는 /check_level @username"
 
 
-def owner_command_list() -> str:
-    return "\n".join([
-        "Owner commands",
-        "/commands, /help - show this list",
-        "/stream_on, /stream_off, /text_on",
-        "/stream_watch, /stream_unwatch",
-        "/stt_on, /stt_off",
-        "/here_on, /here_off",
-        "/check_role, /add_role, /remove_role, /reset_role",
-        "/check_level, /level_scan, /level_up",
-        "/level_scan @username or reply /level_scan",
-        "/level_up @username 1 or reply /level_up -1",
-    ])
+def command_list(*, include_owner: bool = False) -> str:
+    lines = [
+        "명령어",
+        "",
+        "일반 명령어",
+        "/commands, /help - 이 도움말을 표시합니다.",
+        "/fire - 비디오챗 캐릭터 위치에서 폭죽 효과를 실행합니다. 쿨다운이 적용됩니다.",
+        f"/cheer [초] - 응원봉을 흔듭니다. 기본 {VIDEOCHAT_CHEER_DEFAULT_SEC:g}초, 최대 {VIDEOCHAT_CHEER_MAX_SEC:g}초입니다.",
+        "/cheer off - 응원봉 효과를 멈춥니다.",
+    ]
+    if include_owner:
+        lines.extend([
+            "",
+            "관리자 전용 명령어",
+            "/stream_on - 채팅을 텍스트와 사진 허용 상태로 전환합니다.",
+            "/text_on - 텍스트만 허용하고 사진 등 미디어를 차단합니다.",
+            "/stream_off - 일반 사용자의 채팅 권한을 음소거 상태로 전환합니다.",
+            "/stt_on, /stt_off - STT 송출을 켜거나 끕니다.",
+            "/here_on, /here_off - 현재 스레드를 STT/응답 대상 위치로 지정하거나 해제합니다.",
+            "/check_role - 대상의 역할을 확인합니다. 답글 또는 @username 사용 가능.",
+            "/add_role - 대상에게 역할을 추가합니다. 예: /add_role @username bot",
+            "/remove_role - 대상의 역할을 제거합니다. 예: /remove_role @username bot",
+            "/reset_role - 대상의 역할을 기본값으로 되돌립니다.",
+            "/check_level - 대상의 레벨과 역할을 확인합니다.",
+            "/level_scan [개수] - 레벨 목록을 확인합니다. @username 또는 답글 대상도 가능.",
+            "/level_up - 대상 레벨을 수동 조정합니다. 예: /level_up @username 1 또는 답글로 /level_up -1",
+        ])
+    return "\n".join(lines)
 
 
+# Legacy manual stream-watch helpers. The bot commands are intentionally no longer
+# registered because the sub-account receiver auto-joins and keeps receiving.
 def videochat_tgcalls_api_request(action: str, *, method: str = "POST", timeout: float = 5.0) -> dict:
     if action not in {"start", "stop", "status"}:
         raise ValueError("unsupported tgcalls action")
@@ -2883,8 +2904,7 @@ def format_stream_watch_error(exc: Exception) -> str:
     return f"stream watcher failed: {exc.__class__.__name__}: {exc}"
 
 
-@bot.message_handler(commands=["stream_watch"])
-def cmd_stream_watch(message):
+def legacy_cmd_stream_watch(message):
     if not _is_owner(message):
         return
     emit_text_overlay(message)
@@ -2897,8 +2917,7 @@ def cmd_stream_watch(message):
     reply_to_with_overlay(message, format_stream_watch_status(payload))
 
 
-@bot.message_handler(commands=["stream_unwatch", "stream_watch_off"])
-def cmd_stream_unwatch(message):
+def legacy_cmd_stream_unwatch(message):
     if not _is_owner(message):
         return
     emit_text_overlay(message)
@@ -3000,6 +3019,7 @@ def notify_videochat_level_effect(profile: dict, old_level: int, new_level: int,
             "roles": roles,
             "level": new_level,
             "level_label": "Lv. 99" if is_host else f"Lv. {new_level}",
+            "reason": level_reason(new_level),
             "color": color_for(color_seed) if color_seed else USER_COLOR_PALETTE[0],
         }),
         main_loop,
@@ -3035,12 +3055,40 @@ def maybe_emit_level_notice(profile: dict) -> None:
         notify_videochat_level_effect(profile, old_level, new_level)
 
 
+def maybe_emit_videochat_effect_level_notice(profile: dict, effect: str) -> None:
+    if not VIDEOCHAT_LEVEL_SYSTEM_ENABLED or profile.get("is_bot"):
+        return
+    record, old_level, new_level = _level_system.observe_videochat_effect(profile, effect)
+    if new_level <= old_level:
+        return
+    try:
+        last_notified = int(record.get("last_notified_level", 0) or 0)
+    except (TypeError, ValueError):
+        last_notified = 0
+    if new_level <= last_notified:
+        return
+    notice_profile = profile_from_level_record(record)
+    text = format_level_notice(LEVEL_UP_TEMPLATE, notice_profile, new_level, old_level)
+    key = str(record.get("key") or _level_system.key_for_profile(notice_profile))
+    try:
+        print(f"[LEVEL] videochat effect notice emitted: {old_level}->{new_level} ({effect})", flush=True)
+        send_message_with_overlay(CHAT_ID, text)
+    except Exception as exc:
+        print(f"[WARN] videochat effect level notice failed: {exc}", flush=True)
+        return
+    if key:
+        _level_system.mark_notified_level(key, new_level)
+    notify_videochat_level_reload()
+    notify_videochat_level_effect(notice_profile, old_level, new_level)
+
+
 @bot.message_handler(commands=["commands", "help"])
-def cmd_owner_commands(message):
-    if not _is_owner(message):
+def cmd_commands(message):
+    is_owner = _is_owner(message)
+    if not is_owner and not _is_overlay_source(message):
         return
     emit_text_overlay(message)
-    reply_to_with_overlay(message, owner_command_list())
+    reply_to_with_overlay(message, command_list(include_owner=is_owner))
 
 
 @bot.message_handler(commands=["check_level"])
@@ -3157,6 +3205,56 @@ def fire_cooldown_allowed(profile: dict) -> bool:
         return True
 
 
+def parse_cheer_command(args: list[str]) -> tuple[str, float]:
+    if args:
+        token = str(args[0] or "").strip().lower()
+        if token in {"off", "stop"}:
+            return "stop", 0.0
+        try:
+            seconds = float(token)
+        except ValueError:
+            seconds = VIDEOCHAT_CHEER_DEFAULT_SEC
+    else:
+        seconds = VIDEOCHAT_CHEER_DEFAULT_SEC
+    if seconds <= 0:
+        return "stop", 0.0
+    return "start", max(1.0, min(VIDEOCHAT_CHEER_MAX_SEC, seconds))
+
+
+def videochat_effect_profile_payload(profile: dict) -> dict:
+    return {
+        "name": profile["name"],
+        "speaker_id": profile["speaker_id"],
+        "username": profile["username"],
+        "is_host": profile["is_host"],
+        "is_bot": profile.get("is_bot", False),
+        "role": profile.get("role", ""),
+        "roles": profile.get("roles", []),
+        "color": color_for(int(profile["speaker_id"])) if profile["speaker_id"].lstrip("-").isdigit() else USER_COLOR_PALETTE[0],
+    }
+
+
+@bot.message_handler(commands=["cheer"])
+def cmd_cheer(message):
+    if not _is_overlay_source(message):
+        return
+    emit_text_overlay(message)
+    profile = enrich_profile_level(message_profile(message))
+    maybe_emit_level_notice(profile)
+    action, duration_sec = parse_cheer_command(role_command_args(message))
+    payload = {
+        "type": "videochat_effect",
+        "effect": "cheer",
+        "action": action,
+        **videochat_effect_profile_payload(profile),
+    }
+    if action == "start":
+        payload["duration_sec"] = duration_sec
+        maybe_emit_videochat_effect_level_notice(profile, "cheer")
+    if main_loop is not None:
+        asyncio.run_coroutine_threadsafe(broadcast(payload), main_loop)
+
+
 @bot.message_handler(commands=["fire"])
 def cmd_fire(message):
     if not _is_overlay_source(message):
@@ -3166,19 +3264,13 @@ def cmd_fire(message):
     maybe_emit_level_notice(profile)
     if not fire_cooldown_allowed(profile):
         return
+    maybe_emit_videochat_effect_level_notice(profile, "fire")
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
             broadcast({
                 "type": "videochat_effect",
                 "effect": "fireworks",
-                "name": profile["name"],
-                "speaker_id": profile["speaker_id"],
-                "username": profile["username"],
-                "is_host": profile["is_host"],
-                "is_bot": profile.get("is_bot", False),
-                "role": profile.get("role", ""),
-                "roles": profile.get("roles", []),
-                "color": color_for(int(profile["speaker_id"])) if profile["speaker_id"].lstrip("-").isdigit() else USER_COLOR_PALETTE[0],
+                **videochat_effect_profile_payload(profile),
                 "cooldown": {
                     "user_sec": VIDEOCHAT_FIRE_USER_COOLDOWN_SEC,
                     "global_sec": VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC,

@@ -26,6 +26,16 @@
     <button id="avatar-size-up" type="button" title="캐릭터 위 이름표 전체 확대">A+</button>
     <button id="bubble-size-down" type="button" title="말풍선 전체 축소">B-</button>
     <button id="bubble-size-up" type="button" title="말풍선 전체 확대">B+</button>
+    <label class="effect-control" title="이름표와 캐릭터 머리 사이 거리(px)">
+      <span>head</span>
+      <input id="avatar-head-gap" type="number" min="-80" max="160" step="2" value="0">
+    </label>
+    <label class="effect-control" title="말풍선과 이름표 사이 거리(px)">
+      <span>talk</span>
+      <input id="bubble-card-gap" type="number" min="-80" max="220" step="2" value="0">
+    </label>
+    <button id="subaccount-toggle" type="button" title="부계정 캐릭터 보이기/숨기기">sub hide</button>
+    <button id="subaccount-auto-toggle" type="button" title="부계정 리시버 자동 입장 켜기/끄기">auto on</button>
     <button id="toast-size-down" type="button" title="entry/exit message smaller">E-</button>
     <button id="toast-size-up" type="button" title="entry/exit message larger">E+</button>
     <label class="effect-control" title="entry/exit message style">
@@ -44,6 +54,14 @@
     <label class="effect-control message-template" title="exit message template, use {name}">
       <span>leave</span>
       <input id="exit-message-template" type="text" value="{name} 안녕 다음에 또봐요">
+    </label>
+    <label class="effect-control message-template" title="level up message template, use {name}, {old_level}, {new_level}, {level}, {delta}">
+      <span>lv+</span>
+      <input id="level-up-message-template" type="text" value="{name} 레벨 업 Lv. {old_level} → {new_level}">
+    </label>
+    <label class="effect-control message-template" title="level down message template, use {name}, {old_level}, {new_level}, {level}, {delta}">
+      <span>lv-</span>
+      <input id="level-down-message-template" type="text" value="{name} 레벨 다운 Lv. {old_level} → {new_level}">
     </label>
     <label class="effect-control" title="entry effect">
       <span>in</span>

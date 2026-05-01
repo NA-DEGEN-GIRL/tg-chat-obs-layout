@@ -42,6 +42,17 @@ data/
 logs/
 *.log
 
+# Local game ROMs / emulator saves. Keep copyrighted or personal files out of git.
+*.gb
+*.gbc
+*.gba
+*.nes
+*.sfc
+*.smc
+*.rom
+*.sav
+*.state
+
 # ─── IDE / 에디터 ───
 .vscode/
 .idea/

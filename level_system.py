@@ -180,7 +180,54 @@ class LevelStore:
             if current >= 1:
                 return max(current, 2)
             return current
+        try:
+            manual_level_at = float(record.get("manual_level_at", 0) or 0)
+        except (TypeError, ValueError):
+            manual_level_at = 0
+        try:
+            cheer_seen_at = float(record.get("videochat_cheer_seen_at", 0) or 0)
+        except (TypeError, ValueError):
+            cheer_seen_at = 0
+        try:
+            fire_seen_at = float(record.get("videochat_fire_seen_at", 0) or 0)
+        except (TypeError, ValueError):
+            fire_seen_at = 0
+        cheer_seen = bool(cheer_seen_at and cheer_seen_at > manual_level_at)
+        fire_seen = bool(fire_seen_at and fire_seen_at > manual_level_at)
+        if cheer_seen and fire_seen:
+            return max(current, 4)
+        if cheer_seen or fire_seen:
+            return max(current, 3)
         return current
+
+    def observe_videochat_effect(self, profile: dict, effect: str) -> tuple[dict[str, Any], int, int]:
+        effect_key = str(effect or "").strip().lower()
+        field = {
+            "cheer": "videochat_cheer_seen_at",
+            "fire": "videochat_fire_seen_at",
+            "firework": "videochat_fire_seen_at",
+            "fireworks": "videochat_fire_seen_at",
+        }.get(effect_key)
+        record, _changed = self.observe_profile(profile, source="chat")
+        if not field:
+            level = clamp_level(record.get("level", self.minimum), minimum=self.minimum, maximum=self.maximum)
+            return record, level, level
+        key = self.key_for_profile(profile)
+        now = time.time()
+        with self.lock:
+            target = self.users.get(key)
+            if not isinstance(target, dict):
+                target = dict(record)
+                self.users[key] = target
+            old = clamp_level(target.get("level", self.minimum), minimum=self.minimum, maximum=self.maximum)
+            target[field] = now
+            next_level = self._promoted_level(target, "videochat_effect")
+            if target.get("level") != next_level:
+                target["level"] = next_level
+            target["updated_at"] = now
+            record = dict(target)
+        self.save()
+        return record, old, int(record.get("level", old) or old)
 
     def observe_profile(
         self,
@@ -314,6 +361,12 @@ class LevelStore:
             target["last_notified_level"] = new
             if "king" not in roles:
                 target["manual_level_at"] = now
+                if new < old:
+                    for field in (
+                        "videochat_cheer_seen_at",
+                        "videochat_fire_seen_at",
+                    ):
+                        target.pop(field, None)
                 if new < 2:
                     for field in (
                         "videochat_seen_at",

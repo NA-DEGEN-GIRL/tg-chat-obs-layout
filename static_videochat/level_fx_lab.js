@@ -17,11 +17,16 @@
     effects: [],
     level: 1,
     drag: null,
+    clawMove: null,
+    placeIndex: 0,
+    characterScale: 1,
   };
 
   const warm = new THREE.Color(0xffd45c);
   const cool = new THREE.Color(0x7fb6ff);
   const white = new THREE.Color(0xffffff);
+  const CHEER_DEFAULT_SEC = 5;
+  const CHEER_MAX_SEC = 600;
 
   function easeOutCubic(t) {
     return 1 - Math.pow(1 - t, 3);
@@ -29,6 +34,37 @@
 
   function easeInOut(t) {
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
+  }
+
+  function phase(value, start, end) {
+    return clamp01((value - start) / Math.max(0.0001, end - start));
+  }
+
+  function lerpValue(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  function currentCharacterScale() {
+    const scale = Number(state.characterScale);
+    return Math.max(0.28, Math.min(1.15, Number.isFinite(scale) ? scale : 1));
+  }
+
+  function characterClawMetrics(scale = currentCharacterScale()) {
+    const s = Math.max(0.28, Math.min(1.15, scale));
+    const sizeT = clamp01((s - 0.28) / 0.87);
+    const headTopY = 1.31 * s;
+    const grabClearance = 0.3 + s * 0.12;
+    return {
+      scale: s,
+      grabHeadY: headTopY + grabClearance,
+      maxBend: lerpValue(0.84, 0.52, sizeT),
+      releaseHop: 0.075 * s,
+      sway: 0.018 * Math.max(0.45, s),
+    };
   }
 
   function orbitPopGapMs() {
@@ -136,6 +172,12 @@
     armR.position.set(0.33, 0.69, 0.06);
     armL.rotation.set(0.14, 0, -0.56);
     armR.rotation.set(0.14, 0, 0.56);
+    group.userData.arms = {
+      left: armL,
+      right: armR,
+      leftBase: armL.rotation.clone(),
+      rightBase: armR.rotation.clone(),
+    };
     group.add(armL, armR);
 
     const legGeo = new THREE.CapsuleGeometry(0.065, 0.3, 4, 8);
@@ -160,6 +202,7 @@
         group.userData.parts.push(obj);
       }
     });
+    attachCheerRig(group);
     scene.add(group);
     return group;
   }
@@ -175,6 +218,215 @@
     });
   }
 
+  function createCheerStick(color) {
+    const stick = new THREE.Group();
+    const handle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.02, 0.18, 10),
+      new THREE.MeshStandardMaterial({ color: 0x1b1f28, roughness: 0.46 })
+    );
+    handle.position.y = -0.07;
+    const core = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.026, 0.52, 16),
+      makeAdditiveMaterial(color, 0.96)
+    );
+    core.position.y = 0.23;
+    const glow = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.54, 18, 1, true),
+      makeAdditiveMaterial(color, 0.24)
+    );
+    glow.position.y = 0.23;
+    const tip = new THREE.Mesh(
+      new THREE.SphereGeometry(0.044, 14, 10),
+      makeAdditiveMaterial(color.clone().lerp(white, 0.2), 0.72)
+    );
+    tip.position.y = 0.51;
+    stick.add(handle, glow, core, tip);
+    stick.traverse((obj) => {
+      obj.userData.isCheerStick = true;
+    });
+    stick.visible = false;
+    return { group: stick, glow, core, tip };
+  }
+
+  function attachCheerRig(group) {
+    const left = createCheerStick(new THREE.Color(0x4dfff1));
+    const right = createCheerStick(new THREE.Color(0xdfff55));
+    group.add(left.group, right.group);
+    group.userData.cheer = {
+      left,
+      right,
+      until: 0,
+      startedAt: 0,
+    };
+  }
+
+  function createClawRig() {
+    const root = new THREE.Group();
+    root.visible = false;
+
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0xb8c7d8,
+      metalness: 0.72,
+      roughness: 0.24,
+      emissive: 0x15283a,
+      emissiveIntensity: 0.08,
+    });
+    const darkSteel = new THREE.MeshStandardMaterial({
+      color: 0x435061,
+      metalness: 0.62,
+      roughness: 0.32,
+    });
+    const cableMat = new THREE.MeshStandardMaterial({
+      color: 0xd9e8f5,
+      metalness: 0.8,
+      roughness: 0.18,
+    });
+    const glowMat = makeAdditiveMaterial(new THREE.Color(0x8bdcff), 0.22);
+
+    const carriage = new THREE.Group();
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.08, 0.12), darkSteel);
+    const block = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.26), steel);
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), makeAdditiveMaterial(new THREE.Color(0x8bdcff), 0.78));
+    block.position.y = -0.08;
+    lamp.position.set(0, -0.22, 0.12);
+    carriage.add(rail, block, lamp);
+    root.add(carriage);
+
+    const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1, 10), cableMat);
+    cable.position.y = -0.5;
+    root.add(cable);
+
+    const head = new THREE.Group();
+    const hub = new THREE.Mesh(new THREE.SphereGeometry(0.14, 18, 12), steel);
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.014, 8, 36), darkSteel);
+    collar.rotation.x = Math.PI / 2;
+    head.add(hub, collar);
+
+    const prongs = [];
+    const upperGeo = new THREE.CylinderGeometry(0.022, 0.026, 0.28, 10);
+    const lowerGeo = new THREE.CylinderGeometry(0.02, 0.024, 0.28, 10);
+    const jointGeo = new THREE.SphereGeometry(0.032, 10, 8);
+    const tipGeo = new THREE.SphereGeometry(0.04, 12, 8);
+    for (let i = 0; i < 4; i += 1) {
+      const angle = i * Math.PI / 2 + Math.PI / 4;
+      const pivot = new THREE.Group();
+      pivot.userData.angle = angle;
+      pivot.userData.openRadius = 0.34;
+      pivot.userData.hingeY = -0.28;
+      pivot.userData.fingerLength = 0.28;
+      pivot.rotation.y = Math.PI / 2 - angle;
+      const arm = new THREE.Mesh(upperGeo, steel);
+      arm.position.set(0, -0.14, 0);
+      const joint = new THREE.Mesh(jointGeo, darkSteel);
+      joint.position.set(0, pivot.userData.hingeY, 0);
+      const finger = new THREE.Mesh(lowerGeo, steel);
+      const tip = new THREE.Mesh(tipGeo, steel);
+      pivot.userData.finger = finger;
+      pivot.userData.tip = tip;
+      pivot.add(arm, joint, finger, tip);
+      head.add(pivot);
+      prongs.push(pivot);
+    }
+    root.add(head);
+
+    const grabRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.44, 0.016, 8, 72),
+      glowMat
+    );
+    grabRing.rotation.x = Math.PI / 2;
+    grabRing.visible = false;
+    root.add(grabRing);
+
+    const target = new THREE.Group();
+    target.visible = false;
+    const targetRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.42, 0.52, 72),
+      makeAdditiveMaterial(new THREE.Color(0x7efcff), 0.46)
+    );
+    targetRing.rotation.x = -Math.PI / 2;
+    targetRing.position.y = 0.026;
+    const targetDot = new THREE.Mesh(
+      new THREE.CircleGeometry(0.12, 32),
+      makeAdditiveMaterial(new THREE.Color(0xffffff), 0.16)
+    );
+    targetDot.rotation.x = -Math.PI / 2;
+    targetDot.position.y = 0.028;
+    target.add(targetRing, targetDot);
+
+    scene.add(root);
+    scene.add(target);
+    return { root, cable, head, prongs, grabRing, target, targetRing };
+  }
+
+  function clampCheerSeconds(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds)) return CHEER_DEFAULT_SEC;
+    return Math.max(1, Math.min(CHEER_MAX_SEC, seconds));
+  }
+
+  function cheerSecondsInput() {
+    const input = document.getElementById("cheer-sec");
+    const seconds = clampCheerSeconds(input?.value);
+    if (input) input.value = String(Math.round(seconds));
+    return seconds;
+  }
+
+  function startCheer(seconds = CHEER_DEFAULT_SEC) {
+    const clamped = clampCheerSeconds(seconds);
+    character.userData.cheer.until = performance.now() + clamped * 1000;
+    character.userData.cheer.startedAt = performance.now();
+  }
+
+  function stopCheer() {
+    character.userData.cheer.until = 0;
+  }
+
+  function runCheerCommand(text) {
+    const parts = String(text || "").trim().split(/\s+/).filter(Boolean);
+    const command = String(parts[0] || "").replace(/^\/+/, "").toLowerCase();
+    if (command && command !== "cheer") return;
+    const arg = String(parts[1] || "").toLowerCase();
+    if (arg === "off" || arg === "stop") {
+      stopCheer();
+      return;
+    }
+    startCheer(arg ? clampCheerSeconds(arg) : CHEER_DEFAULT_SEC);
+  }
+
+  function updateCheerStick(stick, side, wave, lift, pulse) {
+    const dir = side === "left" ? -1 : 1;
+    stick.group.traverse((obj) => {
+      obj.visible = true;
+    });
+    stick.group.position.set(dir * (0.49 + wave * 0.035), 0.66 + lift, 0.17);
+    stick.group.rotation.set(0.48 + Math.abs(wave) * 0.14, 0.08 * dir, dir * 0.36 + wave * 0.62);
+    stick.glow.material.opacity = 0.18 + pulse * 0.18;
+    stick.core.material.opacity = 0.72 + pulse * 0.24;
+    stick.tip.material.opacity = 0.42 + pulse * 0.38;
+    stick.group.scale.setScalar(1 + pulse * 0.08);
+  }
+
+  function updateCheer(now) {
+    const rig = character.userData.cheer;
+    const arms = character.userData.arms;
+    if (!rig || !arms) return false;
+    arms.left.rotation.copy(arms.leftBase);
+    arms.right.rotation.copy(arms.rightBase);
+    if ((rig.until || 0) <= now) {
+      rig.left.group.visible = false;
+      rig.right.group.visible = false;
+      return false;
+    }
+    const wave = Math.sin(now * 0.018);
+    const bounce = Math.sin(now * 0.027);
+    const pulse = 0.5 + Math.sin(now * 0.042) * 0.5;
+    arms.left.rotation.set(0.34 + bounce * 0.08, 0.02, -1.08 + wave * 0.48);
+    arms.right.rotation.set(0.34 - bounce * 0.08, -0.02, 1.08 + wave * 0.48);
+    updateCheerStick(rig.left, "left", wave, 0.02 + Math.abs(wave) * 0.05, pulse);
+    updateCheerStick(rig.right, "right", wave, 0.02 + Math.abs(wave) * 0.05, 1 - pulse * 0.7);
+    return true;
+  }
+
   function clearEffects() {
     for (const effect of state.effects) {
       scene.remove(effect.group);
@@ -187,6 +439,159 @@
   }
 
   const character = makeCharacter();
+  const clawRig = createClawRig();
+  const clawTargets = [
+    new THREE.Vector3(1.45, 0, 1.1),
+    new THREE.Vector3(1.15, 0, -1.22),
+    new THREE.Vector3(-1.55, 0, -1.05),
+    new THREE.Vector3(-1.35, 0, 1.3),
+  ];
+
+  function setPlaceStatus(text) {
+    const el = document.getElementById("place-state");
+    if (el) el.textContent = text;
+  }
+
+  function updateClawRigPose(worldX, worldZ, headY, close, pulse = 0, metrics = characterClawMetrics()) {
+    const topY = 3.38;
+    const cableLength = Math.max(0.16, topY - headY);
+    clawRig.root.visible = true;
+    clawRig.root.position.set(worldX, topY, worldZ);
+    clawRig.cable.position.y = -cableLength / 2;
+    clawRig.cable.scale.set(1, cableLength, 1);
+    clawRig.head.position.y = -cableLength;
+    clawRig.grabRing.position.set(0, -cableLength - 0.4, 0);
+    clawRig.grabRing.visible = close > 0.08;
+    clawRig.grabRing.scale.setScalar(0.62 + close * 0.28 + Math.sin(pulse) * 0.02);
+    clawRig.grabRing.material.opacity = (0.08 + close * 0.2) * (0.8 + Math.sin(pulse * 1.7) * 0.2);
+    for (const prong of clawRig.prongs) {
+      const angle = prong.userData.angle;
+      const hingeY = prong.userData.hingeY;
+      const length = prong.userData.fingerLength;
+      const bend = lerpValue(0.03, metrics.maxBend, close);
+      prong.position.set(Math.cos(angle) * prong.userData.openRadius, 0, Math.sin(angle) * prong.userData.openRadius);
+      prong.rotation.set(0, Math.PI / 2 - angle, 0);
+      prong.userData.finger.position.set(0, hingeY - Math.cos(bend) * length * 0.5, -Math.sin(bend) * length * 0.5);
+      prong.userData.finger.rotation.set(bend, 0, 0);
+      prong.userData.tip.position.set(0, hingeY - Math.cos(bend) * length, -Math.sin(bend) * length);
+    }
+  }
+
+  function startClawPlace() {
+    const from = character.position.clone();
+    from.y = 0;
+    const target = clawTargets[state.placeIndex % clawTargets.length].clone();
+    state.placeIndex += 1;
+    state.clawMove = {
+      start: performance.now(),
+      duration: 3700,
+      from,
+      to: target,
+      sway: (Math.random() - 0.5) * 0.7,
+      scale: currentCharacterScale(),
+    };
+    clawRig.target.visible = true;
+    clawRig.target.position.set(target.x, 0, target.z);
+    setPlaceStatus("target preview");
+  }
+
+  function stopClawPlace({ resetPosition = false } = {}) {
+    state.clawMove = null;
+    clawRig.root.visible = false;
+    clawRig.target.visible = false;
+    if (resetPosition) {
+      character.position.set(-1.35, 0, 1.3);
+      character.rotation.y = Math.atan2(-character.position.x, -character.position.z);
+    }
+    setPlaceStatus("idle");
+  }
+
+  function updateClawPlace(now) {
+    const move = state.clawMove;
+    if (!move) return;
+    const t = clamp01((now - move.start) / move.duration);
+    const from = move.from;
+    const to = move.to;
+    const metrics = characterClawMetrics(move.scale);
+    const highHeadY = 2.82;
+    const grabHeadY = metrics.grabHeadY;
+    const carryY = highHeadY - grabHeadY;
+    let headY = highHeadY;
+    let close = 0;
+    let x = from.x;
+    let z = from.z;
+    let y = 0;
+    let status = "arm lowering";
+
+    if (t < 0.2) {
+      const p = easeInOut(phase(t, 0.02, 0.2));
+      headY = lerpValue(highHeadY, grabHeadY, p);
+    } else if (t < 0.32) {
+      const p = easeOutCubic(phase(t, 0.2, 0.32));
+      headY = grabHeadY + Math.sin(p * Math.PI) * 0.035;
+      close = p;
+      status = "grab";
+    } else if (t < 0.5) {
+      const p = easeInOut(phase(t, 0.32, 0.5));
+      headY = lerpValue(grabHeadY, highHeadY, p);
+      close = 1;
+      y = lerpValue(0, carryY, p);
+      status = "lift";
+    } else if (t < 0.72) {
+      const p = easeInOut(phase(t, 0.5, 0.72));
+      x = lerpValue(from.x, to.x, p);
+      z = lerpValue(from.z, to.z, p);
+      const sway = Math.sin((now - move.start) * 0.012 + move.sway);
+      y = carryY + Math.abs(sway) * metrics.sway;
+      headY = highHeadY + Math.abs(Math.sin((now - move.start) * 0.009)) * 0.012;
+      close = 1;
+      status = "carry";
+    } else if (t < 0.86) {
+      const p = easeInOut(phase(t, 0.72, 0.86));
+      x = to.x;
+      z = to.z;
+      y = lerpValue(carryY, 0, p);
+      headY = lerpValue(highHeadY, grabHeadY, p);
+      close = 1;
+      status = "drop";
+    } else if (t < 0.94) {
+      const p = easeOutCubic(phase(t, 0.86, 0.94));
+      x = to.x;
+      z = to.z;
+      y = Math.sin(p * Math.PI) * metrics.releaseHop;
+      headY = grabHeadY;
+      close = 1 - p;
+      status = "release";
+    } else {
+      const p = easeOutCubic(phase(t, 0.94, 1));
+      x = to.x;
+      z = to.z;
+      headY = lerpValue(grabHeadY, highHeadY, p);
+      close = 0;
+      status = "retract";
+    }
+
+    const clawX = t < 0.5 ? from.x : (t < 0.72 ? x : to.x);
+    const clawZ = t < 0.5 ? from.z : (t < 0.72 ? z : to.z);
+    const carryActive = t > 0.32 && t < 0.86;
+    const subtleSway = carryActive ? Math.sin(now * 0.014 + move.sway) * 0.028 * Math.max(0.55, metrics.scale) : 0;
+    updateClawRigPose(clawX + subtleSway, clawZ, headY, close, now * 0.02, metrics);
+    character.position.set(x + subtleSway, y, z);
+    character.rotation.y = Math.atan2(-x, -z);
+    character.rotation.z = 0;
+    const scalePulse = t > 0.2 && t < 0.34 ? 1 - Math.sin(phase(t, 0.2, 0.34) * Math.PI) * 0.045 : 1;
+    character.scale.multiplyScalar(scalePulse);
+    clawRig.target.position.set(to.x, 0, to.z);
+    clawRig.target.scale.setScalar(1 + Math.sin(now * 0.008) * 0.055);
+    clawRig.targetRing.material.opacity = 0.28 + Math.sin(now * 0.01) * 0.12;
+    setPlaceStatus(status);
+
+    if (t >= 1) {
+      character.position.copy(to);
+      character.rotation.y = Math.atan2(-to.x, -to.z);
+      stopClawPlace();
+    }
+  }
 
   function createBeamEffect(kind) {
     const isDown = kind === "down";
@@ -611,26 +1016,28 @@
     const start = character.userData.effectStart || 0;
     const kind = character.userData.effectKind;
     const age = now - start;
+    const baseScale = currentCharacterScale();
     character.position.y = 0;
     character.rotation.z = 0;
-    character.scale.setScalar(1);
+    character.scale.setScalar(baseScale);
     for (const obj of character.userData.parts) {
       obj.material.color.copy(obj.material.userData.baseColor);
       if (obj.material.emissive) obj.material.emissive.setHex(0x000000);
     }
+    updateCheer(now);
     if (!kind || age > 1050) return;
     const t = Math.min(1, age / 1050);
     if (kind === "down") {
       const shake = Math.sin(t * Math.PI * 16) * (1 - t) * 0.055;
       character.rotation.z = shake;
-      character.scale.setScalar(1 - Math.sin(t * Math.PI) * 0.045);
+      character.scale.setScalar(baseScale * (1 - Math.sin(t * Math.PI) * 0.045));
       for (const obj of character.userData.parts) {
         obj.material.color.lerp(cool, Math.sin(t * Math.PI) * 0.32);
       }
     } else {
-      const hop = Math.sin(t * Math.PI) * 0.28;
+      const hop = Math.sin(t * Math.PI) * 0.28 * baseScale;
       character.position.y = hop;
-      character.scale.setScalar(1 + Math.sin(t * Math.PI) * 0.07);
+      character.scale.setScalar(baseScale * (1 + Math.sin(t * Math.PI) * 0.07));
       for (const obj of character.userData.parts) {
         if (obj.material.emissive) {
           obj.material.emissive.copy(warm);
@@ -652,7 +1059,7 @@
   }
 
   function updateLabel() {
-    const point = character.position.clone().add(new THREE.Vector3(0, 1.75, 0));
+    const point = character.position.clone().add(new THREE.Vector3(0, 1.75 * currentCharacterScale(), 0));
     point.project(camera);
     label.style.left = `${(point.x * 0.5 + 0.5) * window.innerWidth}px`;
     label.style.top = `${(-point.y * 0.5 + 0.5) * window.innerHeight}px`;
@@ -670,6 +1077,7 @@
     resize();
     updateCamera();
     updateCharacter(now);
+    updateClawPlace(now);
     updateEffects(now);
     updateLabel();
     renderer.render(scene, camera);
@@ -688,8 +1096,31 @@
   document.getElementById("fire-ring").onclick = triggerFireRing;
   document.getElementById("fire-orbit").onclick = triggerFireOrbit;
   document.getElementById("fire-orbit-finale").onclick = triggerFireOrbitFinale;
+  document.getElementById("cheer-default").onclick = () => startCheer(CHEER_DEFAULT_SEC);
+  document.getElementById("cheer-custom").onclick = () => startCheer(cheerSecondsInput());
+  document.getElementById("cheer-off").onclick = stopCheer;
+  document.getElementById("cheer-command-run").onclick = () => runCheerCommand(document.getElementById("cheer-command")?.value);
+  document.getElementById("cheer-command").addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    runCheerCommand(ev.currentTarget.value);
+  });
+  function setCharacterScale(scale) {
+    state.characterScale = Math.max(0.28, Math.min(1.15, Number(scale) || 1));
+    stopClawPlace();
+    document.querySelectorAll(".scale-preset").forEach((button) => {
+      button.classList.toggle("active", Math.abs(Number(button.dataset.scale) - state.characterScale) < 0.001);
+    });
+    setPlaceStatus(`scale ${state.characterScale.toFixed(2)}`);
+  }
+  document.querySelectorAll(".scale-preset").forEach((button) => {
+    button.addEventListener("click", () => setCharacterScale(button.dataset.scale));
+  });
+  document.getElementById("place-claw").onclick = startClawPlace;
   document.getElementById("reset").onclick = () => {
     clearEffects();
+    stopCheer();
+    stopClawPlace({ resetPosition: true });
+    setCharacterScale(1);
     state.level = 1;
     levelEl.textContent = "Lv. 1";
   };

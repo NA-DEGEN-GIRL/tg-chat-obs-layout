@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="origin-when-cross-origin">
+  <title>YouTube Player</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #player,
+    #empty {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #000;
+    }
+
+    #empty {
+      display: grid;
+      place-items: center;
+      color: rgba(255,255,255,0.68);
+      font: 800 14px/1.4 system-ui, "Segoe UI", sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="empty">No video</div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const videoId = String(params.get("video_id") || "").trim();
+    const validVideoId = /^[A-Za-z0-9_-]{11}$/.test(videoId);
+    const origin = location.origin;
+
+    function postPlayerCommand(command, args = []) {
+      const frame = document.getElementById("player");
+      if (!frame || !frame.contentWindow) return;
+      try {
+        frame.contentWindow.postMessage(JSON.stringify({
+          event: "command",
+          func: command,
+          args,
+        }), "https://www.youtube.com");
+      } catch (_) {}
+    }
+
+    if (validVideoId) {
+      const empty = document.getElementById("empty");
+      if (empty) empty.remove();
+      const iframe = document.createElement("iframe");
+      iframe.id = "player";
+      iframe.title = "YouTube player";
+      iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
+      iframe.allowFullscreen = true;
+      iframe.referrerPolicy = "origin-when-cross-origin";
+      iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(origin)}`;
+      document.body.appendChild(iframe);
+    }
+
+    window.addEventListener("message", (event) => {
+      if (!event.data || event.data.type !== "tg-youtube-command") return;
+      postPlayerCommand(event.data.command, event.data.args || []);
+    });
+  </script>
+</body>
+</html>

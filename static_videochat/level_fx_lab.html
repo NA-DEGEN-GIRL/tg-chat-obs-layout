@@ -27,6 +27,29 @@
       <button id="fire-orbit-finale" type="button">fire: orbit finale</button>
     </div>
     <div class="row">
+      <button id="cheer-default" type="button">cheer: 5 sec</button>
+      <button id="cheer-custom" type="button">cheer sec</button>
+      <label>duration
+        <input id="cheer-sec" type="number" min="1" max="600" step="1" value="5">
+        sec
+      </label>
+      <button id="cheer-off" type="button">cheer off</button>
+    </div>
+    <div class="row command-row">
+      <label>command
+        <input id="cheer-command" type="text" value="/cheer 5">
+      </label>
+      <button id="cheer-command-run" type="button">run</button>
+      <span class="hint">/cheer, /cheer 30, /cheer off</span>
+    </div>
+    <div class="row">
+      <button id="place-claw" type="button">place: claw grab</button>
+      <button class="scale-preset active" type="button" data-scale="1">normal</button>
+      <button class="scale-preset" type="button" data-scale="0.55">mini</button>
+      <button class="scale-preset" type="button" data-scale="0.36">cage</button>
+      <span id="place-state" class="hint">idle</span>
+    </div>
+    <div class="row">
       <label>orbit pop gap
         <input id="orbit-pop-gap" type="number" min="0.15" max="1.5" step="0.05" value="0.5">
         sec

@@ -1,506 +1,480 @@
 # tg-chat-obs-layout
 
-Telegram 그룹 채팅과 비디오챗 참가자를 OBS 방송 화면에 올리는 Windows 중심 오버레이 도구입니다.
+Telegram 채팅과 비디오챗 참여자를 방송용 오버레이로 보여주는 로컬 프로젝트입니다. Python/FastAPI 서버가 텔레그램 메시지와 비디오챗 상태를 수집하고, 브라우저/Electron 화면이 OBS 또는 Windows 앱에서 표시할 오버레이를 렌더링합니다.
 
-두 개의 브라우저 소스를 따로 씁니다.
-
-- `9292`: 일반 Telegram 채팅/STT 오버레이
-- `9393`: Telegram 비디오챗 참가자 캐릭터 오버레이
-
-비디오챗 오버레이는 Three.js로 만든 모닥불 장면입니다. 참가자가 비디오챗에 들어오면 캐릭터가 나타나고, 채팅 또는 STT 메시지가 들어오면 해당 캐릭터 위에 말풍선이 뜹니다. 비디오챗에 없는 사람이 채팅하면 오른쪽 채팅 내역에는 보이지만 캐릭터 말풍선에는 붙지 않습니다.
+이 저장소에는 소스 코드와 예시 설정만 들어갑니다. 실제 `.env`, Telegram 세션, TDLib 데이터베이스, Electron 로그인 프로필, ROM 파일, 토큰, 전화번호, 계정 정보는 절대 커밋하지 않습니다.
 
 ## 주요 기능
 
-- Telegram 그룹 채팅을 OBS에 말풍선 형태로 표시
-- Telegram 사진/스티커/GIF 메시지를 오버레이에 표시
-- `/stream_on`, `/stream_off`, `/text_on`으로 방송 중 채팅 권한 제어
-- `/stt_on`, `/stt_off`로 마이크 음성을 STT 변환 후 Telegram/오버레이에 출력
-- 공지 채널 댓글창/thread를 별도 오버레이 소스로 지정하는 `/here_on`, `/here_off`
-- Telegram 비디오챗 참가자 목록을 Telethon으로 조회
-- 비디오챗 참가자를 Three.js 캐릭터로 표시
-- 참가자 프로필 사진, 닉네임, 레벨 배지 표시
-- 방장 crown + `Lv. 99` 표시
-- 비디오챗 입장/퇴장 애니메이션과 이벤트 메시지
-- 오른쪽 채팅 내역 패널, 제목 텍스트, 카메라 각도/줌/위치 조절
-- OBS 배치 확인용 mock/preview 모드
-- 9393 컨트롤 모드(`?control=1`)에서 조작한 레이아웃을 OBS 브라우저 소스와 실시간 동기화
-- 9292/9393 채팅 패널에서 텍스트, 사진, 스티커, GIF/영상, 답장, 인용 답장, 삭제 메뉴 지원
-- X/Twitter 링크는 전체 웹앱 iframe 대신 개별 포스트의 텍스트/사진/영상 카드 미리보기로 표시
+- Telegram 봇 채팅을 방송용 오버레이로 표시합니다.
+- Telegram 비디오챗 참여자를 3D 캐릭터로 표시합니다.
+- 참여/퇴장, 레벨업/레벨다운 이벤트 카드를 표시합니다.
+- 캐릭터 머리 위 닉네임 카드, 레벨, 왕관, LIVE 배지, 말풍선을 표시합니다.
+- `/fire`, `/cheer` 같은 채팅 명령으로 캐릭터 효과를 실행합니다.
+- UI에서 카메라 각도, 확대/축소, 카드/말풍선 거리, 위젯 위치와 크기를 조정할 수 있습니다.
+- 가격, 메모, YouTube, Electron 네이티브 web, 내부 게임, 난쟁이, 케이지, 캐릭터 이동 위젯을 제공합니다.
+- Electron 앱에서는 YouTube/web을 Chromium 네이티브 뷰로 띄워 로그인 상태와 디버그 로그를 유지할 수 있습니다.
+- 내부 게임 위젯은 로컬 ROM을 선택하고, 개인 플레이 또는 비디오챗 참가자 채팅 기반 집단 플레이를 지원합니다.
+- WSL2 개발과 Windows 실사용 빌드를 분리해서 운용할 수 있습니다.
 
-## 작동 구조
+## 서버 구성
 
-```text
-Telegram group chat
-        |
-        v
-main.py  ->  http://127.0.0.1:9292/  ->  OBS Browser Source
-        |
-        +---- WebSocket text/photo/sticker/GIF/STT events
-                         |
-                         v
-videochat_overlay.py  ->  http://127.0.0.1:9393/  ->  OBS Browser Source
-        ^
-        |
-Telethon user session -> Telegram videochat participants
+이 프로젝트는 보통 서버 2개를 같이 띄웁니다.
+
+| 서버 | 기본 포트 | 파일 | 역할 |
+| --- | ---: | --- | --- |
+| 채팅/봇 서버 | `9292` | `main.py` | Telegram 봇, 채팅 오버레이 API, 레벨/명령 처리 |
+| 비디오챗 오버레이 서버 | `9393` | `videochat_overlay.py` | 3D 비디오챗 화면, 위젯, Electron 연동 |
+
+방송 화면은 주로 `http://127.0.0.1:9393/`를 봅니다. 일반 Chrome에서도 대부분 테스트할 수 있지만, Electron 네이티브 web/YouTube는 Windows Electron 앱 안에서만 정상 동작합니다.
+
+## 폴더 구조
+
+| 경로 | 설명 |
+| --- | --- |
+| `main.py` | Telegram 봇, 채팅 서버, 레벨 시스템, 명령어 처리 |
+| `videochat_overlay.py` | 비디오챗 3D 오버레이 서버, TgCalls 수신, 위젯 API |
+| `static_videochat/` | 9393 오버레이의 HTML/CSS/JS |
+| `tools/videochat_app/` | Electron 래퍼 앱 |
+| `level_system.py` | 레벨 저장/승급/역할 로직 |
+| `level_reasons.example.json` | 레벨별 메시지 예시 |
+| `scripts/build_tdlib_linux.sh` | WSL2/Linux용 `libtdjson.so` 빌드 스크립트 |
+| `data/` | 로컬 실행 데이터. 세션/설정/프로필/ROM 저장. 커밋 금지 |
+| `vendor/tdlib/` | TDLib 바이너리 위치. 커밋 금지 |
+
+## 처음 실행하기
+
+아래 절차는 WSL2에서 개발하고, 필요하면 Windows용 Electron 앱을 빌드하는 흐름입니다.
+
+### 1. 시스템 패키지 설치
+
+WSL2 Ubuntu 기준입니다.
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake gperf zlib1g-dev libssl-dev portaudio19-dev
 ```
 
-일반 채팅 오버레이만 쓸 때는 `main.py`만 실행하면 됩니다.
-비디오챗 캐릭터 오버레이까지 쓰려면 `main.py`와 `videochat_overlay.py`를 함께 실행합니다.
+`sounddevice`가 `OSError: PortAudio library not found`를 내면 `portaudio19-dev`가 빠진 것입니다.
 
-## 준비물
+### 2. uv 가상환경 만들기
 
-- Windows PC
-- Python 3.10 이상
-- OBS Studio
-- Telegram 계정
-- Telegram BotFather로 만든 bot token
-- STT를 쓸 경우 OpenAI 또는 Gemini API key
-- 비디오챗 오버레이를 쓸 경우 Telegram API ID/API hash
+프로젝트 루트에서 실행합니다.
 
-## 설치
-
-Python 버전 확인:
-
-```cmd
-python --version
-```
-
-`uv` 설치:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-프로젝트 받기:
-
-```cmd
-git clone <repo-url> tg-chat-obs-layout
-cd tg-chat-obs-layout
-```
-
-의존성 설치:
-
-```cmd
-uv venv
+```bash
+uv venv --python 3.12 .venv
+source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-WSL2에서 개발할 때는 [WSL2 Development Notes](docs/WSL2_SETUP.md)를 먼저 확인하세요. Windows의 `tdjson.dll`은 WSL2에서 사용할 수 없으므로 Linux `libtdjson.so`를 설치하거나 빌드해야 하고, 복사한 Telegram 세션/TDLib 캐시는 WSL2에서 재로그인해 재생성하는 것을 권장합니다.
+이후에는 가상환경을 켠 상태에서 `python main.py`처럼 실행하거나, 가상환경을 켜지 않고 `uv run python main.py`로 실행할 수 있습니다.
 
-## Telegram Bot 설정
-
-1. Telegram에서 [@BotFather](https://t.me/BotFather)를 엽니다.
-2. `/newbot`으로 bot을 만듭니다.
-3. 발급된 bot token을 `.env`의 `BOT_TOKEN`에 넣습니다.
-4. BotFather에서 `Group Privacy`를 `Turn off`로 바꿉니다.
-5. bot을 방송용 그룹에 초대합니다.
-6. `/stream_on`, `/stream_off`를 쓸 경우 bot을 그룹 관리자로 만들고 `Restrict members` 권한을 켭니다.
-
-필요한 값:
-
-- `CHAT_ID`: 방송용 Telegram 그룹 ID
-- `OWNER_ID`: 명령어를 실행할 본인 Telegram user ID
-
-## 환경 설정
-
-템플릿 복사:
-
-```cmd
-copy .env.example .env
-```
-
-`.env`에는 실제 값을 넣습니다. `.env`는 절대 공개하거나 커밋하지 않습니다.
-
-최소 설정:
+### 3. 환경변수 만들기
 
 ```bash
-BOT_TOKEN=
-CHAT_ID=
-OWNER_ID=
-
-WEB_HOST=127.0.0.1
-WEB_PORT=9292
-FADE_AFTER_SEC=30
-CHAT_FONT_SIZE=22
+cp .env.example .env
 ```
 
-STT 설정:
+그 다음 `.env`를 직접 열어 Telegram 봇 토큰, API ID/API HASH, 대상 채팅, 비디오챗 링크 등을 채웁니다.
+
+중요:
+
+- `.env`는 커밋 금지입니다.
+- Telegram 봇 토큰, `TD_API_HASH`, 전화번호, 세션 파일은 커밋 금지입니다.
+- `.env.example`에는 실제 값이 아니라 설명과 빈 값만 둡니다.
+
+### 4. TDLib 준비
+
+Windows에서는 `vendor/tdlib/tdjson.dll`을 사용합니다. WSL2/Linux에서는 `vendor/tdlib/libtdjson.so`가 필요합니다.
+
+Linux/WSL2에서 직접 빌드하려면:
 
 ```bash
-STT_PROVIDER=openai
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-STT_MODEL_OPENAI=gpt-4o-mini-transcribe
-STT_MODEL_GEMINI=gemini-3.1-flash-live-preview
-STT_LANGUAGE=ko
-STT_INPUT_DEVICE=
-STT_SEND_AS=bot
-STT_AI_LABEL=0
-STT_AI_LABEL_TEXT=aiSTT
-STT_SEND_AS_USER_FALLBACK_BOT=1
-
-TELEGRAM_USER_SEND_ENABLED=0
-TELEGRAM_USER_SEND_PANEL=0
-TELEGRAM_USER_SEND_FALLBACK_BOT=0
-TELEGRAM_USER_SEND_MAX_CHARS=1000
-TELEGRAM_USER_SEND_MAX_PHOTO_MB=8
-TELEGRAM_USER_SEND_MAX_MEDIA_MB=50
+scripts/build_tdlib_linux.sh
 ```
 
-`STT_SEND_AS=user`를 쓰면 bot이 아니라 Telegram 사용자 계정으로 STT 메시지를 보냅니다. 이 경우 아래 Telethon 설정이 필요합니다.
+빌드가 끝나면 `vendor/tdlib/libtdjson.so`가 생성됩니다. 이 파일은 로컬 바이너리이므로 커밋하지 않습니다.
 
-`TELEGRAM_USER_SEND_ENABLED=1`을 켜면 로컬 `/api/send`가 열립니다. `TELEGRAM_USER_SEND_PANEL=1`도 켜면 9292 오버레이에 작은 입력창이 생기고, 거기서 보낸 메시지나 사진을 Telegram 사용자 계정으로 전송할 수 있습니다. 입력창의 `main`/`here` 버튼으로 메인 채팅과 현재 `/here_on` 대상 중 보낼 곳을 고르며, 선택된 대상이 없으면 전송 버튼이 비활성화됩니다.
+TDLib 경로는 기본적으로 OS에 맞게 자동 선택됩니다.
 
-비디오챗/Telethon 설정:
+- Windows: `vendor/tdlib/tdjson.dll`
+- Linux/WSL2: `vendor/tdlib/libtdjson.so`
+- macOS: `vendor/tdlib/libtdjson.dylib`
+
+특정 경로를 강제로 쓰고 싶으면 `.env`에 `TDLIB_JSON_PATH` 또는 `TDLIB_JSON_DLL`을 지정합니다.
+
+### 5. Telegram 세션 로그인
+
+TgCalls receiver는 보통 부계정 세션으로 비디오챗 프레임을 받습니다. 세션은 `data/telethon/` 아래에 저장되며 커밋하면 안 됩니다.
+
+처음 로그인:
 
 ```bash
-TD_API_ID=
-TD_API_HASH=
-TD_PHONE=
-TD_VIDEOCHAT_LINK=
-
-VIDEOCHAT_WEB_HOST=127.0.0.1
-VIDEOCHAT_WEB_PORT=9393
-VIDEOCHAT_CHAT_WS_URL=ws://127.0.0.1:9292/ws
-
-VIDEOCHAT_HOST_USER_ID=
-VIDEOCHAT_HOST_USERNAME=
-VIDEOCHAT_HOST_NAME=Host
-VIDEOCHAT_HOST_AVATAR_FILE=
-VIDEOCHAT_LEVEL_CHAT_ID=0
-
-VIDEOCHAT_WATCH_ENABLED=1
-VIDEOCHAT_WATCH_INTERVAL=2
-VIDEOCHAT_DOWNLOAD_PHOTOS=1
-VIDEOCHAT_DEBUG_SPEECH=0
+uv run python tgcalls_videochat_probe.py --session data/telethon/videochat_receiver --login-only
 ```
 
-`TD_API_ID`와 `TD_API_HASH`는 <https://my.telegram.org/apps>에서 발급합니다.
+필요하면 전화번호와 로그인 코드를 입력합니다. 이 과정에서 만들어지는 `.session` 파일은 계정 접근 권한을 포함하므로 절대 공유하거나 커밋하지 않습니다.
 
-방장 crown과 `Lv. 99`가 안 뜨면 `VIDEOCHAT_HOST_USER_ID` 또는 `VIDEOCHAT_HOST_USERNAME`을 실제 계정과 맞춰야 합니다. `VIDEOCHAT_HOST_NAME`도 fallback으로 쓰지만, 이름은 중복될 수 있으므로 ID/username이 더 안전합니다.
+### 6. 서버 실행
 
-`TD_VIDEOCHAT_LINK`는 방송마다 바뀔 수 있으므로 실행할 때 `--link`로 넘겨도 됩니다.
+터미널 2개를 엽니다.
 
-## 실행
+터미널 1:
 
-일반 채팅/STT 오버레이:
-
-```cmd
-uv run python main.py
+```bash
+source .venv/bin/activate
+python main.py
 ```
 
-브라우저에서 확인:
+터미널 2:
 
-```text
-http://127.0.0.1:9292/
+```bash
+source .venv/bin/activate
+python videochat_overlay.py
 ```
 
-비디오챗 캐릭터 오버레이:
+정상 실행되면:
 
-```cmd
-uv run python videochat_overlay.py --link "https://t.me/+INVITE_HASH"
-```
+- 채팅 서버: `http://127.0.0.1:9292/`
+- 비디오챗 오버레이: `http://127.0.0.1:9393/`
 
-또는 `.env`에 `TD_VIDEOCHAT_LINK`를 넣고:
-
-```cmd
-uv run python videochat_overlay.py
-```
-
-브라우저에서 확인:
-
-```text
-http://127.0.0.1:9393/
-```
-
-Telethon을 처음 실행하면 콘솔에서 로그인 코드 또는 2FA 비밀번호를 물어볼 수 있습니다. 로그인 세션은 `data/telethon/`에 저장되며 공개하면 안 됩니다.
-
-## OBS 구성
-
-OBS에 Browser Source를 두 개 추가하는 구성을 권장합니다.
-
-채팅 오버레이:
-
-- URL: `http://127.0.0.1:9292/`
-- Width/Height: 방송 레이아웃에 맞게 설정
-- 배경: 투명
-
-비디오챗 캐릭터 오버레이:
-
-- URL: `http://127.0.0.1:9393/`
-- Width/Height: 보통 전체 화면 크기
-- 채팅창과 캐릭터 씬을 분리하고 싶으면 위치를 따로 조정
-
-OBS Browser Source 옵션에서 “소스가 표시되지 않을 때 종료”는 끄는 편이 안전합니다. 장면 전환 때 WebSocket이 끊기는 것을 줄일 수 있습니다.
-
-## 9393 컨트롤 모드
-
-OBS Browser Source 안의 페이지와 일반 Chrome 창은 서로 다른 브라우저 저장소를 씁니다. 그래서 일반 Chrome에서 맞춘 위치가 OBS에 그대로 적용되지 않을 수 있습니다. 9393 오버레이는 이 문제를 줄이기 위해 서버 저장 설정을 지원합니다.
-
-OBS에는 viewer URL을 넣습니다.
-
-```text
-http://127.0.0.1:9393/
-```
-
-조작용 Chrome에는 control URL을 엽니다.
+제어 UI까지 보려면:
 
 ```text
 http://127.0.0.1:9393/?control=1
 ```
 
-mock 테스트와 같이 쓰려면:
+### 7. Electron 앱 실행
 
-```text
-http://127.0.0.1:9393/?mock_participants=10&debug_speech=1&control=1
-```
-
-컨트롤 화면에서 카메라, 제목, 채팅 패널, 입퇴장 메시지, 말풍선/네임카드 크기를 조작하면 서버가 `data/videochat_overlay_settings.json`에 저장하고 OBS 브라우저 소스에 WebSocket으로 전파합니다. 저장할 때 컨트롤 화면의 viewport 크기도 같이 기록하므로 OBS 해상도와 Chrome 창 크기가 달라도 좌표와 크기를 비율로 환산합니다. 그래도 화면 비율은 OBS 캔버스와 비슷하게 맞추는 편이 가장 정확합니다.
-
-## 9393 오버레이 조작
-
-카메라:
-
-- `Q` / `E`: 좌우 회전
-- `W` / `S`: 카메라 각도 조절
-- 마우스 휠: 확대/축소
-- 가운데 휠 드래그: 화면 기준 위치 이동
-
-화면 UI:
-
-- 제목 영역: 방송 주제 표시. 직접 편집, 이동, 크기 조절 가능
-- 오른쪽 채팅 패널: 참가자/미참여자 채팅을 함께 표시
-- 채팅 패널의 `M`: 패널 이동
-- 채팅 패널의 `-` / `+`: 글자 크기 조절
-- `fade`: 메시지 사라짐 시간. `-1`이면 사라지지 않음
-- `hide`: 채팅 패널 숨김
-- `A-` / `A+`: 캐릭터 네임카드 전체 크기
-- `B-` / `B+`: 캐릭터 말풍선 전체 크기
-- `E-` / `E+`: 입장/퇴장 이벤트 메시지 크기
-- `in` / `out`: 입장/퇴장 효과 선택
-- `msg`: 입장/퇴장 메시지 스타일 선택
-
-기본값은 브라우저 localStorage에도 저장됩니다. `?control=1` 모드에서 조작한 값은 서버 설정으로도 저장되어 OBS 브라우저 소스와 동기화됩니다.
-
-## Preview 모드
-
-Telegram 없이 OBS 배치를 맞출 때 쓸 수 있습니다.
-
-말풍선 preview:
-
-```text
-http://127.0.0.1:9393/?debug_speech=1
-```
-
-50명 참가자 preview:
-
-```text
-http://127.0.0.1:9393/?mock_participants=50&debug_speech=1
-```
-
-입장/퇴장 preview:
-
-```text
-http://127.0.0.1:9393/?mock_participants=10&debug_speech=1&debug_lifecycle=1
-```
-
-Preview 모드는 방송 전 레이아웃, 말풍선 크기, 카메라 각도, 채팅 패널 위치를 맞추기 위한 기능입니다.
-
-## Telegram 명령어
-
-명령어는 기본적으로 `OWNER_ID`가 실행해야 합니다.
-
-| 명령어 | 설명 |
-|---|---|
-| `/stream_on` | 텍스트와 사진만 허용하고 sticker, GIF, 영상, 파일 등을 제한 |
-| `/text_on` | 텍스트만 허용 |
-| `/stream_off` | 호스트/관리자 외 전송 제한 |
-| `/stt_on` | 현재 위치를 STT 출력 목적지로 추가하고 마이크 인식 시작 |
-| `/stt_off` | 모든 STT 출력 목적지를 비우고 STT 종료 |
-| `/here_on` | 현재 thread/comment chat을 오버레이 소스로 활성화 |
-| `/here_off` | 활성 thread/comment chat 해제 |
-
-오버레이는 스티커 표시를 지원하지만, 기본 `/stream_on` 권한 설정은 sticker/GIF류 전송을 막습니다. 방송 중 스티커를 허용하려면 권한 정책을 별도로 조정해야 합니다.
-
-## 사용자 계정으로 웹에서 메시지 보내기
-
-`.env`에서 아래 값을 켜면 9292 오버레이에 입력창을 띄울 수 있습니다.
+Electron은 `tools/videochat_app/`에서 관리합니다.
 
 ```bash
-TELEGRAM_USER_SEND_ENABLED=1
-TELEGRAM_USER_SEND_PANEL=1
-TELEGRAM_USER_SEND_MAX_PHOTO_MB=8
-TD_API_ID=
-TD_API_HASH=
-TD_PHONE=
+cd tools/videochat_app
+npm install
+npm run control
 ```
 
-입력창에서 보낸 텍스트는 Telethon 사용자 세션으로 전송됩니다. 전송 대상은 `main` 버튼의 메인 `CHAT_ID`와 `here` 버튼의 현재 `/here_on` thread/comment chat 중 직접 선택합니다. `/here_on`이 없으면 `here` 버튼은 비활성화되고, 선택된 대상이 없으면 전송할 수 없습니다.
+WSL2의 WSLg에서 테스트할 수도 있습니다.
 
-사진은 `+` 버튼으로 고르거나 입력창에 드래그 앤 드롭할 수 있습니다. 전송 전에는 미리보기가 표시되며, 잘못 고른 사진은 `x` 버튼으로 제거할 수 있습니다. 텍스트와 사진을 같이 보내면 텍스트가 사진 캡션으로 전송됩니다. MP4/WEBM 파일도 입력창에 드래그 앤 드롭하거나 붙여넣어 전송할 수 있으며, 영상 파일 크기 제한은 `TELEGRAM_USER_SEND_MAX_MEDIA_MB`로 관리합니다.
+```bash
+npm run start:wslg
+```
 
-입력창에서 `@검색어`를 입력하면 Telethon 사용자 세션으로 main `CHAT_ID`의 참가자를 검색해 자동완성을 표시합니다. username이 있는 사람은 선택 시 `@username`으로 삽입됩니다. username이 없는 사람은 Telegram 일반 텍스트만으로는 확실한 멘션이 되지 않으므로 검색 결과에서 비활성으로 표시됩니다.
+WSLg에서 작업표시줄에는 뜨는데 창이 안 보이는 현상이 생길 수 있습니다. 이 경우 WSLg/Windows 디스플레이 문제일 가능성이 큽니다. 방송 실사용은 Windows용 빌드를 만들어 Windows 탐색기에서 실행하는 쪽이 안정적입니다.
 
-9292/9393 채팅 메시지를 우클릭하면 `답장`, `인용`, `삭제` 메뉴를 사용할 수 있습니다. `답장`은 선택한 Telegram 메시지를 reply 대상으로 잡아 다음 전송을 해당 메시지에 답장으로 보냅니다. 메시지 텍스트 일부를 드래그로 선택한 뒤 `인용`을 누르면 Telegram quote metadata로 인용 답장을 보냅니다. `삭제`는 bot 권한으로 먼저 시도하고, 실패하면 Telethon 사용자 세션으로 다시 시도합니다. 둘 다 실패하면 `OWNER_ID`에게 삭제 실패 알림을 보냅니다. Telegram 앱 등 외부에서 삭제된 메시지도 Telethon 삭제 이벤트가 잡히면 오버레이에서 스르륵 사라집니다.
+Windows용 portable 빌드:
 
-9292 입력창 왼쪽의 `A-` / `A+` 버튼으로 채팅 글자 크기를 바로 조절할 수 있으며, 값은 브라우저 localStorage에 저장됩니다.
+```bash
+cd tools/videochat_app
+npm run build:win
+```
 
-9393 비디오챗 오버레이의 오른쪽 채팅 패널에도 같은 전송 입력창이 붙습니다. 9393 서버는 로컬 전용 프록시로 9292의 `/api/send`, `/api/users/search`, `/api/message/delete`를 호출하므로 9292 서버가 같이 실행 중이어야 합니다.
+빌드 결과는 `tools/videochat_app/dist/`에 생깁니다. 이 폴더도 커밋하지 않습니다.
 
-이 기능은 로컬 요청만 받도록 제한되어 있지만, 방송 화면에 입력창이 보일 수 있으므로 OBS 배치 전에 표시 여부를 확인하세요.
+## OBS에서 보기
 
-## 링크 미리보기
+가장 단순한 방식은 OBS에서 브라우저 소스로 `http://127.0.0.1:9393/`를 추가하는 것입니다.
 
-채팅 메시지의 URL을 클릭하면 오버레이 내부에 작은 브라우저 창이 뜹니다. 창은 드래그로 이동하고 오른쪽 아래 핸들로 크기를 조절할 수 있습니다. iframe 차단이 있는 사이트는 `proxy` 버튼으로 로컬 프록시를 시도할 수 있습니다.
+단, Electron 네이티브 web/YouTube 위젯은 일반 브라우저 소스에서 재현되지 않습니다. 이런 기능까지 포함한 실제 화면을 쓰려면 Windows Electron 앱 화면을 OBS에서 캡처하는 방식을 사용합니다.
 
-X/Twitter는 전체 웹앱이 iframe과 단순 프록시에서 잘 동작하지 않으므로 별도 미리보기 경로를 씁니다. 개별 포스트 URL은 서버가 텍스트, 사진, 영상 썸네일을 가져와 카드로 보여주고, 실패하면 공식 oEmbed로 폴백합니다. `x.com/search?...` 검색 결과 페이지는 X 웹앱 내부 API가 필요하므로 내부에서는 검색어 안내와 외부 열기만 제공합니다.
+## 보안 규칙
 
-## 데이터 저장 위치
+커밋 전 반드시 확인합니다.
 
-로컬 실행 중 생성되는 파일:
+- `.env` 커밋 금지
+- `data/` 커밋 금지
+- `data/telethon/*.session` 커밋 금지
+- `data/tdlib/` 커밋 금지
+- `vendor/tdlib/*.dll`, `*.so`, `*.dylib` 커밋 금지
+- `tools/videochat_app/dist/` 커밋 금지
+- Electron 프로필/로그인 정보 커밋 금지
+- `data/rom/` ROM 파일 커밋 금지
+- 스크린샷, 디버그 덤프, raw frame, 로그 파일 커밋 금지
 
-- `data/user_colors.json`: 사용자별 채팅 색상
-- `data/state.json`: `/stt_on` 상태
-- `data/photos/`: Telegram 사진 메시지 캐시
-- `data/stickers/`: Telegram 스티커 표시용 캐시
-- `data/animations/`: Telegram GIF/animation 표시용 캐시
-- `data/telethon/`: Telethon 사용자 로그인 세션
-- `data/telethon/profile_photos/`: 비디오챗 참가자 프로필 사진 캐시
-- `data/videochat_levels.json`: 비디오챗 레벨/프로필 기록
-- `data/videochat_overlay_settings.json`: 9393 컨트롤 모드에서 저장한 레이아웃/카메라 설정
+현재 `.gitignore`는 위 항목을 기본적으로 제외합니다. 그래도 커밋 전에는 `git status --short`와 스테이징 파일 목록을 직접 확인해야 합니다.
 
-`data/`는 개인정보와 세션을 포함할 수 있으므로 커밋하지 않습니다.
+## 설정 파일
 
-## 공개 저장소 보안 체크
+### `.env`
 
-공개 전 확인:
+실제 실행 설정입니다. 로컬에만 둡니다.
 
-- `.env`가 커밋되지 않았는지
-- `data/`, `logs/`, `chrome-debug-profile/`, `debug_videochat*.png`가 커밋되지 않았는지
-- `data/videochat_overlay_settings.json`, Telethon 세션, 프로필 사진 캐시가 커밋되지 않았는지
-- 실제 bot token, API key, phone, invite hash, chat id, username이 문서에 남지 않았는지
-- Telethon 세션 파일이 올라가지 않았는지
-- 프로필 사진/채팅 사진 캐시가 올라가지 않았는지
-- STT debug 로그를 공유하지 않았는지
+대표 항목:
+
+| 항목 | 설명 |
+| --- | --- |
+| `BOT_TOKEN` | BotFather에서 받은 봇 토큰 |
+| `WEB_HOST`, `WEB_PORT` | 채팅 서버 주소. 기본 `127.0.0.1:9292` |
+| `TD_API_ID`, `TD_API_HASH` | Telegram user API 값 |
+| `TD_VIDEOCHAT_LINK` | 대상 비디오챗 링크 |
+| `VIDEOCHAT_WEB_HOST`, `VIDEOCHAT_WEB_PORT` | 비디오챗 오버레이 서버. 기본 `127.0.0.1:9393` |
+| `TGCALLS_SESSION` | TgCalls receiver 부계정 세션 경로 |
+| `TGCALLS_PHONE` | 최초 로그인 편의를 위한 전화번호. 커밋 금지 |
+| `VIDEOCHAT_TGCALLS_AUTO_JOIN` | 초기 자동 참가 기본값. 실제 런타임 제어는 UI 설정도 반영 |
+
+### `data/videochat_overlay_settings.json`
+
+오버레이 UI에서 조정한 위젯 위치, 크기, UI 설정 등이 저장됩니다. 로컬 상태 파일이므로 커밋하지 않습니다.
+
+### `data/videochat_levels.json`
+
+사용자 레벨/역할/효과 사용 기록이 저장됩니다. 방송 운영 데이터이므로 커밋하지 않습니다.
+
+### `data/level_reasons.json`
+
+레벨별 안내 문구입니다. 파일이 없으면 `level_reasons.example.json` 기반으로 자동 생성됩니다. 방송 콘셉트에 맞게 로컬에서 수정할 수 있습니다.
+
+레벨업 시스템은 방송마다 성격이 달라서, LLM에게 다음 파일과 원하는 운영 규칙을 보여주고 커스텀 지시를 하는 형태를 권장합니다.
+
+- `level_system.py`
+- `level_reasons.example.json`
+- `main.py`의 `/check_level`, `/level_scan`, `/level_up`, `/fire`, `/cheer` 주변 로직
+
+예시 지시:
+
+```text
+이 방송에서는 레벨 1은 채팅 참여, 레벨 2는 비디오챗 입장,
+레벨 3은 cheer 또는 fire 사용, 레벨 4는 둘 다 사용으로 유지하고,
+레벨별 문구를 더 장난스럽게 바꿔줘.
+실제 data 파일과 개인정보는 건드리지 말고 예시 JSON과 로직만 수정해줘.
+```
 
 ## 레벨 시스템
 
-레벨 시스템은 `VIDEOCHAT_LEVEL_SYSTEM_ENABLED=1`일 때 동작합니다. 기본 규칙은 단계식입니다.
+기본 흐름:
 
-- `Lv. 0`: 아직 조건 미충족
-- `Lv. 1`: 커뮤니티 채팅에서 식별 가능한 메시지를 말함
-- `Lv. 2`: 채팅 조건과 비디오챗 접속 조건을 모두 만족함
-- `Lv. 99`: 방장 고정 레벨
+- 채팅을 하면 레벨 기록이 생성됩니다.
+- 비디오챗에 들어오면 비디오챗 참여 기록이 반영됩니다.
+- `/cheer` 또는 `/fire` 효과를 쓰면 레벨 3 조건을 만족합니다.
+- `/cheer`와 `/fire`를 모두 쓰면 레벨 4 조건을 만족합니다.
+- 관리자는 `/level_up`으로 레벨을 수동 조정할 수 있습니다.
+- 수동으로 레벨을 내리면 cheer/fire 진행 기록도 기준 시점 이후로 다시 판단됩니다.
 
-`Lv. 0`에서 비디오챗에 먼저 들어와도 비디오챗만으로는 바로 `Lv. 2`가 되지 않습니다. 이후 채팅 메시지를 보내면 `Lv. 1` 조건과 이미 관찰된 비디오챗 조건을 함께 만족하므로 `Lv. 1`, `Lv. 2` 안내가 순서대로 나갑니다.
+레벨 메시지는 입장/퇴장 이벤트와 마찬가지로 오버레이 이벤트 카드에 표시됩니다.
 
-관리자 명령:
+## 채팅 명령어
 
-- `/check_level` 또는 `/check_level @username`: 답글 대상이나 username의 레벨 확인
-- `/level_scan` 또는 `/level_scan 30`: 저장된 레벨 목록 확인
-- `/level_up 숫자` 또는 `/level_up @username 숫자`: 관리자가 레벨을 강제로 증감
+사용자는 Telegram 채팅에서 명령어를 입력합니다. 실제 표시 문구는 `/commands` 또는 `/help`로 확인할 수 있습니다.
 
-자동 레벨업 안내 문구의 사유는 `data/level_reasons.json`에 자동 생성됩니다. 공개 저장소에 예시로 `level_reasons.example.json`이 있으며, 별도 파일을 쓰려면 `.env`에 `LEVEL_REASONS_FILE=...`을 지정합니다. 자동 레벨업과 관리자 강제 변경 메시지는 각각 `LEVEL_UP_TEMPLATE`, `LEVEL_DOWN_TEMPLATE`, `FORCE_LEVEL_UP_TEMPLATE`, `FORCE_LEVEL_DOWN_TEMPLATE`로 바꿀 수 있습니다.
+일반 명령:
 
-## 웹 전송과 이펙트
+| 명령어 | 설명 |
+| --- | --- |
+| `/commands`, `/help` | 명령어 도움말 |
+| `/fire` | 비디오챗 캐릭터 위치에서 폭죽 효과 |
+| `/cheer` | 기본 5초 동안 응원봉 효과 |
+| `/cheer 30` | 30초 동안 응원봉 효과. 최대 600초 |
+| `/cheer off` | 응원봉 효과 중지 |
 
-9292/9393 채팅 입력창은 텍스트, 사진, MP4/WEBM, 캐시된 스티커, 캐시된 커스텀 이모지 전송을 지원합니다. 스티커와 커스텀 이모지는 먼저 채팅방에서 한 번 수신되어 `data/emoji_cache.json`에 기록된 항목만 선택할 수 있습니다.
+관리/운영 명령:
 
-`/fire`는 비디오챗에 캐릭터가 있는 사용자가 사용할 때 해당 캐릭터 위치에서 폭죽 이펙트를 발생시킵니다. 과부하를 막기 위해 `VIDEOCHAT_FIRE_USER_COOLDOWN_SEC`, `VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC`가 있으며, 9393 컨트롤 패널에서도 조절할 수 있습니다.
+| 명령어 | 설명 |
+| --- | --- |
+| `/check_level` | 대상 레벨/역할 확인 |
+| `/level_scan` | 레벨 목록 확인 |
+| `/level_up` | 대상 레벨 수동 조정 |
+| `/add_role`, `/remove_role`, `/reset_role`, `/check_role` | 역할 관리 |
+| `/stt_on`, `/stt_off` | STT 토글 |
+| `/here_on`, `/here_off` | 현장/참여 상태 관련 토글 |
 
-컨트롤 브라우저에서 연 사진/영상 확대창과 내부 링크 브라우저는 WebSocket으로 OBS 브라우저 소스에도 동기화됩니다. OBS 쪽 화면을 직접 조작하기 어려울 때는 일반 Chrome에서 `http://127.0.0.1:9393/?control=1`을 열어 조작하는 방식을 권장합니다.
+예전 수동 스트림 감시 명령인 `stream_watch`, `unwatch` 계열은 현재 자동 수신 방식으로 대체되어 legacy 처리되어 있습니다.
 
-## 문제 해결
+## 위젯
 
-### 채팅이 안 보임
+오버레이의 `widget` 메뉴에서 추가하거나 표시할 수 있습니다. 대부분의 위젯은 드래그 이동, 크기 조절, hide/show, x 종료를 지원하며 위치와 크기는 로컬 설정에 저장됩니다.
 
-- BotFather에서 Group Privacy가 꺼져 있는지 확인
-- bot을 그룹에서 제거 후 다시 초대
-- `.env`의 `CHAT_ID`가 맞는지 확인
+### 가격 위젯
 
-### `409 Conflict: terminated by other getUpdates`
+- BTC, ETH, Nasdaq 100 가격 카드
+- 등락 색상 표시
+- 15분 미니 차트
+- 글자 크기 조절
 
-같은 bot token으로 프로그램이 두 번 실행 중입니다.
+### 메모 위젯
 
-```powershell
-Get-Process python | Stop-Process -Force
-```
+- 방송 중 임시 메모를 표시합니다.
+- 여러 개를 추가할 수 있습니다.
+- 드래그 이동, 크기 조절, 삭제를 지원합니다.
 
-그 후 다시 실행합니다.
+### YouTube 위젯
 
-### `/stream_on` 권한 변경 실패
+- Electron 네이티브 Chromium 뷰로 YouTube를 표시합니다.
+- 일반 Chrome 테스트 화면에서는 네이티브 뷰가 붙지 않으므로 Electron 앱에서 확인해야 합니다.
+- Electron 프로필을 유지하면 로그인 상태를 유지할 수 있습니다.
+- hide 후 show 시 보던 상태를 최대한 유지합니다.
 
-bot이 그룹 관리자가 아니거나 `Restrict members` 권한이 없습니다. 그룹 관리자 설정에서 권한을 켭니다.
+### web 위젯
 
-### 포트가 이미 사용 중
+- 현재 web은 Electron 네이티브 web을 의미합니다.
+- 일반 브라우저 테스트에서는 동작하지 않고 Electron 앱 안에서 동작합니다.
+- legacy iframe/proxy web 실험은 메뉴에서 제거되어 있습니다.
 
-`.env`에서 포트를 바꿉니다.
+### 내부 게임 위젯
+
+- 로컬 ROM을 선택해 EmulatorJS 기반으로 실행합니다.
+- 개인 플레이와 집단 플레이를 지원합니다.
+- 집단 플레이는 비디오챗 참가자의 채팅 명령만 반영합니다.
+- 케이지 안에 있는 참가자는 집단 플레이에 참여할 수 없습니다.
+- hide 또는 x 종료 시 상태 저장을 시도합니다.
+
+ROM은 직접 준비해서 `data/rom/`에 넣습니다. 예:
 
 ```bash
-WEB_PORT=9300
-VIDEOCHAT_WEB_PORT=9394
+mkdir -p data/rom
+# 합법적으로 보유한 ROM을 data/rom/pk_gold.gb 같은 이름으로 배치
 ```
 
-OBS URL도 같은 포트로 바꿔야 합니다.
+ROM 파일은 저작권/개인 파일이므로 커밋하지 않습니다.
 
-### 비디오챗 참가자가 안 뜸
+개인 플레이 기본 키:
 
-- `videochat_overlay.py --link ...`에 넘긴 링크가 현재 active videochat/live stream인지 확인
-- `TD_API_ID`, `TD_API_HASH`, `TD_PHONE`이 맞는지 확인
-- 첫 실행 로그인 절차가 완료됐는지 확인
-- 계정 권한이나 초대 링크 접근 권한이 부족하면 참가자 목록이 비어 있을 수 있음
+| 게임 입력 | 키보드 |
+| --- | --- |
+| 방향 | 화살표 |
+| A | `Z` |
+| B | `X` |
+| SELECT | `V` |
+| START | `Enter` |
 
-### 방장 왕관/Lv.99가 안 뜸
+집단 플레이 채팅 입력:
 
-`.env`에 아래 중 하나를 정확히 넣습니다.
+| 게임 입력 | 채팅 |
+| --- | --- |
+| UP | `up`, `u` |
+| DOWN | `down`, `d` |
+| LEFT | `left`, `l` |
+| RIGHT | `right`, `r` |
+| A | `a` |
+| B | `b` |
+| SELECT | `sel`, `select` |
+| START | `start` |
+
+### 난쟁이 위젯
+
+- 참가자를 선택해서 캐릭터, 카드, 말풍선, 효과를 설정 비율만큼 작게 표시합니다.
+- 나갔다 다시 들어오면 난쟁이 상태는 리셋됩니다.
+
+### 케이지 위젯
+
+- 참가자를 케이지 안에 넣습니다.
+- 케이지 상태는 나갔다 들어와도 유지됩니다.
+- 케이지 안 참가자는 효과와 게임 참여가 제한됩니다.
+- 케이지 위치, 회전, 명판 문구와 색상을 UI에서 조정할 수 있습니다.
+- 케이지에 아무도 없어도 반투명하게 표시되고, 참가자가 들어가면 더 선명하게 표시됩니다.
+
+### 캐릭터 이동 위젯
+
+- 참가자를 선택해서 위치를 옮길 수 있습니다.
+- place 모드에서는 고스트 미리보기와 집게 이동 애니메이션을 사용합니다.
+- drive 모드에서는 WASD 이동, 대각선 이동, QE 회전, Space 점프를 지원합니다.
+- 케이지 참가자는 케이지 안에서만 이동할 수 있습니다.
+
+## Electron 앱 데이터 유지
+
+Electron 앱은 로그인 정보와 창 위치를 로컬 데이터 디렉터리에 저장합니다.
+
+- 개발 실행: 기본적으로 repo의 `data/` 아래 사용
+- packaged Windows 앱: `%APPDATA%/tg-chat-obs-layout/videochat_app/` 아래 사용
+
+빌드할 때마다 로그인 정보가 날아가지 않게 하려면 `TG_VIDEOCHAT_APP_DATA_DIR` 또는 `--data-dir=...`로 고정 경로를 지정할 수 있습니다.
+
+예:
 
 ```bash
-VIDEOCHAT_HOST_USER_ID=
-VIDEOCHAT_HOST_USERNAME=
+TG_VIDEOCHAT_APP_DATA_DIR=/home/na_stream/tg-chat-obs-layout/data/videochat_app npm run control
 ```
 
-ID가 가장 안정적이고, username이 그 다음입니다.
+Windows에서 실행할 때도 같은 원리로 고정 데이터 폴더를 지정할 수 있습니다.
 
-### STT가 반응하지 않음
+## 디버깅
 
-- API key와 billing 상태 확인
-- `STT_INPUT_DEVICE`가 실제 마이크와 맞는지 확인
-- 콘솔 로그 확인
+### Python 문법 확인
 
-마이크 목록 확인:
-
-```cmd
-uv run python -c "import sounddevice as sd; [print(i, d['name']) for i, d in enumerate(sd.query_devices()) if d['max_input_channels']>0]"
+```bash
+python -m py_compile main.py videochat_overlay.py level_system.py tgcalls_videochat_probe.py tdlib_videochat_probe.py
 ```
 
-## 파일 구조
+### JavaScript 문법 확인
 
-```text
-tg-chat-obs-layout/
-├── main.py
-├── videochat_overlay.py
-├── .env.example
-├── requirements.txt
-├── static/
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
-├── static_videochat/
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
-├── stt/
-│   ├── manager.py
-│   ├── openai_backend.py
-│   └── gemini_backend.py
-├── docs/
-│   ├── PATCH_PLAN.md
-│   ├── identity_badge_variants.svg
-│   ├── level_color_tiers.json
-│   ├── level_color_tiers_preview.svg
-│   └── videochat_camera_ws.md
-└── data/
-    └── 자동 생성, 커밋 금지
+```bash
+node --check static_videochat/app.js
+node -e "const fs=require('fs'); const html=fs.readFileSync('static_videochat/game_player.html','utf8'); const m=html.match(/<script>([\\s\\S]*)<\\/script>/); new Function(m[1]); console.log('game_player script ok');"
 ```
 
-개발자용 작업 맥락은 [codex.md](./codex.md), 앞으로의 패치 메모는 [docs/PATCH_PLAN.md](./docs/PATCH_PLAN.md)를 참고하세요.
+### 정적 파일 캐시
+
+9393 서버는 개발 중 `/static/`, `/shared/`에 no-store 처리를 합니다. 그래도 브라우저/Electron 캐시 때문에 이상하면 강력 새로고침 또는 Electron 재시작을 먼저 시도합니다.
+
+### Electron 디버그
+
+Electron 앱은 네이티브 web/YouTube 브라우저 이벤트와 콘솔 로그를 오버레이 쪽으로 전달합니다. 문제가 생기면 Electron 화면의 디버그 패널 또는 개발자 도구에서 콘솔 로그를 확인합니다.
+
+### WSLg 문제
+
+WSLg에서 창이 작업표시줄에만 보이거나 빈 화면으로 뜨는 문제는 코드보다 WSLg/Remote Desktop/멀티 모니터 상태 문제일 수 있습니다. 실사용은 Windows용 Electron 빌드를 Windows 탐색기에서 직접 실행하는 방식이 더 안정적입니다.
+
+## 커밋 전 체크리스트
+
+```bash
+git status --short
+git diff --check
+```
+
+스테이징 후에는 다음을 확인합니다.
+
+```bash
+git diff --cached --name-only
+```
+
+스테이징 목록에 아래가 있으면 커밋을 멈춥니다.
+
+- `.env`
+- `data/`
+- `vendor/tdlib/`
+- `*.session`
+- `*.db`
+- `*.sqlite`
+- `*.gb`, `*.gbc`, `*.gba`
+- `tools/videochat_app/dist/`
+- 스크린샷/로그/디버그 덤프
+
+## 자주 겪는 문제
+
+### `PortAudio library not found`
+
+```bash
+sudo apt install -y portaudio19-dev
+```
+
+설치 후 가상환경에서 다시 실행합니다.
+
+### WSL2에서 `tdjson.dll`을 찾으려고 함
+
+WSL2/Linux에서는 `.dll`이 아니라 `libtdjson.so`가 필요합니다.
+
+```bash
+scripts/build_tdlib_linux.sh
+```
+
+또는 `.env`의 `TDLIB_JSON_PATH`를 Linux용 `.so` 파일로 지정합니다.
+
+### 부계정이 비디오챗 화면을 못 받음
+
+- `TGCALLS_SESSION` 경로에 로그인 세션이 있는지 확인합니다.
+- `TD_API_ID`, `TD_API_HASH`가 설정되어 있는지 확인합니다.
+- 부계정이 대상 그룹/비디오챗에 접근 가능한지 확인합니다.
+- UI의 자동 참가 설정과 실제 부계정 참가 상태를 확인합니다.
+
+### Chrome에서는 web/YouTube 위젯이 안 됨
+
+정상입니다. 현재 web/YouTube는 Electron 네이티브 BrowserView 기능을 사용합니다. Chrome에서는 3D 오버레이와 일반 위젯 테스트용으로 보고, web/YouTube는 Electron 앱에서 확인합니다.
+
+### 게임 위젯이 ROM을 못 찾음
+
+ROM은 `data/rom/` 아래에 둡니다.
+
+```bash
+ls data/rom
+```
+
+`/api/game/roms`가 ROM 목록을 반환해야 합니다.

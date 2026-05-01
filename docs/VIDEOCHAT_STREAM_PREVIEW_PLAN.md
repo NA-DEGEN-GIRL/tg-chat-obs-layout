@@ -220,26 +220,25 @@ Startup flow:
 1. Start the normal 9292 bot/chat server.
 2. Start 9393 `videochat_overlay.py`.
 3. The normal Telethon watcher resolves active videochat participants and media source ids.
-4. Start the receiver automatically when active camera/screen participants are detected and `VIDEOCHAT_TGCALLS_AUTO_JOIN=1`, or manually with the owner-only `/stream_watch` command.
+4. Start the receiver automatically when the receiver is enabled and active camera/screen participants are detected.
 5. Receiver tries chat candidates in order until `PyTgCalls.play(..., auto_start=False)` joins an active call.
 6. Receiver enables incoming `RecordStream(audio=False, camera=True, screen=True)`.
 7. Frame callbacks store latest frames by `ssrc`.
 8. 9393 maps `ssrc` to participant `video_sources`/`screen_sources` and exposes local preview endpoints.
 
-Manual `/stream_watch` flow:
+Legacy manual receiver flow:
 
-1. Keep `VIDEOCHAT_TGCALLS_PREVIEW_ENABLED=0` if startup-time receiver autostart is not wanted. `VIDEOCHAT_TGCALLS_AUTO_JOIN=1` can still start the receiver once an active broadcaster appears.
-2. Configure `TGCALLS_SESSION=data/telethon/videochat_receiver` and optionally `TGCALLS_PHONE` with the receiver sub-account phone.
-3. Run `/stream_watch` as the owner.
-4. If the receiver session is not authorized, the bot replies with the login command:
+The `/stream_watch`, `/stream_unwatch`, and `/stream_watch_off` bot commands are no longer registered. The receiver now follows the active call automatically. The old command handlers are kept only as legacy helper functions in `main.py`.
+
+1. Configure `TGCALLS_SESSION=data/telethon/videochat_receiver` and optionally `TGCALLS_PHONE` with the receiver sub-account phone.
+2. If the receiver session is not authorized, run the login command directly:
 
 ```powershell
 uv run python tgcalls_videochat_probe.py --session "data/telethon/videochat_receiver" --login-only
 ```
 
-5. Enter the login code for the receiver sub-account, not the host account.
-6. Run `/stream_watch` again. The receiver should join the active call and start exposing camera/screen frames.
-7. Use `/stream_unwatch` or `/stream_watch_off` to stop the receiver and clear cached frames.
+3. Enter the login code for the receiver sub-account, not the host account.
+4. Restart the 9393 overlay server. The receiver should join the active call and start exposing camera/screen frames automatically.
 
 Frame pipeline MVP:
 

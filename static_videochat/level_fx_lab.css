@@ -56,6 +56,12 @@ body {
   background: rgba(255, 224, 130, 0.2);
 }
 
+#hud button.active {
+  border-color: rgba(126, 252, 255, 0.52);
+  background: rgba(126, 252, 255, 0.16);
+  color: #dffcff;
+}
+
 #hud label,
 #hud p {
   margin: 0;
@@ -63,7 +69,13 @@ body {
   font-size: 12px;
 }
 
-#hud input[type="number"] {
+#hud .hint {
+  color: rgba(226, 236, 246, 0.58);
+  font-size: 12px;
+}
+
+#hud input[type="number"],
+#hud input[type="text"] {
   width: 62px;
   margin: 0 5px;
   border: 1px solid rgba(255, 224, 130, 0.24);
@@ -72,6 +84,10 @@ body {
   color: #fff4bf;
   font: 800 12px/1 "Segoe UI", system-ui, sans-serif;
   padding: 6px 7px;
+}
+
+#hud input[type="text"] {
+  width: 118px;
 }
 
 #label {
