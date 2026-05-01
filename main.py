@@ -2809,6 +2809,7 @@ def owner_command_list() -> str:
         "Owner commands",
         "/commands, /help - show this list",
         "/stream_on, /stream_off, /text_on",
+        "/stream_watch, /stream_unwatch",
         "/stt_on, /stt_off",
         "/here_on, /here_off",
         "/check_role, /add_role, /remove_role, /reset_role",
@@ -2816,6 +2817,97 @@ def owner_command_list() -> str:
         "/level_scan @username or reply /level_scan",
         "/level_up @username 1 or reply /level_up -1",
     ])
+
+
+def videochat_tgcalls_api_request(action: str, *, method: str = "POST", timeout: float = 5.0) -> dict:
+    if action not in {"start", "stop", "status"}:
+        raise ValueError("unsupported tgcalls action")
+    api_method = "GET" if action == "status" else method.upper()
+    data = None if api_method == "GET" else b"{}"
+    req = urllib.request.Request(
+        f"{VIDEOCHAT_API_BASE}/api/videochat/tgcalls/{action}",
+        data=data,
+        method=api_method,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        body = res.read().decode("utf-8")
+    if not body:
+        return {}
+    return json.loads(body)
+
+
+def videochat_tgcalls_status_after_start(payload: dict) -> dict:
+    reason = str(payload.get("reason") or "")
+    if not reason.startswith("starting"):
+        return payload
+    time.sleep(1.0)
+    try:
+        return videochat_tgcalls_api_request("status", method="GET", timeout=3)
+    except Exception:
+        return payload
+
+
+def format_stream_watch_status(payload: dict) -> str:
+    reason = str(payload.get("reason") or "")
+    running = bool(payload.get("running"))
+    joined = bool(payload.get("joined"))
+    requested = bool(payload.get("requested"))
+    sources = int(payload.get("sources") or 0)
+    login_command = str(payload.get("login_command") or "").strip()
+    if reason == "login_required":
+        lines = [
+            "stream watcher: sub-account login required.",
+            "Run this in the repo terminal, then enter the login code for the sub-account:",
+        ]
+        if login_command:
+            lines.append(login_command)
+        lines.append("Set TGCALLS_PHONE to the sub-account phone if you want to skip the phone prompt.")
+        return "\n".join(lines)
+    if joined:
+        return f"stream watcher: joined. sources={sources} reason={reason or '-'}"
+    if running:
+        return f"stream watcher: starting/searching. sources={sources} reason={reason or '-'}"
+    if requested:
+        return f"stream watcher: requested but not running. reason={reason or '-'}"
+    return f"stream watcher: stopped. reason={reason or '-'}"
+
+
+def format_stream_watch_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 404:
+            return "stream watcher API not found. Restart the 9393 videochat overlay server after updating code."
+        return f"stream watcher API error: HTTP {exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        return f"stream watcher API unavailable: {exc.reason}"
+    return f"stream watcher failed: {exc.__class__.__name__}: {exc}"
+
+
+@bot.message_handler(commands=["stream_watch"])
+def cmd_stream_watch(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    try:
+        payload = videochat_tgcalls_api_request("start", timeout=8)
+        payload = videochat_tgcalls_status_after_start(payload)
+    except Exception as exc:
+        reply_to_with_overlay(message, format_stream_watch_error(exc))
+        return
+    reply_to_with_overlay(message, format_stream_watch_status(payload))
+
+
+@bot.message_handler(commands=["stream_unwatch", "stream_watch_off"])
+def cmd_stream_unwatch(message):
+    if not _is_owner(message):
+        return
+    emit_text_overlay(message)
+    try:
+        payload = videochat_tgcalls_api_request("stop", timeout=8)
+    except Exception as exc:
+        reply_to_with_overlay(message, format_stream_watch_error(exc))
+        return
+    reply_to_with_overlay(message, format_stream_watch_status(payload))
 
 
 def profile_level_label(record: dict) -> str:

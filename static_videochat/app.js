@@ -1282,7 +1282,7 @@
 
   function streamPreviewRows() {
     return Array.from(state.participants.values())
-      .filter((p) => (!!p.video || !!p.screen) && !isSelfParticipant(p))
+      .filter((p) => !!p.video || !!p.screen)
       .sort((a, b) => Number(b.screen || 0) - Number(a.screen || 0) || String(a.name).localeCompare(String(b.name)));
   }
 
@@ -1296,7 +1296,94 @@
 
   function streamPreviewUrl(p) {
     const stream = p?.stream && typeof p.stream === "object" ? p.stream : null;
-    return stream && typeof stream.url === "string" ? stream.url : "";
+    if (!stream) return "";
+    if (typeof stream.mjpeg_url === "string" && stream.mjpeg_url) return stream.mjpeg_url;
+    return typeof stream.url === "string" ? stream.url : "";
+  }
+
+  function streamPreviewStream(p) {
+    return p?.stream && typeof p.stream === "object" ? p.stream : null;
+  }
+
+  function clampByte(value) {
+    return Math.max(0, Math.min(255, value));
+  }
+
+  function decodeBase64Bytes(value) {
+    const raw = atob(String(value || ""));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  function renderYuv420Frame(canvas, payload) {
+    const width = Number(payload?.width || 0);
+    const height = Number(payload?.height || 0);
+    if (!width || !height || !payload?.data) return false;
+    const bytes = decodeBase64Bytes(payload.data);
+    const maxWidth = canvas.classList.contains("large") ? 720 : 320;
+    const outW = Math.max(1, Math.min(width, maxWidth));
+    const outH = Math.max(1, Math.round((height / width) * outW));
+    if (canvas.width !== outW || canvas.height !== outH) {
+      canvas.width = outW;
+      canvas.height = outH;
+    }
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const image = ctx.createImageData(outW, outH);
+    const ySize = width * height;
+    const uvW = Math.floor(width / 2);
+    const uvSize = uvW * Math.floor(height / 2);
+    const isNv12 = String(payload.format || "").toLowerCase() === "nv12";
+    for (let y = 0; y < outH; y += 1) {
+      const sy = Math.min(height - 1, Math.floor((y * height) / outH));
+      for (let x = 0; x < outW; x += 1) {
+        const sx = Math.min(width - 1, Math.floor((x * width) / outW));
+        const yValue = bytes[sy * width + sx] || 0;
+        let uValue = 128;
+        let vValue = 128;
+        if (isNv12) {
+          const uvIndex = ySize + Math.floor(sy / 2) * width + Math.floor(sx / 2) * 2;
+          uValue = bytes[uvIndex] ?? 128;
+          vValue = bytes[uvIndex + 1] ?? 128;
+        } else {
+          const uvIndex = Math.floor(sy / 2) * uvW + Math.floor(sx / 2);
+          uValue = bytes[ySize + uvIndex] ?? 128;
+          vValue = bytes[ySize + uvSize + uvIndex] ?? 128;
+        }
+        const c = yValue - 16;
+        const d = uValue - 128;
+        const e = vValue - 128;
+        const offset = (y * outW + x) * 4;
+        image.data[offset] = clampByte((298 * c + 409 * e + 128) >> 8);
+        image.data[offset + 1] = clampByte((298 * c - 100 * d - 208 * e + 128) >> 8);
+        image.data[offset + 2] = clampByte((298 * c + 516 * d + 128) >> 8);
+        image.data[offset + 3] = 255;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    return true;
+  }
+
+  function attachRawStreamCanvas(canvas, url, large = false) {
+    const token = `${url}:${Date.now()}:${Math.random()}`;
+    canvas.dataset.rawToken = token;
+    canvas.classList.toggle("large", !!large);
+    const tick = async () => {
+      if (!canvas.isConnected || canvas.dataset.rawToken !== token) return;
+      try {
+        const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`, { cache: "no-store" });
+        if (response.ok) {
+          const payload = await response.json();
+          if (renderYuv420Frame(canvas, payload)) {
+            canvas.closest(".stream-preview-surface")?.classList.add("has-real-stream");
+          }
+        }
+      } catch {
+        canvas.closest(".stream-preview-surface")?.classList.remove("has-real-stream");
+      }
+      window.setTimeout(tick, large ? 120 : 240);
+    };
+    tick();
   }
 
   function fillStreamSurface(target, p, large = false) {
@@ -1307,23 +1394,44 @@
     surface.style.setProperty("--stream-color", color);
     const visual = document.createElement("div");
     visual.className = "stream-preview-visual";
+    const stream = streamPreviewStream(p);
     const streamUrl = streamPreviewUrl(p);
     if (streamUrl) {
-      const media = document.createElement("video");
-      media.className = "stream-preview-media";
-      media.src = streamUrl;
-      media.autoplay = true;
-      media.muted = true;
-      media.loop = true;
-      media.playsInline = true;
-      media.controls = large;
-      media.addEventListener("loadeddata", () => {
-        surface.classList.add("has-real-stream");
-      });
-      media.addEventListener("error", () => {
-        surface.classList.remove("has-real-stream");
-      });
-      visual.appendChild(media);
+      if (stream?.mjpeg_url) {
+        const media = document.createElement("img");
+        media.className = "stream-preview-media mjpeg";
+        media.src = `${stream.mjpeg_url}${stream.mjpeg_url.includes("?") ? "&" : "?"}_=${Date.now()}`;
+        media.alt = "";
+        media.decoding = "async";
+        media.addEventListener("load", () => {
+          surface.classList.add("has-real-stream");
+        });
+        media.addEventListener("error", () => {
+          surface.classList.remove("has-real-stream");
+        });
+        visual.appendChild(media);
+      } else if (stream?.raw) {
+        const media = document.createElement("canvas");
+        media.className = "stream-preview-media raw";
+        attachRawStreamCanvas(media, streamUrl, large);
+        visual.appendChild(media);
+      } else {
+        const media = document.createElement("video");
+        media.className = "stream-preview-media";
+        media.src = streamUrl;
+        media.autoplay = true;
+        media.muted = true;
+        media.loop = true;
+        media.playsInline = true;
+        media.controls = large;
+        media.addEventListener("loadeddata", () => {
+          surface.classList.add("has-real-stream");
+        });
+        media.addEventListener("error", () => {
+          surface.classList.remove("has-real-stream");
+        });
+        visual.appendChild(media);
+      }
     }
     const avatar = document.createElement("div");
     avatar.className = "stream-preview-avatar";
@@ -1339,19 +1447,21 @@
     camera.className = "stream-preview-camera";
     const label = document.createElement("div");
     label.className = "stream-preview-live";
-    label.textContent = streamPreviewLabel(p);
+    const liveText = document.createElement("span");
+    liveText.className = "stream-preview-live-text";
+    liveText.textContent = streamPreviewLabel(p);
+    const mic = document.createElement("span");
+    mic.className = "stream-preview-mic";
+    mic.classList.toggle("muted", !!p.muted);
+    mic.title = p.muted ? "mic off" : "mic on";
+    mic.setAttribute("aria-label", p.muted ? "mic off" : "mic on");
+    const inlineName = document.createElement("span");
+    inlineName.className = "stream-preview-inline-name";
+    inlineName.textContent = p.name || p.username || "Unknown";
+    inlineName.style.color = color;
+    label.append(liveText, mic, inlineName);
     visual.append(avatar, camera, label);
-    const footer = document.createElement("div");
-    footer.className = "stream-preview-footer";
-    const name = document.createElement("span");
-    name.className = "stream-preview-name";
-    name.textContent = p.name || p.username || "Unknown";
-    name.style.color = color;
-    const status = document.createElement("span");
-    status.className = "stream-preview-status";
-    status.textContent = streamPreviewLabel(p);
-    footer.append(name, status);
-    surface.append(visual, footer);
+    surface.append(visual);
     target.appendChild(surface);
   }
 
@@ -1365,7 +1475,7 @@
       viewer.open = false;
     }
     const signature = rows
-      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, streamPreviewUrl(p), participantColor(p)].join(":"))
+      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, p.muted ? 1 : 0, streamPreviewUrl(p), participantColor(p)].join(":"))
       .join("|") + `|${viewer.key}|${viewer.open ? 1 : 0}`;
     const changed = force || signature !== state.streamPreviewSignature;
     if (changed) {
@@ -1406,7 +1516,7 @@
     }
   }
 
-  function applyStreamPreviewSettings() {
+  function applyStreamPreviewSettings(render = false) {
     if (!state.streamPreviewSettings || !streamPreviewPanel) return;
     clampStreamPreviewSettings(state.streamPreviewSettings);
     const s = state.streamPreviewSettings;
@@ -1421,12 +1531,12 @@
     streamPreviewViewer.style.top = `${viewer.y}px`;
     streamPreviewViewer.style.width = `${viewer.w}px`;
     streamPreviewViewer.style.height = `${viewer.h}px`;
-    renderStreamPreviews(true);
+    if (render) renderStreamPreviews(true);
   }
 
   function setupStreamPreviewControls() {
     state.streamPreviewSettings = loadStreamPreviewSettings();
-    applyStreamPreviewSettings();
+    applyStreamPreviewSettings(true);
     streamPreviewToggle?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -1439,7 +1549,7 @@
       ev.stopPropagation();
       state.streamPreviewSettings.viewer.open = false;
       state.streamPreviewSettings.viewer.key = "";
-      applyStreamPreviewSettings();
+      applyStreamPreviewSettings(true);
       saveStreamPreviewSettings();
     });
 
@@ -1495,11 +1605,15 @@
     streamPreviewDrag?.addEventListener("pointerdown", (ev) => begin(ev, "panel", "move"));
     streamPreviewResize?.addEventListener("pointerdown", (ev) => begin(ev, "panel", "resize"));
     streamViewerDrag?.addEventListener("pointerdown", (ev) => begin(ev, "viewer", "move"));
+    streamViewerBody?.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      begin(ev, "viewer", "move");
+    });
     streamViewerResize?.addEventListener("pointerdown", (ev) => begin(ev, "viewer", "resize"));
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end);
     window.addEventListener("resize", () => {
-      applyStreamPreviewSettings();
+      applyStreamPreviewSettings(false);
       saveStreamPreviewSettings();
     });
   }
@@ -2106,7 +2220,7 @@
             nextSettings.streamPreview.viewer || {}
           ),
         });
-        applyStreamPreviewSettings();
+        applyStreamPreviewSettings(true);
         storageSet(STREAM_PREVIEW_SETTINGS_KEY, JSON.stringify(state.streamPreviewSettings));
       }
       if (nextSettings.camera) {

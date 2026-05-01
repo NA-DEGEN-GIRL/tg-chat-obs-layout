@@ -104,6 +104,171 @@ Observed limitation:
 
 TDLib may still be needed for participant-level stream metadata and more stable playback.
 
+Probe script:
+
+```cmd
+uv run python tdlib_videochat_probe.py "https://t.me/+INVITE_HASH"
+```
+
+Useful variants:
+
+```cmd
+uv run python tdlib_videochat_probe.py --chat-id <CHAT_ID>
+uv run python tdlib_videochat_probe.py --group-call-id 1
+```
+
+The script loads `vendor/tdlib/tdjson.dll` by default, or `TDLIB_JSON_DLL` if set. It stores TDLib session data under `data/tdlib/videochat_probe/` and writes raw probe results to `data/debug_tdlib_videochat/last_probe.json`, both of which must stay uncommitted.
+
+What the probe checks:
+
+- TDLib `chat.video_chat.group_call_id`
+- `getGroupCall`
+- `loadGroupCallParticipants` updates, including `video_info` and `screen_sharing_video_info`
+- `getGroupCallStreams`
+- `getGroupCallStreamSegment` / `getVideoChatStreamSegment` if stream channels are exposed
+
+Expected interpretation:
+
+- If `video_info` exists but `getGroupCallStreams` returns no streams, TDLib can see camera state but still doesn't expose browser-playable media segments for normal participant cameras.
+- If stream channels and a segment are saved, the overlay can be wired to that route.
+- If participant loading fails unless joined, a tgcalls join path may be required.
+
+Current live test result:
+
+- The TDLib probe can authenticate against `vendor/tdlib/tdjson.dll` and find an active `group_call_id` from a comma-separated `TD_CHAT_ID` candidate list.
+- For normal participant camera videochat, TDLib reported `getGroupCallStreams` as unavailable because the call is not a streamable RTMP/livestream call.
+- `loadGroupCallParticipants` can fail while the TDLib client is not joined, even when another Telegram app session for the same account is already in the call.
+
+PyTgCalls probe:
+
+```cmd
+uv run python tgcalls_videochat_probe.py --wait 8 --frame-limit 8 --devices camera
+```
+
+Observed result:
+
+- `py-tgcalls[telethon]` + `ntgcalls` can join the active normal group call and receive incoming camera frames.
+- A live test received camera frames at `1280x720`; the raw frame length matched a YUV420/NV12-style layout.
+- The probe writes raw frame samples and `data/debug_tgcalls_videochat/last_probe.json`. These files must stay uncommitted.
+
+Experimental overlay path:
+
+- Set `VIDEOCHAT_TGCALLS_PREVIEW_ENABLED=1` to enable the 9393 PyTgCalls receiver.
+- The receiver tries `TD_CHAT_ID`, `CHAT_ID`, then `VIDEOCHAT_LEVEL_CHAT_ID`; comma-separated values are tried in order.
+- Received frame `ssrc` values are matched to Telethon participant `video_sources`/`screen_sources`.
+- When matched, participant `stream` metadata points to `/api/videochat/tgcalls/frame/{ssrc}.json`.
+- The frontend renders those raw frames onto a canvas. This is intentionally experimental and may need format tuning if colors look wrong.
+
+## Sub-Account Receiver Design
+
+The preferred production direction is to keep the stream receiver separate from the host's real Telegram session.
+
+Roles:
+
+- Host/main account:
+  - joins the Telegram group call normally,
+  - speaks/listens through the official Telegram client,
+  - remains the identity used for STT/host messages in the overlay.
+- Receiver sub-account:
+  - is a normal Telegram user account, not a Bot API bot,
+  - is a member of the chat/channel where the videochat opens,
+  - joins the active group call only for media observation,
+  - keeps microphone/camera off,
+  - receives participant camera/screen raw frames through PyTgCalls/NTgCalls.
+- Bot account:
+  - keeps existing moderation, command, chat, level, and notification behavior,
+  - does not join calls or receive WebRTC media.
+
+Why a sub-account:
+
+- Avoids competing with the host's official Telegram client session.
+- A receiver crash does not interrupt the host's live participation.
+- Receiver login/session storage can be isolated and revoked separately.
+- Makes the video preview feature optional and disableable without affecting normal chat/overlay behavior.
+
+Planned environment variables:
+
+```env
+VIDEOCHAT_TGCALLS_PREVIEW_ENABLED=0
+VIDEOCHAT_TGCALLS_AUTO_JOIN=1
+VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN=1
+VIDEOCHAT_DIAGNOSTICS_ENABLED=1
+VIDEOCHAT_DIAG_INTERVAL_SEC=5
+TGCALLS_SESSION=data/telethon/videochat_receiver
+TGCALLS_PHONE=
+TGCALLS_CHAT_IDS=
+TGCALLS_AUTO_JOIN=1
+TGCALLS_RECEIVE_CAMERA=1
+TGCALLS_RECEIVE_SCREEN=1
+TGCALLS_FRAME_FPS=8
+TGCALLS_MAX_ACTIVE_STREAMS=2
+TGCALLS_MJPEG_FPS=30
+TGCALLS_MJPEG_QUALITY=82
+TGCALLS_MJPEG_WIDTH=1280
+TGCALLS_MJPEG_HEIGHT=720
+```
+
+Notes:
+
+- `TGCALLS_CHAT_IDS` should accept comma-separated candidates, matching the existing `TD_CHAT_ID` behavior.
+- If `TGCALLS_CHAT_IDS` is empty, fallback may use `TD_CHAT_ID`, then `CHAT_ID`, then `VIDEOCHAT_LEVEL_CHAT_ID`.
+- `TGCALLS_PHONE` should be the receiver sub-account phone. It intentionally does not fall back to `TD_PHONE`, because `TD_PHONE` normally belongs to the host/main account.
+- Receiver session data belongs under `data/telethon/` and must never be committed.
+
+Startup flow:
+
+1. Start the normal 9292 bot/chat server.
+2. Start 9393 `videochat_overlay.py`.
+3. The normal Telethon watcher resolves active videochat participants and media source ids.
+4. Start the receiver automatically when active camera/screen participants are detected and `VIDEOCHAT_TGCALLS_AUTO_JOIN=1`, or manually with the owner-only `/stream_watch` command.
+5. Receiver tries chat candidates in order until `PyTgCalls.play(..., auto_start=False)` joins an active call.
+6. Receiver enables incoming `RecordStream(audio=False, camera=True, screen=True)`.
+7. Frame callbacks store latest frames by `ssrc`.
+8. 9393 maps `ssrc` to participant `video_sources`/`screen_sources` and exposes local preview endpoints.
+
+Manual `/stream_watch` flow:
+
+1. Keep `VIDEOCHAT_TGCALLS_PREVIEW_ENABLED=0` if startup-time receiver autostart is not wanted. `VIDEOCHAT_TGCALLS_AUTO_JOIN=1` can still start the receiver once an active broadcaster appears.
+2. Configure `TGCALLS_SESSION=data/telethon/videochat_receiver` and optionally `TGCALLS_PHONE` with the receiver sub-account phone.
+3. Run `/stream_watch` as the owner.
+4. If the receiver session is not authorized, the bot replies with the login command:
+
+```powershell
+uv run python tgcalls_videochat_probe.py --session "data/telethon/videochat_receiver" --login-only
+```
+
+5. Enter the login code for the receiver sub-account, not the host account.
+6. Run `/stream_watch` again. The receiver should join the active call and start exposing camera/screen frames.
+7. Use `/stream_unwatch` or `/stream_watch_off` to stop the receiver and clear cached frames.
+
+Frame pipeline MVP:
+
+- Input: PyTgCalls `StreamFrames` callback.
+- Key: `(device, ssrc)`.
+- Format: live probe confirmed `yuv420p` for camera frames in the tested call.
+- Backend cache: keep only the latest frame per `ssrc` with timestamp, width, height, rotation, and format.
+- Frontend:
+  - prefer `/api/videochat/tgcalls/mjpeg/{ssrc}` for browser/OBS-friendly 720p30 playback,
+  - keep the raw JSON frame endpoint as a debug fallback,
+  - throttle preview rail lower than large viewer,
+  - hide preview if frame timestamp goes stale.
+
+Later optimization:
+
+- Replace JSON/base64 polling with a binary WebSocket channel.
+- Send only selected streams, not every active broadcaster.
+- Move YUV-to-RGB conversion to WebCodecs/WebGL shader if canvas CPU conversion is too expensive.
+- Add per-stream start/stop controls in the preview UI.
+- Add watchdog rejoin if the receiver is kicked, disconnected, or the active group call changes.
+
+Operational constraints:
+
+- The receiver sub-account may visibly appear in the group call participant list.
+- It must have permission to join the group call.
+- If the group/channel restricts videochat participation, receiver permissions need to be configured like a normal user.
+- Use a low FPS cap for previews. This is an overlay aid, not a full video conferencing replacement.
+- Keep the feature behind `VIDEOCHAT_TGCALLS_PREVIEW_ENABLED=0` by default.
+
 Relevant official TDLib APIs:
 
 - `groupCallParticipant.video_info`
