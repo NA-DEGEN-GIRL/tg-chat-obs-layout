@@ -15,10 +15,20 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).parent
-DEFAULT_DLL = BASE_DIR / "vendor" / "tdlib" / "tdjson.dll"
 DEFAULT_DB_DIR = BASE_DIR / "data" / "tdlib" / "videochat_probe"
 DEFAULT_FILES_DIR = BASE_DIR / "data" / "tdlib" / "videochat_probe_files"
 DEFAULT_OUTPUT_DIR = BASE_DIR / "data" / "debug_tdlib_videochat"
+
+
+def default_tdjson_name() -> str:
+    if os.name == "nt":
+        return "tdjson.dll"
+    if platform.system().lower() == "darwin":
+        return "libtdjson.dylib"
+    return "libtdjson.so"
+
+
+DEFAULT_TDJSON = BASE_DIR / "vendor" / "tdlib" / default_tdjson_name()
 
 
 def clean_env(value: str | None) -> str:
@@ -26,6 +36,17 @@ def clean_env(value: str | None) -> str:
     if "#" in value:
         value = value.split("#", 1)[0]
     return value.strip().strip('"').strip("'")
+
+
+def tdjson_env_path() -> str:
+    return clean_env(os.getenv("TDLIB_JSON_PATH")) or clean_env(os.getenv("TDLIB_JSON_DLL"))
+
+
+def repo_relative_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
 
 
 def clean_env_int(*names: str, default: int = 0) -> int:
@@ -338,7 +359,18 @@ def main() -> int:
     parser.add_argument("link", nargs="?", default=clean_env(os.getenv("TD_VIDEOCHAT_LINK")))
     parser.add_argument("--chat-id", type=int, default=0)
     parser.add_argument("--group-call-id", type=int, default=0)
-    parser.add_argument("--dll", default=clean_env(os.getenv("TDLIB_JSON_DLL")) or str(DEFAULT_DLL))
+    parser.add_argument(
+        "--tdjson",
+        "--dll",
+        dest="tdjson",
+        default=tdjson_env_path() or str(DEFAULT_TDJSON),
+        help=(
+            "Path to TDLib JSON shared library. Defaults to vendor/tdlib/tdjson.dll "
+            "on Windows, vendor/tdlib/libtdjson.so on Linux/WSL2, and "
+            "vendor/tdlib/libtdjson.dylib on macOS. TDLIB_JSON_PATH overrides this; "
+            "TDLIB_JSON_DLL is still accepted for compatibility."
+        ),
+    )
     parser.add_argument("--db-dir", default=clean_env(os.getenv("TDLIB_DATABASE_DIR")) or str(DEFAULT_DB_DIR))
     parser.add_argument("--files-dir", default=clean_env(os.getenv("TDLIB_FILES_DIR")) or str(DEFAULT_FILES_DIR))
     parser.add_argument("--wait", type=float, default=5.0)
@@ -351,11 +383,11 @@ def main() -> int:
     if not api_id or not api_hash:
         raise SystemExit("TD_API_ID and TD_API_HASH are required.")
 
-    dll_path = Path(args.dll)
-    if not dll_path.exists():
-        raise SystemExit(f"tdjson DLL not found: {dll_path}")
+    tdjson_path = repo_relative_path(args.tdjson)
+    if not tdjson_path.exists():
+        raise SystemExit(f"tdjson library not found: {tdjson_path}")
 
-    td = TdJsonClient(dll_path)
+    td = TdJsonClient(tdjson_path)
     try:
         authorize(td, api_id, api_hash, phone, Path(args.db_dir), Path(args.files_dir))
         print("[probe] TDLib authorized")

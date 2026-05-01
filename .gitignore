@@ -34,6 +34,7 @@ ENV/
 
 # ─── uv ───
 uv.lock
+.uv-cache/
 
 # ─── 런타임 데이터 ───
 # 유저별 색상 매핑은 로컬 상태. 공유 불필요.
@@ -59,6 +60,12 @@ chrome-debug-profile*/
 
 # Local TDLib binaries
 vendor/tdlib/*.dll
+vendor/tdlib/*.so
+vendor/tdlib/*.so.*
+vendor/tdlib/*.dylib
+vendor/tdlib/build/
+vendor/tdlib/td/
+vendor/tdlib/pkg/
 
 # Node / Electron
 node_modules/

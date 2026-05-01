@@ -540,9 +540,41 @@ body::after {
   -webkit-backdrop-filter: none;
 }
 
+body.control-mode #stream-preview-panel.preview-hidden {
+  width: 58px !important;
+  height: 36px !important;
+  border-color: rgba(255,255,255,0.16);
+  border-radius: 999px;
+  background: rgba(7, 12, 18, 0.72);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.34);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
 #stream-preview-panel.preview-hidden #stream-preview-list,
 #stream-preview-panel.preview-hidden #stream-preview-resize {
   display: none;
+}
+
+body.control-mode #stream-preview-panel.preview-hidden #stream-preview-controls {
+  inset: 4px;
+  right: auto;
+  top: auto;
+  opacity: 0.94;
+}
+
+body.control-mode #stream-preview-panel.preview-hidden #stream-preview-drag {
+  display: none;
+}
+
+body.control-mode #stream-preview-panel.preview-hidden #stream-preview-refresh {
+  display: none;
+}
+
+body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
+  min-width: 50px;
+  height: 28px;
+  padding: 0 10px;
 }
 
 #stream-preview-controls,

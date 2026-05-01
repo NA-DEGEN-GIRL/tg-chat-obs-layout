@@ -34,6 +34,21 @@ function hasArg(name) {
   return process.argv.includes(`--${name}`);
 }
 
+function numericArg(name) {
+  const raw = argValue(name);
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function isWslgRuntime() {
+  return process.platform === "linux" && !!process.env.WSL_DISTRO_NAME;
+}
+
+function useWindowState() {
+  return !isWslgRuntime() || hasArg("keep-window-state");
+}
+
 function normalizeUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -77,6 +92,7 @@ function escapeHtml(value) {
 
 function readWindowState() {
   if (hasArg("reset-window")) return {};
+  if (!useWindowState()) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, "utf8"));
     if (!parsed || typeof parsed !== "object") return {};
@@ -88,6 +104,7 @@ function readWindowState() {
 
 function writeWindowState() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!useWindowState()) return;
   try {
     fs.mkdirSync(path.dirname(WINDOW_STATE_FILE), { recursive: true });
     const bounds = mainWindow.getBounds();
@@ -292,8 +309,10 @@ function createWindow() {
   }
   const width = Number(argValue("width")) || Number(saved.width) || 1600;
   const height = Number(argValue("height")) || Number(saved.height) || 900;
-  const x = Number.isFinite(Number(saved.x)) ? Number(saved.x) : undefined;
-  const y = Number.isFinite(Number(saved.y)) ? Number(saved.y) : undefined;
+  const argX = numericArg("x");
+  const argY = numericArg("y");
+  const x = argX ?? (Number.isFinite(Number(saved.x)) ? Number(saved.x) : undefined);
+  const y = argY ?? (Number.isFinite(Number(saved.y)) ? Number(saved.y) : undefined);
   mainWindow = new BrowserWindow({
     width,
     height,

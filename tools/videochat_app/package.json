@@ -6,9 +6,13 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "start:wslg": "bash ./run-wslg.sh",
+    "start:wslg:fallback": "TG_VIDEOCHAT_WSLG_RENDERER=x11-swiftshader bash ./run-wslg.sh",
+    "start:wslg:packed": "TG_VIDEOCHAT_WSLG_PACKED=1 bash ./run-wslg.sh",
     "viewer": "electron . -- --viewer",
     "control": "electron . -- --control",
     "pack": "electron-builder --dir",
+    "pack:linux": "electron-builder --linux dir --x64",
     "build:win": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable --x64"
   },
   "devDependencies": {

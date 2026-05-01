@@ -66,6 +66,7 @@
   streamPreviewPanel.innerHTML = `
     <div id="stream-preview-controls">
       <button id="stream-preview-drag" type="button" title="preview move">M</button>
+      <button id="stream-preview-refresh" type="button" title="refresh preview">R</button>
       <button id="stream-preview-toggle" type="button" title="preview show/hide">hide</button>
     </div>
     <div id="stream-preview-list"></div>
@@ -74,6 +75,7 @@
   document.body.appendChild(streamPreviewPanel);
   const streamPreviewControls = streamPreviewPanel.querySelector("#stream-preview-controls");
   const streamPreviewDrag = streamPreviewPanel.querySelector("#stream-preview-drag");
+  const streamPreviewRefresh = streamPreviewPanel.querySelector("#stream-preview-refresh");
   const streamPreviewToggle = streamPreviewPanel.querySelector("#stream-preview-toggle");
   const streamPreviewList = streamPreviewPanel.querySelector("#stream-preview-list");
   const streamPreviewResize = streamPreviewPanel.querySelector("#stream-preview-resize");
@@ -83,6 +85,7 @@
   streamPreviewViewer.innerHTML = `
     <div id="stream-viewer-bar">
       <button id="stream-viewer-drag" type="button" title="viewer move">M</button>
+      <button id="stream-viewer-refresh" type="button" title="refresh preview">R</button>
       <button id="stream-viewer-close" type="button" title="close">x</button>
     </div>
     <div id="stream-viewer-body"></div>
@@ -91,6 +94,7 @@
   document.body.appendChild(streamPreviewViewer);
   const streamViewerBar = streamPreviewViewer.querySelector("#stream-viewer-bar");
   const streamViewerDrag = streamPreviewViewer.querySelector("#stream-viewer-drag");
+  const streamViewerRefresh = streamPreviewViewer.querySelector("#stream-viewer-refresh");
   const streamViewerClose = streamPreviewViewer.querySelector("#stream-viewer-close");
   const streamViewerBody = streamPreviewViewer.querySelector("#stream-viewer-body");
   const streamViewerResize = streamPreviewViewer.querySelector("#stream-viewer-resize");
@@ -102,6 +106,9 @@
   const TOAST_SETTINGS_KEY = "videochat.toastSettings.v1";
   const STREAM_PREVIEW_SETTINGS_KEY = "videochat.streamPreviewSettings.v1";
   const EMOJI_PICKER_POS_KEY = "videochat.emojiPicker.v1";
+  const STREAM_PREVIEW_MJPEG_RECYCLE_MS = 4 * 60 * 1000;
+  const STREAM_PREVIEW_MJPEG_RETRY_MIN_MS = 1200;
+  const STREAM_PREVIEW_MJPEG_RETRY_MAX_MS = 10000;
 
   const state = {
     participants: new Map(),
@@ -1305,6 +1312,16 @@
     return p?.stream && typeof p.stream === "object" ? p.stream : null;
   }
 
+  function cacheBustStreamUrl(url, key = "_") {
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}${encodeURIComponent(key)}=${Date.now()}`;
+  }
+
+  function refreshStreamPreviews() {
+    state.streamPreviewSignature = "";
+    renderStreamPreviews(true);
+  }
+
   function clampByte(value) {
     return Math.max(0, Math.min(255, value));
   }
@@ -1383,7 +1400,64 @@
       }
       window.setTimeout(tick, large ? 120 : 240);
     };
-    tick();
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(tick);
+    } else {
+      window.setTimeout(tick, 0);
+    }
+  }
+
+  function attachMjpegStreamImage(media, surface, url) {
+    const token = `${url}:${Date.now()}:${Math.random()}`;
+    media.dataset.mjpegToken = token;
+    let retryCount = 0;
+    let retryTimer = 0;
+    let recycleTimer = 0;
+
+    const isCurrent = () => media.isConnected && media.dataset.mjpegToken === token;
+    const clearTimers = () => {
+      if (retryTimer) window.clearTimeout(retryTimer);
+      if (recycleTimer) window.clearTimeout(recycleTimer);
+      retryTimer = 0;
+      recycleTimer = 0;
+    };
+    const connect = (reason = "open") => {
+      if (!isCurrent()) {
+        clearTimers();
+        return;
+      }
+      if (recycleTimer) window.clearTimeout(recycleTimer);
+      recycleTimer = window.setTimeout(() => connect("cycle"), STREAM_PREVIEW_MJPEG_RECYCLE_MS);
+      media.src = cacheBustStreamUrl(url, `mjpeg_${reason}`);
+    };
+    const scheduleRetry = () => {
+      if (!isCurrent() || retryTimer) return;
+      const delay = Math.min(
+        STREAM_PREVIEW_MJPEG_RETRY_MAX_MS,
+        STREAM_PREVIEW_MJPEG_RETRY_MIN_MS * Math.max(1, 2 ** Math.min(retryCount, 3))
+      );
+      retryTimer = window.setTimeout(() => {
+        retryTimer = 0;
+        retryCount += 1;
+        connect("retry");
+      }, delay);
+    };
+
+    media.addEventListener("load", () => {
+      if (!isCurrent()) return;
+      retryCount = 0;
+      surface.classList.add("has-real-stream");
+    });
+    media.addEventListener("error", () => {
+      if (!isCurrent()) return;
+      surface.classList.remove("has-real-stream");
+      scheduleRetry();
+    });
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(() => connect());
+    } else {
+      window.setTimeout(() => connect(), 0);
+    }
   }
 
   function fillStreamSurface(target, p, large = false) {
@@ -1400,16 +1474,10 @@
       if (stream?.mjpeg_url) {
         const media = document.createElement("img");
         media.className = "stream-preview-media mjpeg";
-        media.src = `${stream.mjpeg_url}${stream.mjpeg_url.includes("?") ? "&" : "?"}_=${Date.now()}`;
         media.alt = "";
         media.decoding = "async";
-        media.addEventListener("load", () => {
-          surface.classList.add("has-real-stream");
-        });
-        media.addEventListener("error", () => {
-          surface.classList.remove("has-real-stream");
-        });
         visual.appendChild(media);
+        attachMjpegStreamImage(media, surface, stream.mjpeg_url);
       } else if (stream?.raw) {
         const media = document.createElement("canvas");
         media.className = "stream-preview-media raw";
@@ -1525,7 +1593,11 @@
     streamPreviewPanel.style.width = `${s.w}px`;
     streamPreviewPanel.style.height = `${s.h}px`;
     streamPreviewPanel.classList.toggle("preview-hidden", !!s.hidden);
-    if (streamPreviewToggle) streamPreviewToggle.textContent = s.hidden ? "show" : "hide";
+    if (streamPreviewToggle) {
+      streamPreviewToggle.textContent = s.hidden ? "show" : "hide";
+      streamPreviewToggle.title = s.hidden ? "show preview" : "hide preview";
+      streamPreviewToggle.setAttribute("aria-label", s.hidden ? "show preview" : "hide preview");
+    }
     const viewer = s.viewer || {};
     streamPreviewViewer.style.left = `${viewer.x}px`;
     streamPreviewViewer.style.top = `${viewer.y}px`;
@@ -1543,6 +1615,16 @@
       state.streamPreviewSettings.hidden = !state.streamPreviewSettings.hidden;
       applyStreamPreviewSettings();
       saveStreamPreviewSettings();
+    });
+    streamPreviewRefresh?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      refreshStreamPreviews();
+    });
+    streamViewerRefresh?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      refreshStreamPreviews();
     });
     streamViewerClose?.addEventListener("click", (ev) => {
       ev.preventDefault();

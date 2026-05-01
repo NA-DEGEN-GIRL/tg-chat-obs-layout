@@ -81,6 +81,7 @@ TGCALLS_MJPEG_FPS = max(1, min(30, int(os.getenv("TGCALLS_MJPEG_FPS", "30") or "
 TGCALLS_MJPEG_QUALITY = max(35, min(95, int(os.getenv("TGCALLS_MJPEG_QUALITY", "82") or "82")))
 TGCALLS_MJPEG_WIDTH = max(0, int(os.getenv("TGCALLS_MJPEG_WIDTH", "1280") or "1280"))
 TGCALLS_MJPEG_HEIGHT = max(0, int(os.getenv("TGCALLS_MJPEG_HEIGHT", "720") or "720"))
+TGCALLS_MJPEG_KEEPALIVE_SEC = max(1.0, min(15.0, float(os.getenv("TGCALLS_MJPEG_KEEPALIVE_SEC", "2.5") or "2.5")))
 
 
 def chat_api_base() -> str:
@@ -1730,6 +1731,7 @@ async def mjpeg_frame_generator(ssrc: int, request: Request):
     boundary = b"--frame\r\n"
     delay = 1.0 / max(1, TGCALLS_MJPEG_FPS)
     last_seq = -1
+    last_sent_at = 0.0
     tgcalls_mjpeg_active_clients += 1
     tgcalls_mjpeg_total_clients += 1
     diagnostic_log(
@@ -1747,7 +1749,8 @@ async def mjpeg_frame_generator(ssrc: int, request: Request):
                 await asyncio.sleep(delay)
                 continue
             seq = int(frame.get("seq") or 0)
-            if seq == last_seq:
+            now = time.monotonic()
+            if seq == last_seq and now - last_sent_at < TGCALLS_MJPEG_KEEPALIVE_SEC:
                 await asyncio.sleep(delay)
                 continue
             try:
@@ -1767,6 +1770,7 @@ async def mjpeg_frame_generator(ssrc: int, request: Request):
                 + jpeg
                 + b"\r\n"
             )
+            last_sent_at = time.monotonic()
             await asyncio.sleep(delay)
     finally:
         tgcalls_mjpeg_active_clients = max(0, tgcalls_mjpeg_active_clients - 1)

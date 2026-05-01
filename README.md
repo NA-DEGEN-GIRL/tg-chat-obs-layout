@@ -85,6 +85,8 @@ uv venv
 uv pip install -r requirements.txt
 ```
 
+WSL2에서 개발할 때는 [WSL2 Development Notes](docs/WSL2_SETUP.md)를 먼저 확인하세요. Windows의 `tdjson.dll`은 WSL2에서 사용할 수 없으므로 Linux `libtdjson.so`를 설치하거나 빌드해야 하고, 복사한 Telegram 세션/TDLib 캐시는 WSL2에서 재로그인해 재생성하는 것을 권장합니다.
+
 ## Telegram Bot 설정
 
 1. Telegram에서 [@BotFather](https://t.me/BotFather)를 엽니다.

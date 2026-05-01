@@ -117,7 +117,7 @@ uv run python tdlib_videochat_probe.py --chat-id <CHAT_ID>
 uv run python tdlib_videochat_probe.py --group-call-id 1
 ```
 
-The script loads `vendor/tdlib/tdjson.dll` by default, or `TDLIB_JSON_DLL` if set. It stores TDLib session data under `data/tdlib/videochat_probe/` and writes raw probe results to `data/debug_tdlib_videochat/last_probe.json`, both of which must stay uncommitted.
+The script loads the TDLib JSON library for the current OS by default: `vendor/tdlib/tdjson.dll` on Windows, `vendor/tdlib/libtdjson.so` on Linux/WSL2, and `vendor/tdlib/libtdjson.dylib` on macOS. Override with `TDLIB_JSON_PATH` or `--tdjson`; the older `TDLIB_JSON_DLL`/`--dll` names still work. TDLib session data and raw probe results are written under local `data/` paths and must stay uncommitted.
 
 What the probe checks:
 
@@ -135,7 +135,7 @@ Expected interpretation:
 
 Current live test result:
 
-- The TDLib probe can authenticate against `vendor/tdlib/tdjson.dll` and find an active `group_call_id` from a comma-separated `TD_CHAT_ID` candidate list.
+- The TDLib probe can authenticate against the OS-local TDLib JSON library and find an active `group_call_id` from a comma-separated `TD_CHAT_ID` candidate list.
 - For normal participant camera videochat, TDLib reported `getGroupCallStreams` as unavailable because the call is not a streamable RTMP/livestream call.
 - `loadGroupCallParticipants` can fail while the TDLib client is not joined, even when another Telegram app session for the same account is already in the call.
 
