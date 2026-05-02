@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sound Lab</title>
+  <link rel="stylesheet" href="/static/sound_lab.css">
+</head>
+<body>
+  <main class="sound-lab">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">static audio test</p>
+        <h1>Sound Lab</h1>
+      </div>
+      <div class="transport">
+        <button id="audio-power" type="button">audio on</button>
+        <button id="stop-all" type="button">stop</button>
+      </div>
+    </header>
+
+    <section class="meter-panel" aria-label="audio meter">
+      <canvas id="meter" width="960" height="120"></canvas>
+      <div class="meter-meta">
+        <span id="audio-state">suspended</span>
+        <span id="active-state">idle</span>
+      </div>
+    </section>
+
+    <section class="firework-stage-panel" aria-label="firework timing stage">
+      <canvas id="firework-stage" width="960" height="300"></canvas>
+      <div class="firework-stage-meta">
+        <span>firework timing</span>
+        <span id="firework-timeline">idle</span>
+      </div>
+    </section>
+
+    <section class="control-grid">
+      <div class="panel">
+        <h2>master</h2>
+        <label class="slider-row">
+          <span>volume</span>
+          <input id="master-volume" type="range" min="0" max="1" step="0.01" value="0.55">
+          <strong id="master-volume-value">55%</strong>
+        </label>
+        <label class="slider-row">
+          <span>distance</span>
+          <input id="distance" type="range" min="0" max="1" step="0.01" value="0.3">
+          <strong id="distance-value">30%</strong>
+        </label>
+        <label class="slider-row">
+          <span>pan</span>
+          <input id="pan" type="range" min="-1" max="1" step="0.01" value="0">
+          <strong id="pan-value">0</strong>
+        </label>
+      </div>
+
+      <div class="panel fire-panel">
+        <h2>campfire</h2>
+        <div class="button-row">
+          <button id="fire-toggle" type="button">fire loop</button>
+          <button id="fire-soft" type="button">soft</button>
+          <button id="fire-bright" type="button">bright</button>
+        </div>
+        <label class="slider-row">
+          <span>bed</span>
+          <input id="fire-bed" type="range" min="0" max="1" step="0.01" value="0.42">
+          <strong id="fire-bed-value">42%</strong>
+        </label>
+        <label class="slider-row">
+          <span>crackle</span>
+          <input id="fire-crackle" type="range" min="0" max="1" step="0.01" value="0.62">
+          <strong id="fire-crackle-value">62%</strong>
+        </label>
+        <label class="slider-row">
+          <span>rate</span>
+          <input id="fire-rate" type="range" min="0" max="1" step="0.01" value="0.48">
+          <strong id="fire-rate-value">48%</strong>
+        </label>
+        <label class="slider-row">
+          <span>strong max</span>
+          <input id="fire-strong-crackle" type="range" min="2" max="30" step="1" value="9">
+          <strong id="fire-strong-crackle-value">&lt;=9s</strong>
+        </label>
+        <label class="slider-row">
+          <span>strong power</span>
+          <input id="fire-strong-crackle-power" type="range" min="0" max="1" step="0.01" value="0.72">
+          <strong id="fire-strong-crackle-power-value">72%</strong>
+        </label>
+        <div class="button-row">
+          <button id="fire-strong-crackle-test" type="button">play strong</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>ambient</h2>
+        <div class="button-row">
+          <button data-loop="night" type="button">night</button>
+          <button data-loop="wind" type="button">wind</button>
+          <button data-loop="crowd" type="button">crowd</button>
+          <button data-loop="rain" type="button">rain</button>
+        </div>
+        <label class="slider-row">
+          <span>ambient</span>
+          <input id="ambient-volume" type="range" min="0" max="1" step="0.01" value="0.24">
+          <strong id="ambient-volume-value">24%</strong>
+        </label>
+      </div>
+
+      <div class="panel">
+        <h2>events</h2>
+        <div class="button-grid">
+          <button data-hit="ui" type="button">ui pop</button>
+          <button data-hit="level-up" type="button">level up</button>
+          <button data-hit="level-down" type="button">level down</button>
+          <button data-hit="firework" type="button">firework</button>
+          <button data-hit="cheer" type="button">cheer</button>
+          <button data-hit="claw" type="button">claw</button>
+          <button data-hit="cage" type="button">cage</button>
+          <button data-hit="coin" type="button">coin</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>entry / exit</h2>
+        <canvas id="character-fx-stage" class="character-fx-stage" width="360" height="180"></canvas>
+        <label class="slider-row">
+          <span>size</span>
+          <input id="character-fx-size" type="range" min="0.25" max="1.4" step="0.05" value="1">
+          <strong id="character-fx-size-value">1.00x</strong>
+        </label>
+        <label class="file-row">
+          <span>entry</span>
+          <select id="entry-sound-style">
+            <option value="drop">drop pop</option>
+            <option value="sparkle">sparkle</option>
+            <option value="portal">portal</option>
+          </select>
+        </label>
+        <div class="button-row">
+          <button id="entry-sound-play" type="button">play entry</button>
+        </div>
+        <label class="file-row">
+          <span>exit</span>
+          <select id="exit-sound-style">
+            <option value="ascend">ascend</option>
+            <option value="poof">poof</option>
+            <option value="drop">drop away</option>
+          </select>
+        </label>
+        <div class="button-row">
+          <button id="exit-sound-play" type="button">play exit</button>
+        </div>
+      </div>
+
+      <div class="panel babble-panel">
+        <h2>babble voice</h2>
+        <textarea id="babble-text" rows="4">안녕하세요 오늘은 캠프파이어 앞에서 같이 이야기해요.</textarea>
+        <label class="slider-row">
+          <span>speed</span>
+          <input id="babble-speed" type="range" min="0.55" max="5" step="0.05" value="1">
+          <strong id="babble-speed-value">1.00x</strong>
+        </label>
+        <label class="file-row">
+          <span>voice</span>
+          <select id="babble-voice">
+            <option value="random">random</option>
+            <option value="soft">soft</option>
+            <option value="bright">bright</option>
+            <option value="low">low</option>
+            <option value="tiny">tiny</option>
+            <option value="robot">robot</option>
+          </select>
+        </label>
+        <label class="file-row">
+          <span>seed</span>
+          <input id="babble-seed" type="text" value="NA">
+        </label>
+        <div class="button-row">
+          <button id="babble-play" type="button">play babble</button>
+          <button id="babble-random" type="button">random voice</button>
+        </div>
+        <div id="babble-display" class="babble-display"></div>
+      </div>
+
+      <div class="panel">
+        <h2>presets</h2>
+        <div class="button-row">
+          <button data-preset="campfire-only" type="button">campfire</button>
+          <button data-preset="quiet-night" type="button">quiet night</button>
+          <button data-preset="festival" type="button">festival</button>
+          <button data-preset="clear" type="button">clear</button>
+        </div>
+        <div class="preset-readout" id="preset-readout">no preset</div>
+      </div>
+
+      <div class="panel">
+        <h2>local file</h2>
+        <label class="file-row">
+          <span>audio</span>
+          <input id="file-input" type="file" accept="audio/*">
+        </label>
+        <div class="button-row">
+          <button id="file-play" type="button">play</button>
+          <button id="file-stop" type="button">stop file</button>
+        </div>
+        <label class="toggle-row">
+          <input id="file-loop" type="checkbox">
+          <span>loop file</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="log-panel">
+      <div class="log-title">log</div>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script src="/static/sound_lab.js"></script>
+</body>
+</html>

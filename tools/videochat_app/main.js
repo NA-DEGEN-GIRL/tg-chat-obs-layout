@@ -457,6 +457,9 @@ async function injectToolbar() {
         transform: translateY(0);
         pointer-events: auto;
       }
+      #app-settings-toggle {
+        display: none !important;
+      }
       #tg-app-toolbar {
         position: fixed;
         right: 12px;
@@ -491,7 +494,8 @@ async function injectToolbar() {
     await mainWindow.webContents.executeJavaScript(`
       (() => {
         let toolbar = document.getElementById("tg-app-toolbar");
-        const toolbarHtml = '<button id="tg-app-toggle-ui" type="button" title="hide/show overlay UI">UI</button><button id="tg-app-reload" type="button" title="reload">R</button>';
+        const settingsKey = "videochat.appSettingsOpen.v1";
+        const toolbarHtml = '<button id="tg-app-toggle-ui" type="button" title="hide/show overlay UI">UI</button><button id="tg-app-reload" type="button" title="reload">R</button><button id="tg-app-settings" type="button" title="settings">⚙</button>';
         if (!toolbar) {
           toolbar = document.createElement("div");
           toolbar.id = "tg-app-toolbar";
@@ -508,9 +512,17 @@ async function injectToolbar() {
             document.body.classList.toggle("tg-app-ui-hidden");
             document.getElementById("tg-app-toggle-ui").classList.toggle("active", document.body.classList.contains("tg-app-ui-hidden"));
         });
+        bindOnce("tg-app-settings", () => {
+            const next = !document.body.classList.contains("app-settings-open");
+            document.body.classList.toggle("app-settings-open", next);
+            document.getElementById("tg-app-settings").classList.toggle("active", next);
+            try { localStorage.setItem(settingsKey, next ? "1" : "0"); } catch (_) {}
+        });
         bindOnce("tg-app-reload", () => location.reload());
         document.body.classList.toggle("tg-app-ui-hidden", ${overlayUiHidden ? "true" : "false"});
+        try { document.body.classList.toggle("app-settings-open", localStorage.getItem(settingsKey) === "1"); } catch (_) {}
         document.getElementById("tg-app-toggle-ui")?.classList.toggle("active", document.body.classList.contains("tg-app-ui-hidden"));
+        document.getElementById("tg-app-settings")?.classList.toggle("active", document.body.classList.contains("app-settings-open"));
       })();
     `);
   } catch (_) {}

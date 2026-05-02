@@ -32,6 +32,7 @@ textarea,
 }
 
 body.viewer-mode #avatar-controls,
+body.viewer-mode #app-settings-toggle,
 body.viewer-mode #topic-controls,
 body.viewer-mode #topic-resize,
 body.viewer-mode #toast-handle,
@@ -47,12 +48,9 @@ body.viewer-mode .widget-resize {
   display: none !important;
 }
 
-body.control-mode #avatar-controls {
-  opacity: 0.92;
-}
-
 body.tg-app-ui-hidden #topic-controls,
 body.tg-app-ui-hidden #avatar-controls,
+body.tg-app-ui-hidden #app-settings-toggle,
 body.tg-app-ui-hidden #chat-controls,
 body.tg-app-ui-hidden .effect-control,
 body.tg-app-ui-hidden .topic-resize-handle,
@@ -307,19 +305,74 @@ body::after {
 
 #avatar-controls {
   position: fixed;
-  left: 14px;
-  bottom: 14px;
+  right: 14px;
+  top: 58px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  opacity: 0.24;
-  transition: opacity 160ms ease;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 18px;
+  background: rgba(6, 10, 17, 0.78);
+  box-shadow: 0 18px 44px rgba(0,0,0,0.34);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: opacity 160ms ease, transform 160ms ease;
   z-index: 17001;
-  max-width: min(760px, calc(100vw - 28px));
+  max-width: min(820px, calc(100vw - 28px));
+  max-height: calc(100vh - 76px);
+  overflow: auto;
 }
 
-#avatar-controls:hover {
-  opacity: 0.88;
+body.control-mode.app-settings-open #avatar-controls {
+  opacity: 0.96;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+#app-settings-toggle {
+  position: fixed;
+  right: 14px;
+  top: 14px;
+  display: none;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  background: rgba(8, 11, 16, 0.52);
+  color: rgba(255,255,255,0.84);
+  font-size: 19px;
+  font-weight: 900;
+  cursor: pointer;
+  opacity: 0.46;
+  z-index: 17003;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.24);
+  transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+body.control-mode #app-settings-toggle {
+  display: inline-flex;
+}
+
+body.control-mode.tg-app-ui-hidden #app-settings-toggle {
+  display: none;
+}
+
+#app-settings-toggle:hover,
+#app-settings-toggle.active {
+  opacity: 0.92;
+  border-color: rgba(255, 210, 92, 0.42);
+  background: rgba(255, 210, 92, 0.16);
+  color: rgba(255, 244, 204, 0.96);
+}
+
+#app-settings-toggle.active {
+  transform: rotate(22deg);
 }
 
 #avatar-controls button {
@@ -336,7 +389,8 @@ body::after {
 }
 
 #subaccount-toggle.active,
-#subaccount-auto-toggle.active {
+#subaccount-auto-toggle.active,
+#sound-toggle.active {
   border-color: rgba(255, 210, 92, 0.48);
   background: rgba(255, 210, 92, 0.16);
   color: rgba(255, 244, 204, 0.95);
@@ -382,6 +436,24 @@ body::after {
 .effect-control input {
   width: 46px;
   min-width: 0;
+}
+
+.effect-control.sound-control {
+  gap: 7px;
+}
+
+.effect-control.sound-control input[type="range"] {
+  width: 76px;
+  padding: 0;
+  accent-color: #ffb45c;
+  cursor: pointer;
+}
+
+.effect-control.sound-control strong {
+  min-width: 34px;
+  color: rgba(255, 229, 185, 0.96);
+  font-size: 11px;
+  text-align: right;
 }
 
 .effect-control.message-template input {
@@ -3642,6 +3714,10 @@ body.widget-drag-active .game-widget-frame {
   background: rgba(8, 10, 14, 0.93);
   border: 1px solid rgba(255, 232, 137, 0.45);
   transform: translateY(0) scale(1);
+}
+
+.avatar .bubble .babble-final[hidden] {
+  display: none !important;
 }
 
 .avatar.mini-prisoner .identity-card {

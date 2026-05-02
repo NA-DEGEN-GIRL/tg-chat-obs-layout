@@ -32,6 +32,16 @@
   const topicControls = document.getElementById("topic-controls");
   const topicMove = document.getElementById("topic-move");
   const topicEdit = document.getElementById("topic-edit");
+  let appSettingsToggle = document.getElementById("app-settings-toggle");
+  if (!appSettingsToggle) {
+    appSettingsToggle = document.createElement("button");
+    appSettingsToggle.id = "app-settings-toggle";
+    appSettingsToggle.type = "button";
+    appSettingsToggle.title = "설정 열기";
+    appSettingsToggle.setAttribute("aria-expanded", "false");
+    appSettingsToggle.textContent = "⚙";
+    document.body.appendChild(appSettingsToggle);
+  }
   const avatarSizeDown = document.getElementById("avatar-size-down");
   const avatarSizeUp = document.getElementById("avatar-size-up");
   const bubbleSizeDown = document.getElementById("bubble-size-down");
@@ -45,6 +55,29 @@
   const lifecycleSec = document.getElementById("lifecycle-sec");
   const fireUserCooldown = document.getElementById("fire-user-cooldown");
   const fireGlobalCooldown = document.getElementById("fire-global-cooldown");
+  const soundToggle = document.getElementById("sound-toggle");
+  const soundBgVolume = document.getElementById("sound-bg-volume");
+  const soundBgVolumeValue = document.getElementById("sound-bg-volume-value");
+  const soundEventVolume = document.getElementById("sound-event-volume");
+  const soundEventVolumeValue = document.getElementById("sound-event-volume-value");
+  const soundFireVolume = document.getElementById("sound-fire-volume");
+  const soundFireVolumeValue = document.getElementById("sound-fire-volume-value");
+  const soundLifeVolume = document.getElementById("sound-life-volume");
+  const soundLifeVolumeValue = document.getElementById("sound-life-volume-value");
+  const soundFireBed = document.getElementById("sound-fire-bed");
+  const soundFireBedValue = document.getElementById("sound-fire-bed-value");
+  const soundFireCrackle = document.getElementById("sound-fire-crackle");
+  const soundFireCrackleValue = document.getElementById("sound-fire-crackle-value");
+  const soundFireRate = document.getElementById("sound-fire-rate");
+  const soundFireRateValue = document.getElementById("sound-fire-rate-value");
+  const soundFireStrongMax = document.getElementById("sound-fire-strong-max");
+  const soundFireStrongMaxValue = document.getElementById("sound-fire-strong-max-value");
+  const soundFireStrongPower = document.getElementById("sound-fire-strong-power");
+  const soundFireStrongPowerValue = document.getElementById("sound-fire-strong-power-value");
+  const soundBabbleVolume = document.getElementById("sound-babble-volume");
+  const soundBabbleVolumeValue = document.getElementById("sound-babble-volume-value");
+  const soundBabbleSpeed = document.getElementById("sound-babble-speed");
+  const soundBabbleSpeedValue = document.getElementById("sound-babble-speed-value");
   const toastStyle = document.getElementById("toast-style");
   const entryMessageTemplate = document.getElementById("entry-message-template");
   const exitMessageTemplate = document.getElementById("exit-message-template");
@@ -134,8 +167,10 @@
   const CHAT_SETTINGS_KEY = "videochat.chatPanelSettings.v2";
   const TOPIC_SETTINGS_KEY = "videochat.topicSettings.v1";
   const AVATAR_SETTINGS_KEY = "videochat.avatarSettings.v1";
+  const APP_SETTINGS_OPEN_KEY = "videochat.appSettingsOpen.v1";
   const CAMERA_SETTINGS_KEY = "videochat.cameraSettings.v1";
   const EFFECT_SETTINGS_KEY = "videochat.effectSettings.v1";
+  const SOUND_SETTINGS_KEY = "videochat.soundSettings.v1";
   const TOAST_SETTINGS_KEY = "videochat.toastSettings.v1";
   const STREAM_PREVIEW_SETTINGS_KEY = "videochat.streamPreviewSettings.v1";
   const WIDGET_SETTINGS_KEY = "videochat.widgetSettings.v1";
@@ -208,6 +243,7 @@
     topicSettings: null,
     avatarSettings: null,
     effectSettings: null,
+    soundSettings: null,
     toastSettings: null,
     streamPreviewSettings: null,
     widgetSettings: null,
@@ -258,6 +294,20 @@
     gameCloseTimer: 0,
     gameVoteBuffer: null,
     electronBrowserBridgeBound: false,
+    audio: {
+      ctx: null,
+      masterGain: null,
+      bgGain: null,
+      eventGain: null,
+      fireGain: null,
+      lifeGain: null,
+      babbleGain: null,
+      fire: null,
+      crackleTimer: 0,
+      strongCrackleTimer: 0,
+      flutterTimer: 0,
+      unlockBound: false,
+    },
     electronBrowserLogs: [],
     electronNativeViewsSuppressedForDrag: false,
     widgetDragDepth: 0,
@@ -337,6 +387,7 @@
   } catch (_) {}
   const params = new URLSearchParams(location.search);
   state.controlMode = ["1", "true", "yes", "on"].includes(String(params.get("control") || "").toLowerCase());
+  if (!state.controlMode && window.tgElectronBrowser?.available) state.controlMode = true;
   document.body.classList.toggle("control-mode", state.controlMode);
   document.body.classList.toggle("viewer-mode", !state.controlMode);
   if (params.get("debug_speech") === "1") state.cfg.debug_speech = true;
@@ -992,6 +1043,26 @@
     try { localStorage.setItem(key, value); } catch (_) {}
   }
 
+  function applyAppSettingsPanelOpen(open) {
+    document.body.classList.toggle("app-settings-open", !!open);
+    if (!appSettingsToggle) return;
+    appSettingsToggle.classList.toggle("active", !!open);
+    appSettingsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    appSettingsToggle.title = open ? "설정 닫기" : "설정 열기";
+  }
+
+  function setupAppSettingsToggle() {
+    const open = storageGet(APP_SETTINGS_OPEN_KEY, "0") === "1";
+    applyAppSettingsPanelOpen(open);
+    appSettingsToggle?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const next = !document.body.classList.contains("app-settings-open");
+      applyAppSettingsPanelOpen(next);
+      storageSet(APP_SETTINGS_OPEN_KEY, next ? "1" : "0");
+    });
+  }
+
   function settingSection(name) {
     const value = state.overlaySettings?.[name];
     return value && typeof value === "object" ? value : null;
@@ -1146,6 +1217,7 @@
       topic: state.topicSettings ? { ...state.topicSettings } : loadTopicSettings(),
       avatar: state.avatarSettings ? { ...state.avatarSettings } : loadAvatarSettings(),
       effect: state.effectSettings ? { ...state.effectSettings } : loadEffectSettings(),
+      sound: state.soundSettings ? { ...state.soundSettings } : loadSoundSettings(),
       toast: state.toastSettings ? { ...state.toastSettings } : loadToastSettings(),
       streamPreview: state.streamPreviewSettings ? cloneSettings(state.streamPreviewSettings) : loadStreamPreviewSettings(),
       widgets: state.widgetSettings ? cloneSettings(state.widgetSettings) : loadWidgetSettings(),
@@ -6390,6 +6462,792 @@
     fireGlobalCooldown?.addEventListener("keydown", (ev) => ev.stopPropagation());
   }
 
+  function defaultSoundSettings() {
+    return {
+      enabled: true,
+      backgroundVolume: 0.16,
+      eventVolume: 0.72,
+      fireVolume: 0.86,
+      lifeVolume: 0.72,
+      fireBed: 0.42,
+      fireCrackle: 0.62,
+      fireRate: 0.48,
+      fireStrongMaxSec: 9,
+      fireStrongPower: 0.72,
+      babbleVolume: 0.48,
+      babbleSpeed: 1,
+    };
+  }
+
+  function normalizeSoundSettings(settings) {
+    const next = Object.assign(defaultSoundSettings(), settings || {});
+    const backgroundVolume = Number(next.backgroundVolume);
+    const eventVolume = Number(next.eventVolume);
+    const fireVolume = Number(next.fireVolume);
+    const lifeVolume = Number(next.lifeVolume);
+    const fireBed = Number(next.fireBed);
+    const fireCrackle = Number(next.fireCrackle);
+    const fireRate = Number(next.fireRate);
+    const fireStrongMaxSec = Number(next.fireStrongMaxSec);
+    const fireStrongPower = Number(next.fireStrongPower);
+    const babbleVolume = Number(next.babbleVolume);
+    const babbleSpeed = Number(next.babbleSpeed);
+    next.enabled = next.enabled !== false;
+    next.backgroundVolume = clamp(Number.isFinite(backgroundVolume) ? backgroundVolume : 0.16, 0, 1);
+    next.eventVolume = clamp(Number.isFinite(eventVolume) ? eventVolume : 0.72, 0, 1);
+    next.fireVolume = clamp(Number.isFinite(fireVolume) ? fireVolume : 0.86, 0, 1);
+    next.lifeVolume = clamp(Number.isFinite(lifeVolume) ? lifeVolume : 0.72, 0, 1);
+    next.fireBed = clamp(Number.isFinite(fireBed) ? fireBed : 0.42, 0, 1);
+    next.fireCrackle = clamp(Number.isFinite(fireCrackle) ? fireCrackle : 0.62, 0, 1);
+    next.fireRate = clamp(Number.isFinite(fireRate) ? fireRate : 0.48, 0, 1);
+    next.fireStrongMaxSec = clamp(Number.isFinite(fireStrongMaxSec) ? fireStrongMaxSec : 9, 2, 30);
+    next.fireStrongPower = clamp(Number.isFinite(fireStrongPower) ? fireStrongPower : 0.72, 0, 1);
+    next.babbleVolume = clamp(Number.isFinite(babbleVolume) ? babbleVolume : 0.48, 0, 1);
+    next.babbleSpeed = clamp(Number.isFinite(babbleSpeed) ? babbleSpeed : 1, 0.55, 5);
+    return next;
+  }
+
+  function loadSoundSettings() {
+    try {
+      const raw = localStorage.getItem(SOUND_SETTINGS_KEY);
+      return normalizeSoundSettings(Object.assign({}, raw ? JSON.parse(raw) : {}, settingSection("sound") || {}));
+    } catch (_) {
+      return defaultSoundSettings();
+    }
+  }
+
+  function saveSoundSettings() {
+    if (!state.soundSettings) return;
+    persistSetting(SOUND_SETTINGS_KEY, state.soundSettings);
+  }
+
+  function soundPercent(value) {
+    return `${Math.round(clamp(Number(value) || 0, 0, 1) * 100)}%`;
+  }
+
+  function fireBedSetting() {
+    return state.soundSettings?.fireBed ?? 0.42;
+  }
+
+  function fireCrackleSetting() {
+    return state.soundSettings?.fireCrackle ?? 0.62;
+  }
+
+  function fireRateSetting() {
+    return state.soundSettings?.fireRate ?? 0.48;
+  }
+
+  function fireStrongMaxSetting() {
+    return state.soundSettings?.fireStrongMaxSec ?? 9;
+  }
+
+  function fireStrongPowerSetting() {
+    return state.soundSettings?.fireStrongPower ?? 0.72;
+  }
+
+  function babbleVolumeSetting() {
+    return state.soundSettings?.babbleVolume ?? 0.48;
+  }
+
+  function babbleSpeedSetting() {
+    return state.soundSettings?.babbleSpeed ?? 1;
+  }
+
+  function audioRandom(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function makeOverlayNoiseBuffer(ctx, seconds = 1, color = "white") {
+    const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < length; i += 1) {
+      const white = Math.random() * 2 - 1;
+      if (color === "brown") {
+        last = (last + 0.02 * white) / 1.02;
+        data[i] = last * 3.4;
+      } else if (color === "pink") {
+        last = 0.97 * last + 0.03 * white;
+        data[i] = last * 1.8;
+      } else {
+        data[i] = white;
+      }
+    }
+    return buffer;
+  }
+
+  function overlayNoiseSource(ctx, seconds, color) {
+    const src = ctx.createBufferSource();
+    src.buffer = makeOverlayNoiseBuffer(ctx, seconds, color);
+    return src;
+  }
+
+  function overlaySafeRamp(param, value, time) {
+    param.exponentialRampToValueAtTime(Math.max(0.0001, value), time);
+  }
+
+  function overlayAudioTarget(kind = "event") {
+    if (kind === "babble") return state.audio.babbleGain;
+    if (kind === "fire") return state.audio.fireGain;
+    if (kind === "life") return state.audio.lifeGain;
+    return kind === "background" ? state.audio.bgGain : state.audio.eventGain;
+  }
+
+  async function ensureOverlayAudio() {
+    if (!state.audio.ctx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return null;
+      const ctx = new AudioContext();
+      state.audio.ctx = ctx;
+      state.audio.masterGain = ctx.createGain();
+      state.audio.bgGain = ctx.createGain();
+      state.audio.eventGain = ctx.createGain();
+      state.audio.fireGain = ctx.createGain();
+      state.audio.lifeGain = ctx.createGain();
+      state.audio.babbleGain = ctx.createGain();
+      state.audio.bgGain.connect(state.audio.masterGain);
+      state.audio.eventGain.connect(state.audio.masterGain);
+      state.audio.fireGain.connect(state.audio.masterGain);
+      state.audio.lifeGain.connect(state.audio.masterGain);
+      state.audio.babbleGain.connect(state.audio.masterGain);
+      state.audio.masterGain.connect(ctx.destination);
+      applySoundGains();
+    }
+    try {
+      if (state.audio.ctx.state !== "running") await state.audio.ctx.resume();
+    } catch (_) {}
+    applySoundGains();
+    return state.audio.ctx;
+  }
+
+  function applySoundGains() {
+    if (!state.audio.ctx || !state.soundSettings) return;
+    const now = state.audio.ctx.currentTime;
+    const enabled = state.soundSettings.enabled !== false;
+    state.audio.masterGain.gain.setTargetAtTime(enabled ? 1 : 0, now, 0.04);
+    state.audio.bgGain.gain.setTargetAtTime(enabled ? state.soundSettings.backgroundVolume : 0, now, 0.08);
+    state.audio.eventGain.gain.setTargetAtTime(enabled ? state.soundSettings.eventVolume : 0, now, 0.03);
+    state.audio.fireGain?.gain.setTargetAtTime(enabled ? state.soundSettings.fireVolume : 0, now, 0.03);
+    state.audio.lifeGain?.gain.setTargetAtTime(enabled ? state.soundSettings.lifeVolume : 0, now, 0.03);
+    state.audio.babbleGain?.gain.setTargetAtTime(enabled ? state.soundSettings.babbleVolume : 0, now, 0.03);
+  }
+
+  function overlayPanTarget(ctx, pan, target) {
+    if (!ctx.createStereoPanner) return target;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = pan;
+    panner.connect(target);
+    return panner;
+  }
+
+  function overlayNoiseBurst({
+    duration = 0.08,
+    color = "white",
+    filterType = "bandpass",
+    frequency = 1800,
+    q = 1,
+    gainValue = 0.08,
+    attack = 0.004,
+    startAt = 0,
+    pan = 0,
+    target = overlayAudioTarget("event"),
+  } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const src = overlayNoiseSource(ctx, Math.max(0.04, duration + 0.04), color);
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    const t = ctx.currentTime + startAt;
+    filter.type = filterType;
+    filter.frequency.value = frequency;
+    filter.Q.value = q;
+    gain.gain.setValueAtTime(0.0001, t);
+    overlaySafeRamp(gain.gain, gainValue, t + attack);
+    overlaySafeRamp(gain.gain, 0.0001, t + duration);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(overlayPanTarget(ctx, pan, target));
+    src.start(t);
+    src.stop(t + duration + 0.08);
+  }
+
+  function overlayTone(freq, duration, type = "sine", gainValue = 0.08, startAt = 0, target = overlayAudioTarget("event")) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const t = ctx.currentTime + startAt;
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t);
+    overlaySafeRamp(gain.gain, gainValue, t + 0.012);
+    overlaySafeRamp(gain.gain, 0.0001, t + duration);
+    osc.connect(gain);
+    gain.connect(target);
+    osc.start(t);
+    osc.stop(t + duration + 0.04);
+  }
+
+  function overlayToneSweep({
+    from = 220,
+    to = 440,
+    duration = 0.25,
+    type = "sine",
+    gainValue = 0.06,
+    startAt = 0,
+    target = overlayAudioTarget("event"),
+  } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const t = ctx.currentTime + startAt;
+    osc.type = type;
+    osc.frequency.setValueAtTime(from, t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, to), t + duration);
+    gain.gain.setValueAtTime(0.0001, t);
+    overlaySafeRamp(gain.gain, gainValue, t + 0.012);
+    overlaySafeRamp(gain.gain, 0.0001, t + duration);
+    osc.connect(gain);
+    gain.connect(target);
+    osc.start(t);
+    osc.stop(t + duration + 0.04);
+  }
+
+  function overlayNoiseSweep({
+    duration = 0.4,
+    color = "pink",
+    filterType = "bandpass",
+    from = 400,
+    to = 1600,
+    q = 0.8,
+    gainValue = 0.05,
+    attack = 0.012,
+    startAt = 0,
+    pan = 0,
+    target = overlayAudioTarget("event"),
+  } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const src = overlayNoiseSource(ctx, Math.max(0.05, duration + 0.04), color);
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    const t = ctx.currentTime + startAt;
+    filter.type = filterType;
+    filter.Q.value = q;
+    filter.frequency.setValueAtTime(Math.max(1, from), t);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(1, to), t + duration);
+    gain.gain.setValueAtTime(0.0001, t);
+    overlaySafeRamp(gain.gain, gainValue, t + attack);
+    overlaySafeRamp(gain.gain, 0.0001, t + duration);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(overlayPanTarget(ctx, pan, target));
+    src.start(t);
+    src.stop(t + duration + 0.08);
+  }
+
+  function overlayTempEchoBus({ delayTime = 0.085, feedback = 0.18, wet = 0.3, liveFor = 1.5, target = overlayAudioTarget("event") } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx) return target;
+    const input = ctx.createGain();
+    const dry = ctx.createGain();
+    const delay = ctx.createDelay(0.8);
+    const loop = ctx.createGain();
+    const wetGain = ctx.createGain();
+    dry.gain.value = 0.95;
+    delay.delayTime.value = delayTime;
+    loop.gain.value = feedback;
+    wetGain.gain.value = wet;
+    input.connect(dry);
+    dry.connect(target);
+    input.connect(delay);
+    delay.connect(loop);
+    loop.connect(delay);
+    delay.connect(wetGain);
+    wetGain.connect(target);
+    window.setTimeout(() => {
+      for (const node of [input, dry, delay, loop, wetGain]) {
+        try { node.disconnect(); } catch (_) {}
+      }
+    }, liveFor * 1000);
+    return input;
+  }
+
+  function startOverlayCampfireSound() {
+    const ctx = state.audio.ctx;
+    if (!ctx || state.audio.fire || !state.soundSettings?.enabled || state.soundSettings.backgroundVolume <= 0) return;
+    const out = ctx.createGain();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -28;
+    comp.knee.value = 18;
+    comp.ratio.value = 3;
+    comp.attack.value = 0.006;
+    comp.release.value = 0.22;
+    out.connect(comp);
+    comp.connect(overlayAudioTarget("background"));
+    const layers = [];
+    const addLayer = ({ name, color, seconds, filters, base, pan = 0 }) => {
+      const src = overlayNoiseSource(ctx, seconds, color);
+      src.loop = true;
+      const gain = ctx.createGain();
+      let node = src;
+      const builtFilters = [];
+      for (const spec of filters) {
+        const filter = ctx.createBiquadFilter();
+        filter.type = spec.type;
+        filter.frequency.value = spec.frequency;
+        filter.Q.value = spec.q ?? 0.7;
+        node.connect(filter);
+        node = filter;
+        builtFilters.push(filter);
+      }
+      node.connect(gain);
+      gain.connect(overlayPanTarget(ctx, pan, out));
+      src.start();
+      layers.push({ name, src, gain, filters: builtFilters, base });
+    };
+    addLayer({ name: "ember", color: "brown", seconds: 5.6, filters: [{ type: "lowpass", frequency: 260, q: 0.45 }], base: 0.18, pan: -0.08 });
+    addLayer({ name: "body", color: "pink", seconds: 4.8, filters: [{ type: "highpass", frequency: 90, q: 0.35 }, { type: "lowpass", frequency: 780, q: 0.42 }], base: 0.16, pan: 0.05 });
+    addLayer({ name: "flame", color: "pink", seconds: 3.7, filters: [{ type: "bandpass", frequency: 1150, q: 0.65 }], base: 0.085, pan: 0.12 });
+    addLayer({ name: "hiss", color: "white", seconds: 2.9, filters: [{ type: "highpass", frequency: 1650, q: 0.35 }, { type: "lowpass", frequency: 7200, q: 0.4 }], base: 0.035, pan: -0.16 });
+    state.audio.fire = { out, comp, layers };
+    applyOverlayCampfireLayerTargets(true);
+    startOverlayCampfireFlutter();
+    scheduleOverlayCampfireCrackle();
+    scheduleOverlayCampfireStrongCrackle();
+  }
+
+  function stopOverlayCampfireSound() {
+    if (!state.audio.fire) return;
+    for (const layer of state.audio.fire.layers || []) {
+      try { layer.src.stop(); } catch (_) {}
+    }
+    state.audio.fire = null;
+    window.clearTimeout(state.audio.crackleTimer);
+    window.clearTimeout(state.audio.strongCrackleTimer);
+    window.clearInterval(state.audio.flutterTimer);
+    state.audio.crackleTimer = 0;
+    state.audio.strongCrackleTimer = 0;
+    state.audio.flutterTimer = 0;
+  }
+
+  function applyOverlayCampfireLayerTargets(immediate = false) {
+    const ctx = state.audio.ctx;
+    const fire = state.audio.fire;
+    if (!ctx || !fire) return;
+    const bed = fireBedSetting();
+    const crackle = fireCrackleSetting();
+    const now = ctx.currentTime;
+    const ramp = immediate ? 0.005 : 0.08;
+    for (const layer of fire.layers || []) {
+      let value = bed * layer.base;
+      if (layer.name === "hiss") value *= 0.45 + crackle * 0.95;
+      if (layer.name === "flame") value *= 0.75 + crackle * 0.45;
+      layer.gain.gain.setTargetAtTime(value, now, ramp);
+      if (layer.name === "flame") {
+        layer.filters[0].frequency.setTargetAtTime(840 + crackle * 760, now, 0.12);
+      }
+    }
+  }
+
+  function startOverlayCampfireFlutter() {
+    window.clearInterval(state.audio.flutterTimer);
+    state.audio.flutterTimer = window.setInterval(() => {
+      const ctx = state.audio.ctx;
+      const fire = state.audio.fire;
+      if (!ctx || !fire) return;
+      const t = ctx.currentTime;
+      const bed = fireBedSetting();
+      const crackle = fireCrackleSetting();
+      for (const layer of fire.layers || []) {
+        const flutter = layer.name === "ember" ? audioRandom(0.72, 1.15) : audioRandom(0.62, 1.34);
+        let value = layer.base * bed * flutter;
+        if (layer.name === "hiss") value *= 0.45 + crackle * 0.95;
+        if (layer.name === "flame") value *= 0.75 + crackle * 0.45;
+        layer.gain.gain.setTargetAtTime(value, t, audioRandom(0.08, 0.24));
+      }
+      const flame = fire.layers.find((layer) => layer.name === "flame");
+      if (flame) flame.filters[0].frequency.setTargetAtTime(audioRandom(780, 1260) + crackle * 620, t, 0.18);
+    }, 160);
+  }
+
+  function playOverlayCampfireCrackle(strength = fireCrackleSetting()) {
+    const bigPop = Math.random() < 0.04 + strength * 0.09;
+    const pan = audioRandom(-0.48, 0.48);
+    if (bigPop) {
+      overlayNoiseBurst({ duration: audioRandom(0.045, 0.085), filterType: "bandpass", frequency: audioRandom(1150, 2600), q: audioRandom(0.9, 2.2), gainValue: 0.055 + strength * audioRandom(0.045, 0.105), attack: 0.0015, pan, target: overlayAudioTarget("background") });
+      overlayNoiseBurst({ duration: audioRandom(0.08, 0.14), color: "brown", filterType: "lowpass", frequency: audioRandom(280, 560), q: 0.45, gainValue: 0.02 + strength * 0.042, attack: 0.004, pan: pan * 0.7, target: overlayAudioTarget("background") });
+      overlayTone(audioRandom(98, 148), audioRandom(0.06, 0.12), "triangle", 0.012 + strength * 0.018, 0, overlayAudioTarget("background"));
+      return;
+    }
+    const count = Math.random() < 0.36 + strength * 0.2 ? 2 : 1;
+    for (let i = 0; i < count; i += 1) {
+      overlayNoiseBurst({ duration: audioRandom(0.014, 0.048), filterType: "highpass", frequency: audioRandom(2600, 6800), q: audioRandom(0.7, 1.6), gainValue: audioRandom(0.026, 0.052) + strength * audioRandom(0.035, 0.09), attack: audioRandom(0.001, 0.003), startAt: i * audioRandom(0.014, 0.032), pan: pan + audioRandom(-0.16, 0.16), target: overlayAudioTarget("background") });
+    }
+  }
+
+  function playOverlayCampfireStrongCrackle({ manual = false } = {}) {
+    if (!state.audio.ctx || (!state.audio.fire && !manual)) return;
+    const strength = fireCrackleSetting();
+    const power = fireStrongPowerSetting();
+    const amount = Math.max(0.08, strength * 0.62 + power * 0.9);
+    const pan = audioRandom(-0.55, 0.55);
+    const cluster = 2 + Math.floor(power * 6) + Math.floor(Math.random() * 2);
+    const target = overlayAudioTarget("background");
+    overlayNoiseBurst({
+      duration: audioRandom(0.06, 0.12),
+      color: "white",
+      filterType: "bandpass",
+      frequency: audioRandom(1600, 3400),
+      q: audioRandom(1.2, 2.7),
+      gainValue: 0.075 + amount * audioRandom(0.16, 0.32),
+      attack: 0.001,
+      pan,
+      target,
+    });
+    overlayNoiseBurst({
+      duration: audioRandom(0.18, 0.32),
+      color: "brown",
+      filterType: "lowpass",
+      frequency: audioRandom(220, 480),
+      q: 0.42,
+      gainValue: 0.035 + amount * 0.14,
+      attack: 0.004,
+      pan: pan * 0.6,
+      target,
+    });
+    overlayTone(audioRandom(72, 118), audioRandom(0.11, 0.2), "triangle", 0.012 + amount * 0.052, 0, target);
+    for (let i = 0; i < cluster; i += 1) {
+      overlayNoiseBurst({
+        duration: audioRandom(0.018, 0.062),
+        color: "white",
+        filterType: "highpass",
+        frequency: audioRandom(3600, 9200),
+        q: audioRandom(0.8, 1.8),
+        gainValue: audioRandom(0.018, 0.06) + amount * audioRandom(0.04, 0.13),
+        attack: 0.001,
+        startAt: 0.035 + i * audioRandom(0.032, 0.07),
+        pan: pan + audioRandom(-0.24, 0.24),
+        target,
+      });
+    }
+  }
+
+  function scheduleOverlayCampfireCrackle() {
+    window.clearTimeout(state.audio.crackleTimer);
+    if (!state.audio.fire) return;
+    const rate = fireRateSetting();
+    const base = 980 - rate * 760;
+    const delay = audioRandom(120, Math.max(150, base)) * audioRandom(0.55, 1.55);
+    state.audio.crackleTimer = window.setTimeout(() => {
+      const strength = fireCrackleSetting();
+      const count = Math.random() < strength * 0.55 ? 2 + Math.floor(Math.random() * 2) : 1;
+      for (let i = 0; i < count; i += 1) {
+        window.setTimeout(() => playOverlayCampfireCrackle(strength), i * audioRandom(28, 85));
+      }
+      scheduleOverlayCampfireCrackle();
+    }, Math.max(45, delay));
+  }
+
+  function scheduleOverlayCampfireStrongCrackle() {
+    window.clearTimeout(state.audio.strongCrackleTimer);
+    if (!state.audio.fire) return;
+    const maxSec = Math.max(2, fireStrongMaxSetting());
+    const delay = audioRandom(Math.max(1.2, maxSec * 0.35), maxSec) * 1000;
+    state.audio.strongCrackleTimer = window.setTimeout(() => {
+      playOverlayCampfireStrongCrackle();
+      scheduleOverlayCampfireStrongCrackle();
+    }, delay);
+  }
+
+  async function activateOverlaySound() {
+    await ensureOverlayAudio();
+    if (state.soundSettings?.enabled && state.soundSettings.backgroundVolume > 0) {
+      startOverlayCampfireSound();
+    }
+    applySoundGains();
+  }
+
+  function armOverlaySoundUnlock() {
+    if (state.audio.unlockBound) return;
+    state.audio.unlockBound = true;
+    const unlock = () => {
+      if (state.soundSettings?.enabled) activateOverlaySound().catch(() => {});
+    };
+    window.addEventListener("pointerdown", unlock, { passive: true });
+    window.addEventListener("keydown", unlock, { passive: true });
+  }
+
+  function applySoundSettings(options = {}) {
+    state.soundSettings = normalizeSoundSettings(state.soundSettings);
+    const bgText = soundPercent(state.soundSettings.backgroundVolume);
+    const eventText = soundPercent(state.soundSettings.eventVolume);
+    const fireText = soundPercent(state.soundSettings.fireVolume);
+    const lifeText = soundPercent(state.soundSettings.lifeVolume);
+    const strongMaxText = `<=${Math.round(state.soundSettings.fireStrongMaxSec)}s`;
+    const strongPowerText = soundPercent(state.soundSettings.fireStrongPower);
+    const babbleText = soundPercent(state.soundSettings.babbleVolume);
+    const babbleSpeedText = `${state.soundSettings.babbleSpeed.toFixed(2)}x`;
+    if (soundToggle) {
+      soundToggle.textContent = state.soundSettings.enabled ? "sound on" : "sound off";
+      soundToggle.classList.toggle("active", state.soundSettings.enabled);
+      soundToggle.title = state.soundSettings.enabled ? "전체 사운드 끄기" : "전체 사운드 켜기";
+    }
+    if (soundBgVolume) soundBgVolume.value = String(Math.round(state.soundSettings.backgroundVolume * 100));
+    if (soundBgVolumeValue) soundBgVolumeValue.textContent = bgText;
+    if (soundEventVolume) soundEventVolume.value = String(Math.round(state.soundSettings.eventVolume * 100));
+    if (soundEventVolumeValue) soundEventVolumeValue.textContent = eventText;
+    if (soundFireVolume) soundFireVolume.value = String(Math.round(state.soundSettings.fireVolume * 100));
+    if (soundFireVolumeValue) soundFireVolumeValue.textContent = fireText;
+    if (soundLifeVolume) soundLifeVolume.value = String(Math.round(state.soundSettings.lifeVolume * 100));
+    if (soundLifeVolumeValue) soundLifeVolumeValue.textContent = lifeText;
+    if (soundFireBed) soundFireBed.value = String(Math.round(state.soundSettings.fireBed * 100));
+    if (soundFireBedValue) soundFireBedValue.textContent = soundPercent(state.soundSettings.fireBed);
+    if (soundFireCrackle) soundFireCrackle.value = String(Math.round(state.soundSettings.fireCrackle * 100));
+    if (soundFireCrackleValue) soundFireCrackleValue.textContent = soundPercent(state.soundSettings.fireCrackle);
+    if (soundFireRate) soundFireRate.value = String(Math.round(state.soundSettings.fireRate * 100));
+    if (soundFireRateValue) soundFireRateValue.textContent = soundPercent(state.soundSettings.fireRate);
+    if (soundFireStrongMax) soundFireStrongMax.value = String(Math.round(state.soundSettings.fireStrongMaxSec));
+    if (soundFireStrongMaxValue) soundFireStrongMaxValue.textContent = strongMaxText;
+    if (soundFireStrongPower) soundFireStrongPower.value = String(Math.round(state.soundSettings.fireStrongPower * 100));
+    if (soundFireStrongPowerValue) soundFireStrongPowerValue.textContent = strongPowerText;
+    if (soundBabbleVolume) soundBabbleVolume.value = String(Math.round(state.soundSettings.babbleVolume * 100));
+    if (soundBabbleVolumeValue) soundBabbleVolumeValue.textContent = babbleText;
+    if (soundBabbleSpeed) soundBabbleSpeed.value = String(Math.round(state.soundSettings.babbleSpeed * 100));
+    if (soundBabbleSpeedValue) soundBabbleSpeedValue.textContent = babbleSpeedText;
+    applySoundGains();
+    applyOverlayCampfireLayerTargets();
+    if (!state.soundSettings.enabled || state.soundSettings.backgroundVolume <= 0) {
+      stopOverlayCampfireSound();
+    } else if (options.syncAudio && state.audio.ctx) {
+      startOverlayCampfireSound();
+      scheduleOverlayCampfireCrackle();
+      scheduleOverlayCampfireStrongCrackle();
+    }
+  }
+
+  function setupSoundControls() {
+    state.soundSettings = loadSoundSettings();
+    applySoundSettings();
+    armOverlaySoundUnlock();
+    if (state.soundSettings.enabled) {
+      window.setTimeout(() => activateOverlaySound().catch(() => {}), 300);
+    }
+    soundToggle?.addEventListener("click", async () => {
+      state.soundSettings.enabled = !state.soundSettings.enabled;
+      applySoundSettings();
+      if (state.soundSettings.enabled) await activateOverlaySound();
+      saveSoundSettings();
+    });
+    soundBgVolume?.addEventListener("input", () => {
+      state.soundSettings.backgroundVolume = clamp(Number(soundBgVolume.value) / 100, 0, 1);
+      applySoundSettings({ syncAudio: true });
+      if (state.soundSettings.enabled && state.soundSettings.backgroundVolume > 0) activateOverlaySound().catch(() => {});
+      saveSoundSettings();
+    });
+    soundEventVolume?.addEventListener("input", () => {
+      state.soundSettings.eventVolume = clamp(Number(soundEventVolume.value) / 100, 0, 1);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    soundFireVolume?.addEventListener("input", () => {
+      state.soundSettings.fireVolume = clamp(Number(soundFireVolume.value) / 100, 0, 1);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    soundLifeVolume?.addEventListener("input", () => {
+      state.soundSettings.lifeVolume = clamp(Number(soundLifeVolume.value) / 100, 0, 1);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    const updateFireSound = (key, input) => {
+      if (!input) return;
+      state.soundSettings[key] = clamp(Number(input.value) / 100, 0, 1);
+      applySoundSettings({ syncAudio: true });
+      if (key === "fireRate") scheduleOverlayCampfireCrackle();
+      if (state.soundSettings.enabled && state.soundSettings.backgroundVolume > 0) activateOverlaySound().catch(() => {});
+      saveSoundSettings();
+    };
+    soundFireBed?.addEventListener("input", () => updateFireSound("fireBed", soundFireBed));
+    soundFireCrackle?.addEventListener("input", () => updateFireSound("fireCrackle", soundFireCrackle));
+    soundFireRate?.addEventListener("input", () => updateFireSound("fireRate", soundFireRate));
+    soundFireStrongMax?.addEventListener("input", () => {
+      state.soundSettings.fireStrongMaxSec = clamp(Number(soundFireStrongMax.value), 2, 30);
+      applySoundSettings({ syncAudio: true });
+      scheduleOverlayCampfireStrongCrackle();
+      if (state.soundSettings.enabled && state.soundSettings.backgroundVolume > 0) activateOverlaySound().catch(() => {});
+      saveSoundSettings();
+    });
+    soundFireStrongPower?.addEventListener("input", () => {
+      state.soundSettings.fireStrongPower = clamp(Number(soundFireStrongPower.value) / 100, 0, 1);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    soundBabbleVolume?.addEventListener("input", () => {
+      state.soundSettings.babbleVolume = clamp(Number(soundBabbleVolume.value) / 100, 0, 1);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    soundBabbleSpeed?.addEventListener("input", () => {
+      state.soundSettings.babbleSpeed = clamp(Number(soundBabbleSpeed.value) / 100, 0.55, 5);
+      applySoundSettings();
+      saveSoundSettings();
+    });
+    soundBgVolume?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundEventVolume?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireVolume?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundLifeVolume?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireBed?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireCrackle?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireRate?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireStrongMax?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundFireStrongPower?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundBabbleVolume?.addEventListener("keydown", (ev) => ev.stopPropagation());
+    soundBabbleSpeed?.addEventListener("keydown", (ev) => ev.stopPropagation());
+  }
+
+  async function playOverlayEntrySound(style = "drop") {
+    if (!state.soundSettings || state.soundSettings.enabled === false || state.soundSettings.lifeVolume <= 0) return;
+    await ensureOverlayAudio();
+    if (!state.audio.ctx || state.audio.ctx.state !== "running") return;
+    const target = overlayAudioTarget("life");
+    if (style === "none") return;
+    if (style === "fade") {
+      const bus = overlayTempEchoBus({ delayTime: 0.075, feedback: 0.24, wet: 0.28, liveFor: 1.45, target });
+      overlayToneSweep({ from: 260, to: 720, duration: 0.46, type: "triangle", gainValue: 0.032, target: bus });
+      overlayNoiseSweep({ duration: 0.42, color: "pink", filterType: "bandpass", from: 820, to: 2600, q: 0.76, gainValue: 0.034, attack: 0.04, target: bus });
+      overlayTone(1046, 0.16, "sine", 0.022, 0.38, bus);
+      return;
+    }
+    if (style === "walk") {
+      const bus = overlayTempEchoBus({ delayTime: 0.09, feedback: 0.12, wet: 0.14, liveFor: 1.4, target });
+      for (let i = 0; i < 5; i += 1) {
+        overlayNoiseBurst({ duration: 0.055, color: "brown", filterType: "lowpass", frequency: 280 + i * 18, q: 0.5, gainValue: 0.038, startAt: i * 0.15, pan: i % 2 ? 0.18 : -0.18, target: bus });
+        overlayTone(92 + i * 7, 0.06, "triangle", 0.016, i * 0.15, bus);
+      }
+      overlayTone(523, 0.2, "sine", 0.026, 0.76, bus);
+      return;
+    }
+    const bus = overlayTempEchoBus({ delayTime: 0.12, feedback: 0.13, wet: 0.2, liveFor: 2.7, target });
+    overlayNoiseSweep({ duration: 1.78, color: "pink", filterType: "bandpass", from: 1850, to: 360, q: 1.0, gainValue: 0.05, attack: 0.05, target: bus });
+    overlayToneSweep({ from: 760, to: 140, duration: 1.72, type: "triangle", gainValue: 0.035, target: bus });
+    overlayNoiseBurst({ duration: 0.14, color: "white", filterType: "bandpass", frequency: 1320, q: 1.5, gainValue: 0.075, startAt: 1.78, target: bus });
+    overlayNoiseBurst({ duration: 0.28, color: "brown", filterType: "lowpass", frequency: 290, q: 0.5, gainValue: 0.12, startAt: 1.82, target: bus });
+    overlayTone(82, 0.28, "sine", 0.05, 1.82, bus);
+    overlayTone(523, 0.24, "sine", 0.035, 2.02, bus);
+  }
+
+  async function playOverlayExitSound(style = "ascend") {
+    if (!state.soundSettings || state.soundSettings.enabled === false || state.soundSettings.lifeVolume <= 0) return;
+    await ensureOverlayAudio();
+    if (!state.audio.ctx || state.audio.ctx.state !== "running") return;
+    const target = overlayAudioTarget("life");
+    if (style === "none") return;
+    if (style === "fade") {
+      const bus = overlayTempEchoBus({ delayTime: 0.105, feedback: 0.14, wet: 0.18, liveFor: 1.35, target });
+      overlayToneSweep({ from: 520, to: 135, duration: 0.54, type: "triangle", gainValue: 0.046, target: bus });
+      overlayNoiseSweep({ duration: 0.48, color: "pink", filterType: "lowpass", from: 900, to: 180, q: 0.8, gainValue: 0.04, target: bus });
+      overlayNoiseBurst({ duration: 0.12, color: "brown", filterType: "lowpass", frequency: 220, gainValue: 0.072, startAt: 0.42, target: bus });
+      return;
+    }
+    const bus = overlayTempEchoBus({ delayTime: 0.08, feedback: 0.26, wet: 0.36, liveFor: 3.1, target });
+    overlayToneSweep({ from: 220, to: 1280, duration: 1.64, type: "triangle", gainValue: 0.035, target: bus });
+    overlayNoiseSweep({ duration: 1.82, color: "pink", filterType: "highpass", from: 900, to: 5400, q: 0.7, gainValue: 0.045, attack: 0.05, target: bus });
+    [1046, 1320, 1760].forEach((freq, i) => {
+      overlayTone(freq, 0.16, "sine", 0.02, 0.42 + i * 0.12, bus);
+      overlayNoiseBurst({ duration: 0.035, filterType: "highpass", frequency: freq * 2.2, gainValue: 0.012, startAt: 0.42 + i * 0.12, pan: audioRandom(-0.6, 0.6), target: bus });
+    });
+    overlayNoiseSweep({ duration: 0.34, color: "white", filterType: "highpass", from: 2100, to: 9200, q: 0.9, gainValue: 0.095, attack: 0.01, startAt: 2.18, pan: 0.12, target: bus });
+    overlayToneSweep({ from: 980, to: 4200, duration: 0.27, type: "sine", gainValue: 0.024, startAt: 2.23, target: bus });
+    overlayNoiseBurst({ duration: 0.08, color: "white", filterType: "highpass", frequency: 7600, q: 1.4, gainValue: 0.045, startAt: 2.48, pan: 0.24, target: bus });
+  }
+
+  async function playOverlayLevelSound(upward) {
+    if (!state.soundSettings || state.soundSettings.enabled === false || state.soundSettings.eventVolume <= 0) return;
+    await ensureOverlayAudio();
+    if (!state.audio.ctx || state.audio.ctx.state !== "running") return;
+    if (upward) {
+      const shine = overlayTempEchoBus({ delayTime: 0.075, feedback: 0.24, wet: 0.34, liveFor: 1.8 });
+      overlayToneSweep({ from: 240, to: 930, duration: 0.34, type: "triangle", gainValue: 0.034 });
+      overlayNoiseBurst({ duration: 0.18, color: "pink", filterType: "bandpass", frequency: 1450, q: 0.72, gainValue: 0.035, attack: 0.018 });
+      [
+        [523.25, 0.00, 0.045],
+        [659.25, 0.075, 0.05],
+        [783.99, 0.15, 0.052],
+        [1046.5, 0.225, 0.06],
+        [1318.51, 0.31, 0.044],
+      ].forEach(([freq, start, gain]) => {
+        overlayTone(freq, 0.34, "sine", gain, start, shine);
+        overlayTone(freq * 1.005, 0.28, "triangle", gain * 0.35, start + 0.006, shine);
+      });
+      [1760, 2093, 2637, 3136].forEach((freq, i) => {
+        overlayTone(freq, 0.16, "sine", 0.016, 0.28 + i * 0.038, shine);
+      });
+      for (let i = 0; i < 9; i += 1) {
+        overlayNoiseBurst({ duration: audioRandom(0.025, 0.07), filterType: "highpass", frequency: audioRandom(3800, 8200), q: audioRandom(0.6, 1.4), gainValue: audioRandom(0.01, 0.026), startAt: 0.22 + i * audioRandom(0.028, 0.052), pan: audioRandom(-0.7, 0.7), target: shine });
+      }
+    } else {
+      const dull = overlayTempEchoBus({ delayTime: 0.13, feedback: 0.12, wet: 0.18, liveFor: 1.3 });
+      overlayNoiseBurst({ duration: 0.13, color: "pink", filterType: "bandpass", frequency: 760, q: 1.1, gainValue: 0.042, attack: 0.002, target: dull });
+      overlayToneSweep({ from: 720, to: 142, duration: 0.46, type: "sawtooth", gainValue: 0.034, target: dull });
+      [
+        [493.88, 0.00, 0.044],
+        [392.0, 0.09, 0.047],
+        [311.13, 0.18, 0.048],
+        [196.0, 0.31, 0.052],
+      ].forEach(([freq, start, gain]) => {
+        overlayTone(freq, 0.38, "triangle", gain, start, dull);
+        overlayTone(freq * 0.497, 0.34, "sine", gain * 0.22, start + 0.018, dull);
+      });
+      overlayNoiseBurst({ duration: 0.26, color: "brown", filterType: "lowpass", frequency: 320, q: 0.46, gainValue: 0.066, attack: 0.006, startAt: 0.34, target: dull });
+      overlayTone(72, 0.28, "sine", 0.032, 0.38, dull);
+    }
+  }
+
+  async function playOverlayFireworkSound(popTimes = [980, 1480, 1980]) {
+    if (!state.soundSettings || state.soundSettings.enabled === false || state.soundSettings.fireVolume <= 0) return;
+    await ensureOverlayAudio();
+    if (!state.audio.ctx || state.audio.ctx.state !== "running") return;
+    const lastPopSec = Math.max(1, Number(popTimes[popTimes.length - 1] || 1980) / 1000);
+    const bus = overlayTempEchoBus({ delayTime: 0.055, feedback: 0.05, wet: 0.08, liveFor: lastPopSec + 1.2, target: overlayAudioTarget("fire") });
+    const firstPop = Math.max(0.34, Number(popTimes[0] || 980) / 1000);
+    overlayToneSweep({ from: 210, to: 1420, duration: Math.max(0.28, firstPop - 0.16), type: "sawtooth", gainValue: 0.018, target: bus });
+    overlayToneSweep({ from: 520, to: 2240, duration: Math.max(0.24, firstPop - 0.24), type: "triangle", gainValue: 0.011, startAt: 0.04, target: bus });
+    overlayNoiseBurst({
+      duration: Math.max(0.24, firstPop - 0.18),
+      color: "pink",
+      filterType: "bandpass",
+      frequency: 1180,
+      q: 0.7,
+      gainValue: 0.014,
+      attack: 0.09,
+      target: bus,
+    });
+    popTimes.forEach((ms, index) => {
+      const startAt = Math.max(0, Number(ms) / 1000);
+      const pan = (index - (popTimes.length - 1) / 2) * 0.22;
+      const lowFreq = 205 + index * 22;
+      overlayNoiseBurst({ duration: 0.055, color: "white", filterType: "bandpass", frequency: 690 + index * 62, q: 0.58, gainValue: 0.42, attack: 0.001, startAt, pan, target: bus });
+      overlayNoiseBurst({ duration: 0.34, color: "brown", filterType: "lowpass", frequency: lowFreq, q: 0.4, gainValue: 0.76, attack: 0.002, startAt: startAt + 0.004, pan, target: bus });
+      overlayNoiseBurst({ duration: 0.18, color: "pink", filterType: "lowpass", frequency: 480 + index * 46, q: 0.32, gainValue: 0.34, attack: 0.004, startAt: startAt + 0.012, pan, target: bus });
+      overlayTone(50 + index * 3, 0.24, "sine", 0.18, startAt + 0.002, bus);
+      overlayNoiseBurst({
+        duration: 0.055,
+        color: "white",
+        filterType: "highpass",
+        frequency: 3600 + index * 450,
+        q: 0.72,
+        gainValue: 0.026,
+        attack: 0.001,
+        startAt: startAt + 0.07,
+        pan,
+        target: bus,
+      });
+    });
+  }
+
   function showEventToast(text, kind = "enter", color = "") {
     if (!eventToasts || !text) return;
     const el = document.createElement("div");
@@ -6560,7 +7418,11 @@
 
   function toastMessageParts(template, name, fallback, tokens = {}) {
     const displayName = String(name || "누군가");
-    const value = replaceToastTokens(String(template || fallback || "{name}").trim() || fallback || "{name}", tokens);
+    const rawValue = replaceToastTokens(String(template || fallback || "{name}").trim() || fallback || "{name}", tokens);
+    const value = rawValue
+      .replace(/\s*(?:[·ㆍ•]\s*)+$/g, "")
+      .replace(/\s+(?:[·ㆍ•])\s+(?=$)/g, "")
+      .trim();
     if (!value.includes("{name}")) {
       return { before: "", name: displayName, after: ` ${value}` };
     }
@@ -6729,6 +7591,11 @@
         applyEffectSettings();
         storageSet(EFFECT_SETTINGS_KEY, JSON.stringify(state.effectSettings));
       }
+      if (nextSettings.sound && state.soundSettings) {
+        Object.assign(state.soundSettings, nextSettings.sound);
+        applySoundSettings({ syncAudio: true });
+        storageSet(SOUND_SETTINGS_KEY, JSON.stringify(state.soundSettings));
+      }
       if (nextSettings.toast && state.toastSettings) {
         Object.assign(state.toastSettings, nextSettings.toast);
         applyToastSettings();
@@ -6790,10 +7657,12 @@
     storageSet("videochat.topicTitle", value);
   }
 
+  setupAppSettingsToggle();
   setupTopicControls();
   setupChatControls();
   setupAvatarControls();
   setupEffectControls();
+  setupSoundControls();
   setupToastControls();
   setupStreamPreviewControls();
   setupWidgetControls();
@@ -7102,6 +7971,7 @@
     group.userData.leaveFrom = group.position.clone();
     group.userData.leaveTo = group.position.clone().add(new THREE.Vector3(0, lift, 0));
     group.userData.exitEffect = mode;
+    group.userData.exitPoofed = false;
     const p = group.userData.participant || {};
     const name = eventDisplayName(p.name || p.username);
     if (mode !== "none") {
@@ -7110,6 +7980,7 @@
         "leave",
         participantColor(p)
       );
+      playOverlayExitSound(mode).catch(() => {});
     }
     state.leaving.set(key, {
       key,
@@ -7125,6 +7996,7 @@
       "enter",
       participantColor(p)
     );
+    playOverlayEntrySound(state.effectSettings?.entryEffect || "drop").catch(() => {});
   }
 
   function createCharacter(p) {
@@ -7794,8 +8666,116 @@
     }
   }
 
+  function clearBubbleBabble(bubble) {
+    if (!bubble?._babbleTimers) return;
+    for (const timer of bubble._babbleTimers) window.clearTimeout(timer);
+    bubble._babbleTimers = [];
+  }
+
+  function babbleCharDuration(ch, speed = babbleSpeedSetting()) {
+    const scale = 1 / Math.max(0.1, speed);
+    if (/\s/.test(ch)) return 55 * scale;
+    if (/[,.!?;:，。！？]/.test(ch)) return 160 * scale;
+    return 52 * scale;
+  }
+
+  function babbleVoiceForSeed(seed) {
+    const baseHash = hashString(String(seed || "voice"));
+    const style = baseHash % 5;
+    const rand = (salt) => ((hashString(`${seed}:${salt}`) % 1000) / 1000);
+    const presets = [
+      { base: 380, spread: 180, formant: 1.38, waveA: "triangle", waveB: "sine", gain: 0.022, noise: 0.004 },
+      { base: 520, spread: 260, formant: 1.72, waveA: "square", waveB: "sine", gain: 0.023, noise: 0.007 },
+      { base: 250, spread: 140, formant: 1.28, waveA: "sawtooth", waveB: "triangle", gain: 0.019, noise: 0.006 },
+      { base: 720, spread: 300, formant: 1.9, waveA: "square", waveB: "sine", gain: 0.018, noise: 0.004 },
+      { base: 330, spread: 110, formant: 2.01, waveA: "square", waveB: "square", gain: 0.016, noise: 0.003, quantize: 55 },
+    ];
+    const voice = Object.assign({}, presets[style]);
+    voice.base += (rand("base") - 0.5) * 90;
+    voice.spread *= 0.78 + rand("spread") * 0.5;
+    voice.formant *= 0.9 + rand("formant") * 0.22;
+    voice.gain *= 0.86 + rand("gain") * 0.36;
+    voice.noise *= 0.7 + rand("noise") * 0.8;
+    return voice;
+  }
+
+  function playOverlayBabbleBlip(ch, index, voice, target) {
+    if (!state.audio.ctx || !target || /\s/.test(ch) || /[,.!?;:，。！？]/.test(ch)) return;
+    const code = ch.codePointAt(0) || 0;
+    let freq = voice.base + (code % 11) * (voice.spread / 11) + (code % 7) * 10;
+    if (voice.quantize) freq = Math.round(freq / voice.quantize) * voice.quantize;
+    const speed = Math.max(0.1, babbleSpeedSetting());
+    const duration = Math.min(0.052, (babbleCharDuration(ch, speed) / 1000) * 0.82);
+    const pan = ((index % 5) - 2) * 0.06;
+    overlayTone(freq, duration, index % 2 ? voice.waveA : voice.waveB, voice.gain, 0, target);
+    overlayTone(freq * voice.formant, Math.max(0.018, duration * 0.72), voice.waveB, voice.gain * 0.32, 0.006 / speed, target);
+    overlayNoiseBurst({ duration: 0.016, filterType: "bandpass", frequency: freq * 2.25, q: 2.2, gainValue: voice.noise, pan, target });
+  }
+
+  function createBabbleRichText(text, options = {}, className = "") {
+    const outer = document.createElement("span");
+    outer.className = `babble-text${className ? ` ${className}` : ""}`;
+    const live = document.createElement("span");
+    live.className = "babble-live";
+    const final = document.createElement("span");
+    final.className = "babble-final";
+    final.hidden = true;
+    appendRichText(final, text, options);
+    outer.append(live, final);
+    outer._babbleText = String(text || "");
+    outer._babbleLive = live;
+    outer._babbleFinal = final;
+    return outer;
+  }
+
+  function startBubbleBabble(bubble, data) {
+    const node = bubble?._babbleNode;
+    const text = String(node?._babbleText || "");
+    if (!node || !text) return;
+    clearBubbleBabble(bubble);
+    bubble._babbleTimers = [];
+    const chars = Array.from(text);
+    const live = node._babbleLive;
+    const final = node._babbleFinal;
+    if (!live || !final) return;
+    live.textContent = "";
+    final.hidden = true;
+    const speed = babbleSpeedSetting();
+    const seed = speakerKey(data, true) || speakerKey(data) || data?.name || data?.username || text.slice(0, 16);
+    const voice = babbleVoiceForSeed(seed);
+    let audioBus = null;
+    ensureOverlayAudio().then(() => {
+      if (state.soundSettings?.enabled !== false && state.soundSettings?.babbleVolume > 0) {
+        audioBus = overlayTempEchoBus({
+          delayTime: 0.035,
+          feedback: 0.06,
+          wet: 0.07,
+          liveFor: Math.min(10, text.length * 0.08 / Math.max(0.1, speed) + 1),
+          target: overlayAudioTarget("babble"),
+        });
+      }
+    }).catch(() => {});
+    let cursor = 0;
+    chars.forEach((ch, index) => {
+      const at = cursor;
+      const timer = window.setTimeout(() => {
+        live.textContent = chars.slice(0, index + 1).join("");
+        if (audioBus) playOverlayBabbleBlip(ch, index, voice, audioBus);
+      }, at);
+      bubble._babbleTimers.push(timer);
+      cursor += babbleCharDuration(ch, speed);
+    });
+    const doneTimer = window.setTimeout(() => {
+      clearBubbleBabble(bubble);
+      live.textContent = "";
+      final.hidden = false;
+    }, cursor + 60);
+    bubble._babbleTimers.push(doneTimer);
+  }
+
   function removeSpeechBubble(el, bubble) {
     if (!bubble || bubble.classList.contains("leaving")) return;
+    clearBubbleBabble(bubble);
     bubble.classList.add("leaving");
     clearTimeout(bubble._removeTimer);
     setTimeout(() => {
@@ -7815,13 +8795,14 @@
     if (isMedia) {
       bubble.appendChild(createMediaElement(data));
       if (typeof data.text === "string" && data.text.trim()) {
-        const caption = document.createElement("span");
-        caption.className = "photo-caption";
-        appendRichText(caption, data.text, { entities: data.entities || [] });
+        const caption = createBabbleRichText(data.text, { entities: data.entities || [] }, "photo-caption");
+        bubble._babbleNode = caption;
         bubble.appendChild(caption);
       }
     } else {
-      appendRichText(bubble, data.text, { entities: data.entities || [] });
+      const textNode = createBabbleRichText(data.text, { entities: data.entities || [] });
+      bubble._babbleNode = textNode;
+      bubble.appendChild(textNode);
       if (data.stt_label) {
         const label = document.createElement("span");
         label.className = "stt-label";
@@ -7872,7 +8853,10 @@
       el.style.zIndex = String(z);
       el.classList.add("speaking");
       if (char) char.userData.speakingUntil = performance.now() + 7200;
-      requestAnimationFrame(() => bubble.classList.add("show"));
+      requestAnimationFrame(() => {
+        bubble.classList.add("show");
+        startBubbleBabble(bubble, data);
+      });
       bubble._removeTimer = setTimeout(() => removeSpeechBubble(el, bubble), 7200);
     }
   }
@@ -8400,6 +9384,73 @@
     }
   }
 
+  function createExitPoofParticle(effect, origin, color, power, delay = 0, sparkle = false) {
+    const birth = performance.now() + delay;
+    const spark = new THREE.Mesh(effect.sparkGeo, makeFireworkMaterial(color, sparkle ? 0.92 : 0.82));
+    spark.position.copy(origin);
+    const theta = Math.random() * Math.PI * 2;
+    const vertical = Math.random() * 2 - 0.45;
+    const flat = Math.sqrt(Math.max(0.16, 1 - Math.min(0.95, vertical * vertical * 0.5)));
+    const speed = power * (0.5 + Math.random() * 0.72);
+    spark.userData.origin = origin.clone();
+    spark.userData.velocity = new THREE.Vector3(
+      Math.cos(theta) * flat * speed,
+      vertical * speed + 0.24,
+      Math.sin(theta) * flat * speed
+    );
+    spark.userData.birth = birth;
+    spark.userData.life = 720 + Math.random() * 520;
+    spark.userData.gravity = 0.74 + Math.random() * 0.34;
+    spark.userData.twinkle = Math.random() * Math.PI * 2;
+    spark.userData.baseScale = sparkle ? 0.58 + Math.random() * 0.46 : 0.9 + Math.random() * 0.65;
+    spark.visible = delay <= 0;
+    effect.group.add(spark);
+    effect.particles.push(spark);
+  }
+
+  function triggerCharacterExitPoof(origin, scale = 1) {
+    if (!state.three?.scene || !window.THREE || !origin) return;
+    const s = clamp(Number(scale) || 1, 0.18, 1.4);
+    const group = new THREE.Group();
+    group.position.copy(origin);
+    group.scale.setScalar(s);
+    const effect = {
+      type: "exit-poof",
+      group,
+      particles: [],
+      rings: [],
+      sparkGeo: new THREE.SphereGeometry(0.026, 8, 6),
+      start: performance.now(),
+      life: 1180,
+    };
+    const white = new THREE.Color(0xf4fbff);
+    const gold = new THREE.Color(0xffe9a8);
+    for (let i = 0; i < 54; i += 1) {
+      createExitPoofParticle(effect, new THREE.Vector3(0, 0.62 + Math.random() * 0.22, 0), white.clone().lerp(gold, Math.random() * 0.2), 0.68, 0, false);
+    }
+    for (let i = 0; i < 28; i += 1) {
+      createExitPoofParticle(effect, new THREE.Vector3(0, 0.98 + Math.random() * 0.16, 0), gold.clone().lerp(white, Math.random() * 0.35), 0.46, 80, true);
+    }
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.18, 0.018, 10, 96),
+      makeFireworkMaterial(white, 0.92)
+    );
+    ring.material.side = THREE.DoubleSide;
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.72;
+    ring.userData.birth = effect.start;
+    ring.userData.life = 620;
+    effect.group.add(ring);
+    effect.rings.push(ring);
+    state.three.scene.add(group);
+    state.three.effects = state.three.effects || [];
+    state.three.effects.push(effect);
+    while (state.three.effects.length > 8) {
+      const old = state.three.effects.shift();
+      old?.group?.parent?.remove(old.group);
+    }
+  }
+
   function spawnLevelParticles(effect, color, count, isDown) {
     for (let i = 0; i < count; i++) {
       const sparkColor = color.clone().lerp(new THREE.Color(0xffffff), Math.random() * 0.36);
@@ -8507,6 +9558,7 @@
     }
     const upward = String(data.direction || "").toLowerCase() !== "down" && Number(data.new_level || 0) >= Number(data.old_level || 0);
     showLevelEventToast(data, participant, upward);
+    playOverlayLevelSound(upward).catch(() => {});
     if (isRealJailed(key)) return;
     if (!state.three?.scene || !window.THREE) return;
     const char = state.characters.get(key);
@@ -8694,6 +9746,7 @@
       orbs.push({ mesh, material, phase: i * Math.PI * 0.4, radius: 0.54 + i * 0.034 });
     }
     const popTimes = [980, 1480, 1980];
+    playOverlayFireworkSound(popTimes).catch(() => {});
     state.three.scene.add(group);
     state.three.effects = state.three.effects || [];
     state.three.effects.push({
@@ -9124,6 +10177,10 @@
       tuft.rotation.x = (Math.random() - 0.5) * 0.45;
       tuft.rotation.z = (Math.random() - 0.5) * 0.45;
       tuft.scale.setScalar(0.75 + Math.random() * 0.8);
+      tuft.userData.baseRotX = tuft.rotation.x;
+      tuft.userData.baseRotZ = tuft.rotation.z;
+      tuft.userData.windPhase = Math.random() * Math.PI * 2;
+      tuft.userData.windAmp = 0.025 + Math.random() * 0.055;
       tuftGroup.add(tuft);
     }
     scene.add(tuftGroup);
@@ -9227,7 +10284,7 @@
     const characterClawRig = createCharacterClawRig();
     scene.add(characterClawRig);
 
-    state.three = { renderer, scene, camera, fireLight, jailGroup, jailPlacePreview, characterPlacePreview, characterClawRig, effects: [] };
+    state.three = { renderer, scene, camera, fireLight, tuftGroup, jailGroup, jailPlacePreview, characterPlacePreview, characterClawRig, effects: [] };
 
     function updateCamera() {
       const v = state.view;
@@ -9448,6 +10505,13 @@
       flameInner.scale.set(1 + Math.cos(t * 0.013) * 0.07, 1 + Math.cos(t * 0.011) * 0.1, 1);
       fireLight.intensity = 3.5 + Math.sin(t * 0.017) * 0.55;
       glow.scale.setScalar(1 + Math.sin(t * 0.005) * 0.045);
+      tuftGroup.children.forEach((tuft, i) => {
+        const phase = tuft.userData.windPhase || 0;
+        const amp = tuft.userData.windAmp || 0.035;
+        const wave = Math.sin(t * 0.0018 + phase) * amp + Math.sin(t * 0.0031 + i * 0.17) * amp * 0.32;
+        tuft.rotation.x = (tuft.userData.baseRotX || 0) + wave;
+        tuft.rotation.z = (tuft.userData.baseRotZ || 0) + wave * 0.62;
+      });
       stars.children.forEach((s, i) => {
         s.material.opacity = 0.48 + Math.sin(t * 0.0015 + i) * 0.22;
       });
@@ -9474,11 +10538,36 @@
         } else if (effect.type === "level") {
           updateLevelEffect(effect, now, t);
         } else {
+          for (const ring of effect.rings || []) {
+            const local = now - ring.userData.birth;
+            if (local < 0) {
+              ring.visible = false;
+              continue;
+            }
+            ring.visible = true;
+            const ringProgress = clamp(local / Math.max(1, ring.userData.life), 0, 1);
+            ring.scale.setScalar(1 + easeOutCubic(ringProgress) * 4.6);
+            ring.material.opacity = Math.max(0, (1 - ringProgress) * 0.92);
+          }
           for (const spark of effect.particles) {
+            const local = now - (spark.userData.birth || effect.start);
+            if (local < 0) {
+              spark.visible = false;
+              continue;
+            }
+            spark.visible = true;
+            const particleProgress = clamp(local / Math.max(1, spark.userData.life || effect.life), 0, 1);
+            const particleSec = local / 1000;
             const v = spark.userData.velocity;
-            spark.position.set(v.x * sec, v.y * sec - 0.62 * sec * sec, v.z * sec);
-            spark.scale.setScalar(1 + progress * 0.85);
-            spark.material.opacity = Math.max(0, (1 - progress) * (0.72 + Math.sin(t * 0.02 + spark.userData.twinkle) * 0.2));
+            const origin = spark.userData.origin || { x: 0, y: 0, z: 0 };
+            const gravity = spark.userData.gravity ?? 0.62;
+            spark.position.set(
+              origin.x + v.x * particleSec,
+              origin.y + v.y * particleSec - gravity * particleSec * particleSec,
+              origin.z + v.z * particleSec
+            );
+            spark.scale.setScalar((spark.userData.baseScale || 1) * (1 + particleProgress * 0.85));
+            spark.material.opacity = Math.max(0, (1 - particleProgress) * (0.72 + Math.sin(t * 0.02 + spark.userData.twinkle) * 0.2));
           }
         }
         if (progress >= 1) {
@@ -9514,9 +10603,15 @@
           const to = group.userData.leaveTo || group.position;
           const mode = group.userData.exitEffect || "ascend";
           const eased = mode === "ascend" ? 1 - Math.pow(1 - progress, 2.5) : progress;
+          const vanishStart = mode === "ascend" ? 0.78 : 0.6;
+          const vanish = mode === "none" ? 1 : clamp((progress - vanishStart) / Math.max(0.001, 0.98 - vanishStart), 0, 1);
           group.position.lerpVectors(from, to, eased);
           if (mode === "ascend") group.position.y += Math.sin(progress * Math.PI) * 0.24;
-          const ghost = 1 - progress;
+          if (mode !== "none" && !group.userData.exitPoofed && vanish > 0.08) {
+            group.userData.exitPoofed = true;
+            triggerCharacterExitPoof(group.position.clone(), prisonScale);
+          }
+          const ghost = 1 - vanish;
           const exitScale = characterScale(groupLayoutCount, false) * prisonScale * (mode === "ascend" ? (1 - progress * 0.38) : 1);
           group.scale.setScalar(Math.max(0.18, exitScale));
           group.traverse((obj) => {

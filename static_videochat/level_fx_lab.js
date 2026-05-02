@@ -20,6 +20,11 @@
     clawMove: null,
     placeIndex: 0,
     characterScale: 1,
+    exitRestoreTimer: 0,
+    audio: {
+      ctx: null,
+      master: null,
+    },
   };
 
   const warm = new THREE.Color(0xffd45c);
@@ -46,6 +51,199 @@
 
   function lerpValue(a, b, t) {
     return a + (b - a) * t;
+  }
+
+  function setFireSoundState(text) {
+    const el = document.getElementById("fire-sound-state");
+    if (el) el.textContent = text;
+  }
+
+  function safeAudioRamp(param, value, time) {
+    param.exponentialRampToValueAtTime(Math.max(0.0001, value), time);
+  }
+
+  function makeNoiseBuffer(ctx, seconds = 1, color = "white") {
+    const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < length; i += 1) {
+      const whiteNoise = Math.random() * 2 - 1;
+      if (color === "brown") {
+        last = (last + 0.02 * whiteNoise) / 1.02;
+        data[i] = last * 3.4;
+      } else if (color === "pink") {
+        last = 0.97 * last + 0.03 * whiteNoise;
+        data[i] = last * 1.8;
+      } else {
+        data[i] = whiteNoise;
+      }
+    }
+    return buffer;
+  }
+
+  async function ensureAudio() {
+    if (!state.audio.ctx) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return null;
+      const ctx = new AudioContext();
+      const master = ctx.createGain();
+      master.gain.value = 0.82;
+      master.connect(ctx.destination);
+      state.audio.ctx = ctx;
+      state.audio.master = master;
+    }
+    if (state.audio.ctx.state !== "running") {
+      try {
+        await state.audio.ctx.resume();
+      } catch (_) {}
+    }
+    return state.audio.ctx;
+  }
+
+  function audioTarget() {
+    return state.audio.master;
+  }
+
+  function audioNoiseBurst({
+    duration = 0.1,
+    color = "white",
+    filterType = "bandpass",
+    frequency = 900,
+    q = 0.8,
+    gainValue = 0.08,
+    attack = 0.004,
+    startAt = 0,
+    pan = 0,
+    target = audioTarget(),
+  } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const src = ctx.createBufferSource();
+    src.buffer = makeNoiseBuffer(ctx, Math.max(0.04, duration + 0.06), color);
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    const t = ctx.currentTime + startAt;
+    filter.type = filterType;
+    filter.frequency.value = frequency;
+    filter.Q.value = q;
+    gain.gain.setValueAtTime(0.0001, t);
+    safeAudioRamp(gain.gain, gainValue, t + attack);
+    safeAudioRamp(gain.gain, 0.0001, t + duration);
+    src.connect(filter);
+    filter.connect(gain);
+    if (panner) {
+      panner.pan.value = pan;
+      gain.connect(panner);
+      panner.connect(target);
+    } else {
+      gain.connect(target);
+    }
+    src.start(t);
+    src.stop(t + duration + 0.1);
+  }
+
+  function audioToneSweep({
+    from = 220,
+    to = 440,
+    duration = 0.4,
+    type = "triangle",
+    gainValue = 0.04,
+    startAt = 0,
+    target = audioTarget(),
+  } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx || !target) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const t = ctx.currentTime + startAt;
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(1, from), t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, to), t + duration);
+    gain.gain.setValueAtTime(0.0001, t);
+    safeAudioRamp(gain.gain, gainValue, t + 0.012);
+    safeAudioRamp(gain.gain, 0.0001, t + duration);
+    osc.connect(gain);
+    gain.connect(target);
+    osc.start(t);
+    osc.stop(t + duration + 0.05);
+  }
+
+  function audioEchoBus({ delayTime = 0.115, feedback = 0.2, wet = 0.24, liveFor = 4.0 } = {}) {
+    const ctx = state.audio.ctx;
+    if (!ctx) return audioTarget();
+    const input = ctx.createGain();
+    const dry = ctx.createGain();
+    const delay = ctx.createDelay(0.8);
+    const loop = ctx.createGain();
+    const wetGain = ctx.createGain();
+    dry.gain.value = 0.96;
+    delay.delayTime.value = delayTime;
+    loop.gain.value = feedback;
+    wetGain.gain.value = wet;
+    input.connect(dry);
+    dry.connect(audioTarget());
+    input.connect(delay);
+    delay.connect(loop);
+    loop.connect(delay);
+    delay.connect(wetGain);
+    wetGain.connect(audioTarget());
+    window.setTimeout(() => {
+      for (const node of [input, dry, delay, loop, wetGain]) {
+        try { node.disconnect(); } catch (_) {}
+      }
+    }, liveFor * 1000);
+    return input;
+  }
+
+  async function playFireOrbitSound(popTimes = [980, 1480, 1980]) {
+    const ctx = await ensureAudio();
+    if (!ctx || ctx.state !== "running") return;
+    const times = popTimes.map((ms) => Math.max(0, Number(ms) || 0));
+    const firstPop = Math.max(0.34, times[0] / 1000);
+    const bus = audioEchoBus({ delayTime: 0.09, feedback: 0.12, wet: 0.16, liveFor: 2.2 });
+    setFireSoundState(`피융 -> ${times.map((ms) => `${Math.round(ms)}ms`).join(" / ")}`);
+    audioToneSweep({ from: 210, to: 1420, duration: Math.max(0.28, firstPop - 0.16), type: "sawtooth", gainValue: 0.032, target: bus });
+    audioToneSweep({ from: 520, to: 2240, duration: Math.max(0.24, firstPop - 0.24), type: "triangle", gainValue: 0.022, startAt: 0.04, target: bus });
+    audioNoiseBurst({
+      duration: Math.max(0.24, firstPop - 0.16),
+      color: "pink",
+      filterType: "bandpass",
+      frequency: 1180,
+      q: 0.7,
+      gainValue: 0.03,
+      attack: 0.09,
+      target: bus,
+    });
+    window.setTimeout(() => setFireSoundState("sound idle"), times.at(-1) + 1300);
+  }
+
+  async function playFireOrbitPopSound(index = 0, total = 3) {
+    const ctx = await ensureAudio();
+    if (!ctx || ctx.state !== "running") return;
+    const bus = audioEchoBus({ delayTime: 0.075, feedback: 0.09, wet: 0.14, liveFor: 1.35 });
+    const pan = (index - (total - 1) / 2) * 0.2 + (Math.random() - 0.5) * 0.12;
+    const lowFreq = 245 + index * 22;
+    audioNoiseBurst({ duration: 0.055, color: "white", filterType: "bandpass", frequency: 880 + index * 70, q: 0.72, gainValue: 0.15, attack: 0.001, pan, target: bus });
+    audioNoiseBurst({ duration: 0.34, color: "brown", filterType: "lowpass", frequency: lowFreq, q: 0.48, gainValue: 0.19, attack: 0.003, pan, target: bus });
+    audioNoiseBurst({ duration: 0.2, color: "pink", filterType: "lowpass", frequency: 560 + index * 55, q: 0.38, gainValue: 0.13, attack: 0.005, startAt: 0.012, pan, target: bus });
+    audioToneSweep({ from: 70 + index * 4, to: 58 + index * 3, duration: 0.18, type: "sine", gainValue: 0.058, startAt: 0.004, target: bus });
+    for (let i = 0; i < 4; i += 1) {
+      audioNoiseBurst({
+        duration: 0.022 + Math.random() * 0.03,
+        color: "white",
+        filterType: "highpass",
+        frequency: 3000 + Math.random() * 4200,
+        q: 0.55 + Math.random() * 0.6,
+        gainValue: 0.009 + Math.random() * 0.011,
+        attack: 0.001,
+        startAt: 0.05 + i * (0.028 + Math.random() * 0.024),
+        pan: pan + (Math.random() - 0.5) * 0.7,
+        target: bus,
+      });
+    }
+    setFireSoundState(`펑 ${index + 1}/${total}`);
   }
 
   function currentCharacterScale() {
@@ -438,6 +636,36 @@
     state.effects = [];
   }
 
+  function setExitStatus(text) {
+    const el = document.getElementById("exit-state");
+    if (el) el.textContent = text;
+  }
+
+  function cacheMaterialState(obj) {
+    if (!obj.material || obj.material.userData.fxCached) return;
+    obj.material.userData.fxCached = true;
+    obj.material.userData.fxOpacity = Number(obj.material.opacity ?? 1);
+    obj.material.userData.fxTransparent = !!obj.material.transparent;
+  }
+
+  function restoreCharacterAfterExit() {
+    window.clearTimeout(state.exitRestoreTimer);
+    state.exitRestoreTimer = 0;
+    character.userData.exitFx = null;
+    character.visible = true;
+    label.style.opacity = "1";
+    character.traverse((obj) => {
+      if (!obj.material) return;
+      if (obj.material.userData.fxCached) {
+        obj.material.opacity = obj.material.userData.fxOpacity;
+        obj.material.transparent = obj.material.userData.fxTransparent;
+      }
+    });
+    character.position.set(-1.35, 0, 1.3);
+    character.rotation.y = Math.atan2(-character.position.x, -character.position.z);
+    setExitStatus("exit idle");
+  }
+
   const character = makeCharacter();
   const clawRig = createClawRig();
   const clawTargets = [
@@ -767,6 +995,7 @@
     const popGapMs = orbitPopGapMs();
     const firstPop = 980;
     const popTimes = [firstPop, firstPop + popGapMs, firstPop + popGapMs * 2];
+    playFireOrbitSound(popTimes);
     const group = new THREE.Group();
     group.position.copy(fireOrigin());
     const effect = {
@@ -834,6 +1063,99 @@
     ring.visible = delay <= 0;
     effect.group.add(ring);
     effect.rings.push(ring);
+  }
+
+  function createExitPoofEffect(origin, scale = currentCharacterScale()) {
+    const group = new THREE.Group();
+    const color = new THREE.Color(0xf4fbff);
+    const s = Math.max(0.28, Math.min(1.15, scale));
+    const effect = {
+      type: "firework",
+      variant: "exit-poof",
+      group,
+      particles: [],
+      rings: [],
+      start: performance.now(),
+      duration: 1180,
+    };
+    spawnBurst(effect, origin.clone().add(new THREE.Vector3(0, 0.62 * s, 0)), color, Math.round(44 * s + 20), 0.76 * s, 0, false);
+    spawnBurst(effect, origin.clone().add(new THREE.Vector3(0, 1.05 * s, 0)), new THREE.Color(0xffe9a8), Math.round(22 * s + 10), 0.46 * s, 80, true);
+    addFlashRing(effect, origin.clone().add(new THREE.Vector3(0, 0.72 * s, 0)), color, 0);
+    scene.add(group);
+    state.effects.push(effect);
+  }
+
+  function triggerExitPoof(mode = "ascend") {
+    window.clearTimeout(state.exitRestoreTimer);
+    stopClawPlace();
+    clearEffects();
+    restoreCharacterAfterExit();
+    const scale = currentCharacterScale();
+    const from = character.position.clone();
+    const lift = mode === "quick" ? 0.08 : 1.9 * scale;
+    character.userData.exitFx = {
+      start: performance.now(),
+      duration: mode === "quick" ? 900 : 2600,
+      mode,
+      from,
+      to: from.clone().add(new THREE.Vector3(0, lift, 0)),
+      scale,
+      poofed: false,
+      restored: false,
+    };
+    character.userData.effectKind = null;
+    label.style.opacity = "1";
+    setExitStatus(mode === "quick" ? "quick poof" : "app ascend + poof");
+  }
+
+  function updateExitFx(now, baseScale) {
+    const fx = character.userData.exitFx;
+    if (!fx) return false;
+    const progress = clamp01((now - fx.start) / Math.max(1, fx.duration));
+    const mode = fx.mode || "ascend";
+    const vanishStart = mode === "quick" ? 0.18 : 0.78;
+    const vanish = phase(progress, vanishStart, Math.min(0.98, vanishStart + 0.18));
+    const eased = mode === "quick" ? progress : 1 - Math.pow(1 - progress, 2.5);
+    character.position.lerpVectors(fx.from, fx.to, eased);
+    if (mode !== "quick") character.position.y += Math.sin(progress * Math.PI) * 0.24 * fx.scale;
+    character.scale.setScalar(Math.max(0.16, baseScale * (mode === "quick" ? 1 - vanish * 0.82 : 1 - progress * 0.38)));
+
+    if (!fx.poofed && vanish > 0.08) {
+      fx.poofed = true;
+      createExitPoofEffect(character.position.clone(), fx.scale);
+      setExitStatus("poof");
+    }
+
+    const ghost = Math.max(0, 1 - vanish);
+    character.visible = ghost > 0.03;
+    label.style.opacity = String(Math.max(0, ghost));
+    character.traverse((obj) => {
+      if (!obj.material) return;
+      if (obj.userData.isCheerStick) {
+        obj.visible = false;
+        return;
+      }
+      cacheMaterialState(obj);
+      if (obj.material.color && obj.material.userData.baseColor) {
+        obj.material.color.copy(obj.material.userData.baseColor).lerp(cool, mode === "quick" ? 0.24 : 0.72);
+      }
+      obj.material.transparent = true;
+      const baseOpacity = Number(obj.material.userData.fxOpacity ?? 1);
+      obj.material.opacity = Math.max(0, ghost * baseOpacity * (mode === "quick" ? 0.78 : 0.58));
+      if (obj.material.emissive) {
+        obj.material.emissive.copy(cool);
+        obj.material.emissiveIntensity = Math.sin(progress * Math.PI) * 0.42;
+      }
+    });
+
+    if (progress >= 1 && !fx.restored) {
+      fx.restored = true;
+      character.visible = false;
+      label.style.opacity = "0";
+      setExitStatus("restore soon");
+      state.exitRestoreTimer = window.setTimeout(restoreCharacterAfterExit, 700);
+    }
+    return true;
   }
 
   function updateEffects(now) {
@@ -935,6 +1257,7 @@
           Math.sin(theta) * (0.2 + step * 0.14)
         );
         const color = new THREE.Color(0xffd45c).offsetHSL(step * 0.085, 0.16, 0.08);
+        playFireOrbitPopSound(step, popTimes.length).catch(() => {});
         spawnBurst(effect, origin, color, 118 + step * 24, 1.95 + step * 0.24, age, step === 1);
         spawnBurst(effect, origin.clone().add(new THREE.Vector3(0, 0.08, 0)), color.clone().lerp(white, 0.28), 48, 1.05, age + 110, false);
         effect.popStep += 1;
@@ -1025,6 +1348,7 @@
       if (obj.material.emissive) obj.material.emissive.setHex(0x000000);
     }
     updateCheer(now);
+    if (updateExitFx(now, baseScale)) return;
     if (!kind || age > 1050) return;
     const t = Math.min(1, age / 1050);
     if (kind === "down") {
@@ -1104,6 +1428,8 @@
     if (ev.key !== "Enter") return;
     runCheerCommand(ev.currentTarget.value);
   });
+  document.getElementById("exit-app-poof").onclick = () => triggerExitPoof("ascend");
+  document.getElementById("exit-quick-poof").onclick = () => triggerExitPoof("quick");
   function setCharacterScale(scale) {
     state.characterScale = Math.max(0.28, Math.min(1.15, Number(scale) || 1));
     stopClawPlace();
@@ -1120,6 +1446,7 @@
     clearEffects();
     stopCheer();
     stopClawPlace({ resetPosition: true });
+    restoreCharacterAfterExit();
     setCharacterScale(1);
     state.level = 1;
     levelEl.textContent = "Lv. 1";

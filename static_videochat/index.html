@@ -19,6 +19,7 @@
     <button id="topic-edit" type="button" title="제목 편집">T</button>
   </div>
   <div id="participants"></div>
+  <button id="app-settings-toggle" type="button" title="설정 열기" aria-expanded="false">⚙</button>
   <div id="toast-handle" title="entry/exit message position">event</div>
   <div id="event-toasts"></div>
   <div id="avatar-controls">
@@ -91,6 +92,62 @@
     <label class="effect-control" title="/fire global cooldown seconds">
       <span>fire G</span>
       <input id="fire-global-cooldown" type="number" min="0" max="60" step="0.5" value="1">
+    </label>
+    <button id="sound-toggle" type="button" title="캠프파이어 배경음 켜기/끄기">sound on</button>
+    <label class="effect-control sound-control" title="캠프파이어 배경 소리 볼륨">
+      <span>bg</span>
+      <input id="sound-bg-volume" type="range" min="0" max="100" step="1" value="16">
+      <strong id="sound-bg-volume-value">16%</strong>
+    </label>
+    <label class="effect-control sound-control" title="레벨업/레벨다운 이벤트 소리 볼륨">
+      <span>event</span>
+      <input id="sound-event-volume" type="range" min="0" max="100" step="1" value="72">
+      <strong id="sound-event-volume-value">72%</strong>
+    </label>
+    <label class="effect-control sound-control" title="/fire 폭죽 피융/펑펑펑 소리 볼륨">
+      <span>fire</span>
+      <input id="sound-fire-volume" type="range" min="0" max="100" step="1" value="86">
+      <strong id="sound-fire-volume-value">86%</strong>
+    </label>
+    <label class="effect-control sound-control" title="등장/퇴장 소리 볼륨">
+      <span>life</span>
+      <input id="sound-life-volume" type="range" min="0" max="100" step="1" value="72">
+      <strong id="sound-life-volume-value">72%</strong>
+    </label>
+    <label class="effect-control sound-control" title="캠프파이어 불길 베드 소리">
+      <span>bed</span>
+      <input id="sound-fire-bed" type="range" min="0" max="100" step="1" value="42">
+      <strong id="sound-fire-bed-value">42%</strong>
+    </label>
+    <label class="effect-control sound-control" title="캠프파이어 타닥타닥 소리">
+      <span>crackle</span>
+      <input id="sound-fire-crackle" type="range" min="0" max="100" step="1" value="62">
+      <strong id="sound-fire-crackle-value">62%</strong>
+    </label>
+    <label class="effect-control sound-control" title="캠프파이어 타닥타닥 빈도">
+      <span>rate</span>
+      <input id="sound-fire-rate" type="range" min="0" max="100" step="1" value="48">
+      <strong id="sound-fire-rate-value">48%</strong>
+    </label>
+    <label class="effect-control sound-control" title="강한 타닥타닥이 랜덤으로 터지는 최대 간격">
+      <span>strong</span>
+      <input id="sound-fire-strong-max" type="range" min="2" max="30" step="1" value="9">
+      <strong id="sound-fire-strong-max-value">&lt;=9s</strong>
+    </label>
+    <label class="effect-control sound-control" title="강한 타닥타닥 강도">
+      <span>power</span>
+      <input id="sound-fire-strong-power" type="range" min="0" max="100" step="1" value="72">
+      <strong id="sound-fire-strong-power-value">72%</strong>
+    </label>
+    <label class="effect-control sound-control" title="말풍선 옹알이 볼륨">
+      <span>babble</span>
+      <input id="sound-babble-volume" type="range" min="0" max="100" step="1" value="48">
+      <strong id="sound-babble-volume-value">48%</strong>
+    </label>
+    <label class="effect-control sound-control" title="말풍선 텍스트 출력 및 옹알이 속도">
+      <span>talk</span>
+      <input id="sound-babble-speed" type="range" min="55" max="500" step="5" value="100">
+      <strong id="sound-babble-speed-value">1.00x</strong>
     </label>
   </div>
   <div id="chat-panel">

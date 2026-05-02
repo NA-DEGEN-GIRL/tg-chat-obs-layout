@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Browser Lab</title>
+  <link rel="stylesheet" href="./browser_lab.css">
+</head>
+<body>
+  <div class="bl-root">
+    <header class="bl-toolbar" aria-label="Browser controls">
+      <div class="bl-nav-group">
+        <button id="backBtn" type="button" class="bl-btn" title="Back">Back</button>
+        <button id="forwardBtn" type="button" class="bl-btn" title="Forward">Forward</button>
+        <button id="reloadBtn" type="button" class="bl-btn" title="Reload">Reload</button>
+        <button id="stopBtn" type="button" class="bl-btn bl-btn-warn" title="Stop loading">Stop</button>
+      </div>
+
+      <form id="addressForm" class="bl-address-form" autocomplete="off">
+        <input id="addressInput" class="bl-address" type="text" inputmode="url" spellcheck="false" value="https://example.com" aria-label="Address">
+        <button id="goBtn" type="submit" class="bl-btn bl-btn-primary">Go</button>
+      </form>
+
+      <div class="bl-connection">
+        <span id="connectionDot" class="bl-dot" aria-hidden="true"></span>
+        <span id="connectionStatus">Disconnected</span>
+      </div>
+    </header>
+
+    <main class="bl-main">
+      <section class="bl-workspace" aria-label="Remote browser viewport">
+        <div class="bl-page-strip">
+          <div class="bl-page-meta">
+            <div class="bl-title-row">
+              <span class="bl-label">Title</span>
+              <span id="titleText" class="bl-title">-</span>
+            </div>
+            <div class="bl-url-row">
+              <span class="bl-label">URL</span>
+              <span id="currentUrl" class="bl-url">about:blank</span>
+            </div>
+          </div>
+          <div class="bl-status-cells" aria-label="Navigation status">
+            <div><span class="bl-label">Load</span><strong id="loadingText">idle</strong></div>
+            <div><span class="bl-label">HTTP</span><strong id="httpStatus">-</strong></div>
+            <div><span class="bl-label">Nav</span><strong id="navState">idle</strong></div>
+          </div>
+        </div>
+
+        <div id="viewportShell" class="bl-viewport-shell">
+          <canvas id="viewportCanvas" class="bl-viewport" width="1280" height="720" tabindex="0" aria-label="Remote browser viewport"></canvas>
+          <textarea id="textSink" class="bl-text-sink" aria-hidden="true" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+          <div id="emptyState" class="bl-empty-state">
+            Start the proxy server on port 9494, then connect.
+          </div>
+        </div>
+      </section>
+
+      <aside class="bl-side" aria-label="Browser lab diagnostics">
+        <section class="bl-panel">
+          <div class="bl-panel-head">
+            <h2>Server</h2>
+            <button id="connectBtn" type="button" class="bl-btn bl-btn-small">Connect</button>
+          </div>
+          <label class="bl-field">
+            <span>Proxy origin</span>
+            <input id="serverOrigin" type="url" value="http://127.0.0.1:9494" spellcheck="false">
+          </label>
+          <div class="bl-kv"><span>Health</span><strong id="healthText">unknown</strong></div>
+          <div class="bl-kv"><span>Profile</span><code id="profilePath">-</code></div>
+          <div class="bl-kv"><span>Runtime</span><code id="runtimePath">-</code></div>
+          <div class="bl-button-row">
+            <button id="healthBtn" type="button" class="bl-btn bl-btn-small">Health</button>
+            <button id="resetProfileBtn" type="button" class="bl-btn bl-btn-small bl-btn-danger">Clear profile</button>
+          </div>
+        </section>
+
+        <section class="bl-panel">
+          <div class="bl-panel-head">
+            <h2>Stream</h2>
+            <button id="applyStreamBtn" type="button" class="bl-btn bl-btn-small">Apply</button>
+          </div>
+          <div class="bl-grid-two">
+            <label class="bl-field">
+              <span>Width</span>
+              <input id="viewportWidth" type="number" min="320" max="3840" step="10" value="1280">
+            </label>
+            <label class="bl-field">
+              <span>Height</span>
+              <input id="viewportHeight" type="number" min="240" max="2160" step="10" value="720">
+            </label>
+            <label class="bl-field">
+              <span>FPS</span>
+              <input id="targetFps" type="number" min="1" max="30" step="1" value="8">
+            </label>
+            <label class="bl-field">
+              <span>JPEG</span>
+              <input id="jpegQuality" type="number" min="30" max="95" step="5" value="70">
+            </label>
+          </div>
+          <label class="bl-field">
+            <span>Scale</span>
+            <select id="scaleSelect">
+              <option value="fit">Fit</option>
+              <option value="1">100%</option>
+              <option value="0.75">75%</option>
+              <option value="0.5">50%</option>
+              <option value="1.25">125%</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="bl-panel">
+          <h2>Metrics</h2>
+          <div class="bl-kv"><span>FPS</span><strong id="fpsText">0</strong></div>
+          <div class="bl-kv"><span>Latency</span><strong id="latencyText">-</strong></div>
+          <div class="bl-kv"><span>Capture</span><strong id="captureText">-</strong></div>
+          <div class="bl-kv"><span>Frame</span><strong id="frameText">-</strong></div>
+          <label class="bl-field">
+            <span>Input</span>
+            <select id="textMode">
+              <option value="hybrid">React-safe</option>
+              <option value="keyboard">Keyboard</option>
+              <option value="dom">DOM fallback</option>
+            </select>
+          </label>
+          <div class="bl-button-row">
+            <button id="copyBtn" type="button" class="bl-btn bl-btn-small">Copy</button>
+            <button id="pasteBtn" type="button" class="bl-btn bl-btn-small">Paste</button>
+          </div>
+        </section>
+
+        <section class="bl-panel bl-log-panel">
+          <div class="bl-panel-head">
+            <h2>Debug</h2>
+            <button id="clearLogBtn" type="button" class="bl-btn bl-btn-small">Clear</button>
+          </div>
+          <div id="debugLog" class="bl-log" aria-live="polite"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="./browser_lab.js"></script>
+</body>
+</html>
