@@ -59,10 +59,10 @@
       const iframe = document.createElement("iframe");
       iframe.id = "player";
       iframe.title = "YouTube player";
-      iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
-      iframe.allowFullscreen = true;
+      iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
+      iframe.allowFullscreen = false;
       iframe.referrerPolicy = "origin-when-cross-origin";
-      iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(origin)}`;
+      iframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0&modestbranding=1&playsinline=1&fs=0&enablejsapi=1&origin=${encodeURIComponent(origin)}`;
       document.body.appendChild(iframe);
     }
 

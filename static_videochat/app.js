@@ -19,6 +19,9 @@
   const chatMessageMenu = document.getElementById("chat-message-menu");
   const chatMenuReply = document.getElementById("chat-menu-reply");
   const chatMenuQuote = document.getElementById("chat-menu-quote");
+  const chatMenuMiniJail = document.getElementById("chat-menu-mini-jail");
+  const chatMenuRealJail = document.getElementById("chat-menu-real-jail");
+  const chatMenuTmute = document.getElementById("chat-menu-tmute");
   const chatMenuDelete = document.getElementById("chat-menu-delete");
   const chatDrag = document.getElementById("chat-drag");
   const chatResize = document.getElementById("chat-resize");
@@ -42,6 +45,7 @@
     appSettingsToggle.textContent = "⚙";
     document.body.appendChild(appSettingsToggle);
   }
+  const avatarControls = document.getElementById("avatar-controls");
   const avatarSizeDown = document.getElementById("avatar-size-down");
   const avatarSizeUp = document.getElementById("avatar-size-up");
   const bubbleSizeDown = document.getElementById("bubble-size-down");
@@ -100,13 +104,17 @@
   mediaLightboxBody.id = "media-lightbox-body";
   mediaLightbox.appendChild(mediaLightboxBody);
   document.body.appendChild(mediaLightbox);
+  const BABBLE_OUTPUT_GAIN = 10;
+  const TMUTE_DURATION_MS = 60 * 1000;
   const streamPreviewPanel = document.createElement("div");
   streamPreviewPanel.id = "stream-preview-panel";
   streamPreviewPanel.innerHTML = `
     <div id="stream-preview-controls">
       <button id="stream-preview-drag" type="button" title="preview move">M</button>
       <button id="stream-preview-refresh" type="button" title="refresh preview">R</button>
+      <button id="stream-preview-quality" type="button" title="작은 프리뷰 화질">LQ</button>
       <button id="stream-preview-toggle" type="button" title="preview show/hide">hide</button>
+      <button id="stream-preview-close" type="button" title="close preview">x</button>
     </div>
     <div id="stream-preview-list"></div>
     <div id="stream-preview-resize" title="preview resize"></div>
@@ -115,7 +123,9 @@
   const streamPreviewControls = streamPreviewPanel.querySelector("#stream-preview-controls");
   const streamPreviewDrag = streamPreviewPanel.querySelector("#stream-preview-drag");
   const streamPreviewRefresh = streamPreviewPanel.querySelector("#stream-preview-refresh");
+  const streamPreviewQuality = streamPreviewPanel.querySelector("#stream-preview-quality");
   const streamPreviewToggle = streamPreviewPanel.querySelector("#stream-preview-toggle");
+  const streamPreviewClose = streamPreviewPanel.querySelector("#stream-preview-close");
   const streamPreviewList = streamPreviewPanel.querySelector("#stream-preview-list");
   const streamPreviewResize = streamPreviewPanel.querySelector("#stream-preview-resize");
   const streamPreviewViewer = document.createElement("div");
@@ -125,6 +135,8 @@
     <div id="stream-viewer-bar">
       <button id="stream-viewer-drag" type="button" title="viewer move">M</button>
       <button id="stream-viewer-refresh" type="button" title="refresh preview">R</button>
+      <button id="stream-viewer-rotate" type="button" title="화면 회전">↻</button>
+      <button id="stream-viewer-quality" type="button" title="큰 화면 화질">HQ</button>
       <button id="stream-viewer-close" type="button" title="close">x</button>
     </div>
     <div id="stream-viewer-body"></div>
@@ -134,6 +146,8 @@
   const streamViewerBar = streamPreviewViewer.querySelector("#stream-viewer-bar");
   const streamViewerDrag = streamPreviewViewer.querySelector("#stream-viewer-drag");
   const streamViewerRefresh = streamPreviewViewer.querySelector("#stream-viewer-refresh");
+  const streamViewerRotate = streamPreviewViewer.querySelector("#stream-viewer-rotate");
+  const streamViewerQuality = streamPreviewViewer.querySelector("#stream-viewer-quality");
   const streamViewerClose = streamPreviewViewer.querySelector("#stream-viewer-close");
   const streamViewerBody = streamPreviewViewer.querySelector("#stream-viewer-body");
   const streamViewerResize = streamPreviewViewer.querySelector("#stream-viewer-resize");
@@ -141,6 +155,7 @@
   widgetControls.id = "widget-controls";
   widgetControls.innerHTML = `
     <button id="widget-controls-drag" type="button" title="move widget menu">M</button>
+    <button id="widget-add-preview" type="button" title="show stream preview">preview</button>
     <button id="widget-add-price" type="button" title="show price widget">price</button>
     <button id="widget-add-memo" type="button" title="add memo widget">memo</button>
     <button id="widget-add-character-move" type="button" title="move characters">이동</button>
@@ -152,6 +167,7 @@
   `;
   document.body.appendChild(widgetControls);
   const widgetControlsDrag = widgetControls.querySelector("#widget-controls-drag");
+  const widgetAddPreview = widgetControls.querySelector("#widget-add-preview");
   const widgetAddPrice = widgetControls.querySelector("#widget-add-price");
   const widgetAddMemo = widgetControls.querySelector("#widget-add-memo");
   const widgetAddCharacterMove = widgetControls.querySelector("#widget-add-character-move");
@@ -175,9 +191,23 @@
   const STREAM_PREVIEW_SETTINGS_KEY = "videochat.streamPreviewSettings.v1";
   const WIDGET_SETTINGS_KEY = "videochat.widgetSettings.v1";
   const EMOJI_PICKER_POS_KEY = "videochat.emojiPicker.v1";
-  const STREAM_PREVIEW_MJPEG_RECYCLE_MS = 4 * 60 * 1000;
+  const COMMENT_THREAD_PREFIX = "(댓) ";
+  const WIDGET_Z_MAX = 24000;
+  const WIDGET_Z_STEP = 10;
+  const STREAM_PREVIEW_MJPEG_RECYCLE_MS = 60 * 1000;
   const STREAM_PREVIEW_MJPEG_RETRY_MIN_MS = 1200;
   const STREAM_PREVIEW_MJPEG_RETRY_MAX_MS = 10000;
+  const STREAM_PREVIEW_QUALITY_PRESETS = {
+    low: { label: "LQ", title: "작은 프리뷰 저화질 160p / 6fps", source: "thumb", w: 160, h: 90, fps: 6, q: 40 },
+    medium: { label: "MQ", title: "작은 프리뷰 중간화질 320p / 12fps", source: "thumb", w: 320, h: 180, fps: 12, q: 55 },
+    high: { label: "HQ", title: "작은 프리뷰 고화질 640p / 15fps", source: "main", w: 640, h: 360, fps: 15, q: 70 },
+  };
+  const STREAM_VIEWER_QUALITY_PRESETS = {
+    low: { label: "LQ", title: "큰 화면 저화질 320p / 12fps", source: "thumb", w: 320, h: 180, fps: 12, q: 55 },
+    medium: { label: "MQ", title: "큰 화면 중간화질 480p / 20fps", source: "main", w: 854, h: 480, fps: 20, q: 72 },
+    high: { label: "HQ", title: "큰 화면 고화질 720p / 30fps", source: "main", w: 1280, h: 720, fps: 30, q: 82 },
+  };
+  const STREAM_QUALITY_ORDER = ["low", "medium", "high"];
   const PRICE_REFRESH_MS = 45 * 1000;
   const LEVEL_UP_TEMPLATE_DEFAULT = "{name} 레벨 업 Lv. {old_level} → {new_level} · {reason}";
   const LEVEL_DOWN_TEMPLATE_DEFAULT = "{name} 레벨 다운 Lv. {old_level} → {new_level}";
@@ -240,6 +270,10 @@
     layoutSettlingUntil: 0,
     speechOrder: 0,
     chatSettings: null,
+    nativeChatPanelActive: false,
+    nativeChatSyncFrame: 0,
+    nativeChatSyncForce: false,
+    nativeChatLastPayload: "",
     topicSettings: null,
     avatarSettings: null,
     effectSettings: null,
@@ -248,6 +282,8 @@
     streamPreviewSettings: null,
     widgetSettings: null,
     streamPreviewSignature: "",
+    streamPreviewRenderFrame: 0,
+    streamPreviewForceRender: false,
     overlaySettings: {},
     overlaySettingsPushTimer: null,
     controlMode: false,
@@ -266,6 +302,7 @@
     maxMediaBytes: 50 * 1024 * 1024,
     replyTo: null,
     menuTarget: null,
+    menuTmuteRefreshTimer: 0,
     mentionToken: null,
     mentionTimer: null,
     mentionSelected: 0,
@@ -294,6 +331,9 @@
     gameCloseTimer: 0,
     gameVoteBuffer: null,
     electronBrowserBridgeBound: false,
+    nativeChatActionStateSignature: "",
+    nativeChatActionStateFrame: 0,
+    tmuteUntilByKey: new Map(),
     audio: {
       ctx: null,
       masterGain: null,
@@ -309,6 +349,7 @@
       unlockBound: false,
     },
     electronBrowserLogs: [],
+    deletedMessageKeys: new Set(),
     electronNativeViewsSuppressedForDrag: false,
     widgetDragDepth: 0,
     widgetInteractionDepth: 0,
@@ -318,6 +359,7 @@
     prisonWidgetRefreshPending: false,
     prisonPlaceMode: false,
     prisonTransformRenderFrame: 0,
+    prisonRosterScroll: { mini: 0, real: 0 },
     characterMoveAdjusting: false,
     characterPlaceMode: false,
     characterDriveMode: false,
@@ -325,6 +367,50 @@
     characterDriveLastT: 0,
     characterDriveLastSave: 0,
   };
+
+  const clientLogThrottle = new Map();
+  function clientLog(event, fields = {}, throttleMs = 1000) {
+    const name = String(event || "client");
+    const now = Date.now();
+    const key = `${name}:${String(fields?.message || fields?.reason || fields?.type || "")}`;
+    const last = clientLogThrottle.get(key) || 0;
+    if (throttleMs > 0 && now - last < throttleMs) return;
+    clientLogThrottle.set(key, now);
+    const payload = {
+      event: name,
+      client_id: state.clientId,
+      href: window.location.href,
+      fields,
+      ts: now,
+    };
+    try {
+      fetch("/api/videochat/client-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+    try {
+      console.debug("[videochat-client]", name, fields);
+    } catch (_) {}
+  }
+
+  window.addEventListener("error", (ev) => {
+    clientLog("window_error", {
+      message: ev.message,
+      source: ev.filename,
+      line: ev.lineno,
+      column: ev.colno,
+      stack: ev.error?.stack,
+    }, 2000);
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    clientLog("unhandled_rejection", {
+      reason: String(ev.reason?.message || ev.reason || "unknown"),
+      stack: ev.reason?.stack,
+    }, 2000);
+  });
 
   const DEFAULT_CAMERA_VIEW = {
     yaw: state.view.yaw,
@@ -374,6 +460,39 @@
     if (!selection || selection.isCollapsed) return "";
     return selection.toString().trim().slice(0, 500).trim();
   }
+
+  function messageKeyFromRef(ref) {
+    if (!ref?.chat_id || !ref?.message_id) return "";
+    return `${ref.chat_id}:${ref.message_id}`;
+  }
+
+  function splitCommentThreadText(text, entities = []) {
+    const raw = String(text || "");
+    if (!raw.startsWith(COMMENT_THREAD_PREFIX)) {
+      return { prefix: "", text: raw, entities: entities || [] };
+    }
+    const offset = COMMENT_THREAD_PREFIX.length;
+    return {
+      prefix: COMMENT_THREAD_PREFIX.trim(),
+      text: raw.slice(offset),
+      entities: (entities || [])
+        .filter((item) => Number(item?.offset) >= offset)
+        .map((item) => ({ ...item, offset: Number(item.offset) - offset })),
+    };
+  }
+
+  function appendMessageText(target, text, options = {}) {
+    const split = splitCommentThreadText(text, options.entities || []);
+    if (split.prefix) {
+      const prefix = document.createElement("span");
+      prefix.className = "comment-prefix";
+      prefix.dataset.noQuote = "1";
+      prefix.textContent = split.prefix;
+      target.appendChild(prefix);
+    }
+    appendRichText(target, split.text, { ...options, entities: split.entities });
+  }
+
   const SPEAKER_PALETTE = [
     "#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#b197fc", "#ff922b",
     "#66d9e8", "#f783ac", "#a9e34b", "#ffa8a8", "#74c0fc", "#e599f7",
@@ -508,13 +627,39 @@
   }
 
   async function sendOverlayMessage(text, targets, photo, replyTo) {
-    const res = await fetch("/api/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, targets, photo, sticker: state.selectedSticker, custom_emoji: state.selectedCustomEmoji, custom_entities: state.customEmojiEntities, reply_to: replyTo }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    const started = performance.now();
+    try {
+      clientLog("send_start", {
+        targets: targets?.length || 0,
+        has_text: !!String(text || "").trim(),
+        has_media: !!(photo || state.selectedSticker || state.selectedCustomEmoji),
+        reply: !!replyTo,
+      }, 500);
+      const res = await fetch("/api/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ text, targets, photo, sticker: state.selectedSticker, custom_emoji: state.selectedCustomEmoji, custom_entities: state.customEmojiEntities, reply_to: replyTo }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        clientLog("send_failed", { status: res.status, detail }, 0);
+        throw new Error(detail);
+      }
+      clientLog("send_ok", { elapsed_ms: Math.round(performance.now() - started) }, 1000);
+      return res.json();
+    } catch (exc) {
+      clientLog("send_exception", {
+        message: String(exc?.message || exc || "send failed"),
+        name: String(exc?.name || ""),
+        elapsed_ms: Math.round(performance.now() - started),
+      }, 0);
+      throw exc;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   async function deleteOverlayMessage(ref) {
@@ -530,7 +675,81 @@
   function hideChatMessageMenu() {
     if (chatMessageMenu) chatMessageMenu.hidden = true;
     if (chatMenuQuote) chatMenuQuote.hidden = true;
+    if (state.menuTmuteRefreshTimer) {
+      window.clearTimeout(state.menuTmuteRefreshTimer);
+      state.menuTmuteRefreshTimer = 0;
+    }
     state.menuTarget = null;
+  }
+
+  function chatMenuActionKey(data) {
+    return findParticipantKeyForMessageData(data) || String(data?.speaker_id || data?.id || data?.username || data?.name || "").trim();
+  }
+
+  function pruneTmuteState(now = Date.now()) {
+    for (const [key, until] of state.tmuteUntilByKey || []) {
+      if (!Number.isFinite(Number(until)) || Number(until) <= now) {
+        state.tmuteUntilByKey.delete(key);
+      }
+    }
+  }
+
+  function tmuteUntilForData(data) {
+    pruneTmuteState();
+    const keys = [
+      chatMenuActionKey(data),
+      String(data?.speaker_id || data?.id || "").trim(),
+      String(data?.username || "").replace(/^@/, "").trim().toLowerCase(),
+      String(data?.name || "").trim().toLowerCase(),
+    ].filter(Boolean);
+    let until = 0;
+    for (const key of keys) until = Math.max(until, Number(state.tmuteUntilByKey.get(key)) || 0);
+    return until;
+  }
+
+  function setTmuteStateForData(data, active) {
+    const key = chatMenuActionKey(data);
+    if (!key) return;
+    if (active) state.tmuteUntilByKey.set(key, Date.now() + TMUTE_DURATION_MS);
+    else state.tmuteUntilByKey.delete(key);
+    updateChatMessageMenuButtons();
+    queueNativeChatActionStateSync(true);
+  }
+
+  function scheduleChatMenuTmuteRefresh() {
+    if (state.menuTmuteRefreshTimer) {
+      window.clearTimeout(state.menuTmuteRefreshTimer);
+      state.menuTmuteRefreshTimer = 0;
+    }
+    const until = tmuteUntilForData(state.menuTarget?.data);
+    if (!until) return;
+    state.menuTmuteRefreshTimer = window.setTimeout(() => {
+      state.menuTmuteRefreshTimer = 0;
+      updateChatMessageMenuButtons();
+      queueNativeChatActionStateSync(true);
+    }, Math.max(80, until - Date.now() + 80));
+  }
+
+  function setMenuButtonActive(button, active, activeText, inactiveText) {
+    if (!button) return;
+    button.classList.toggle("active-danger", !!active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    if (activeText && inactiveText) button.textContent = active ? activeText : inactiveText;
+  }
+
+  function updateChatMessageMenuButtons() {
+    if (!chatMessageMenu || chatMessageMenu.hidden || !state.menuTarget) return;
+    const data = state.menuTarget.data;
+    const key = findParticipantKeyForMessageData(data);
+    const canPrison = !!(key && state.participants.has(key));
+    const miniActive = !!(canPrison && state.widgetSettings?.miniJail?.active?.includes(key));
+    const realActive = !!(canPrison && state.widgetSettings?.realJail?.active?.includes(key));
+    if (chatMenuMiniJail) chatMenuMiniJail.disabled = !canPrison;
+    if (chatMenuRealJail) chatMenuRealJail.disabled = !canPrison;
+    setMenuButtonActive(chatMenuMiniJail, miniActive, "난쟁이 해제", "난쟁이");
+    setMenuButtonActive(chatMenuRealJail, realActive, "케이지 해제", "케이지");
+    setMenuButtonActive(chatMenuTmute, tmuteUntilForData(data) > Date.now(), "아가리 해제", "아가리");
+    scheduleChatMenuTmuteRefresh();
   }
 
   function showChatMessageMenu(ev, data, el) {
@@ -541,6 +760,7 @@
     state.menuTarget = { data, el, quoteText };
     if (chatMenuQuote) chatMenuQuote.hidden = !quoteText;
     chatMessageMenu.hidden = false;
+    updateChatMessageMenuButtons();
     const w = chatMessageMenu.offsetWidth || 126;
     const h = chatMessageMenu.offsetHeight || 96;
     chatMessageMenu.style.left = `${Math.min(Math.max(ev.clientX, 6), window.innerWidth - w - 6)}px`;
@@ -1044,11 +1264,25 @@
   }
 
   function applyAppSettingsPanelOpen(open) {
-    document.body.classList.toggle("app-settings-open", !!open);
+    const next = !!open;
+    document.body.classList.toggle("app-settings-open", next);
+    if (avatarControls) {
+      avatarControls.hidden = !next;
+      avatarControls.inert = !next;
+      avatarControls.setAttribute("aria-hidden", next ? "false" : "true");
+    }
+    if (hasElectronBrowserApi()) {
+      if (next) {
+        hideElectronNativeView("youtube", false);
+        hideElectronNativeView("web", false);
+      } else {
+        scheduleOpenElectronNativeViewSync();
+      }
+    }
     if (!appSettingsToggle) return;
-    appSettingsToggle.classList.toggle("active", !!open);
-    appSettingsToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    appSettingsToggle.title = open ? "설정 닫기" : "설정 열기";
+    appSettingsToggle.classList.toggle("active", next);
+    appSettingsToggle.setAttribute("aria-expanded", next ? "true" : "false");
+    appSettingsToggle.title = next ? "설정 닫기" : "설정 열기";
   }
 
   function setupAppSettingsToggle() {
@@ -1066,6 +1300,14 @@
   function settingSection(name) {
     const value = state.overlaySettings?.[name];
     return value && typeof value === "object" ? value : null;
+  }
+
+  function hasLocalSetting(key) {
+    try {
+      return localStorage.getItem(key) !== null;
+    } catch (_) {
+      return false;
+    }
   }
 
   function cloneSettings(value) {
@@ -1267,8 +1509,8 @@
       const raw = localStorage.getItem(CAMERA_SETTINGS_KEY);
       const s = Object.assign(
         {},
-        raw ? JSON.parse(raw) : {},
-        settingSection("camera") || {}
+        settingSection("camera") || {},
+        raw ? JSON.parse(raw) : {}
       );
       if (!s || typeof s !== "object") return;
       if (Number.isFinite(Number(s.yaw))) state.view.yaw = Number(s.yaw);
@@ -1331,7 +1573,7 @@
   function loadChatSettings() {
     try {
       const raw = localStorage.getItem(CHAT_SETTINGS_KEY);
-      return Object.assign(defaultChatSettings(), raw ? JSON.parse(raw) : {}, settingSection("chat") || {});
+      return Object.assign(defaultChatSettings(), settingSection("chat") || {}, raw ? JSON.parse(raw) : {});
     } catch (_) {
       return defaultChatSettings();
     }
@@ -1354,6 +1596,129 @@
     s.fadeSec = Number.isFinite(Number(s.fadeSec)) ? Number(s.fadeSec) : -1;
   }
 
+  function nativeChatAvailable() {
+    return !!(state.controlMode && window.tgElectronChat?.available);
+  }
+
+  function gameWidgetUsesLocalChatFallback() {
+    return false;
+  }
+
+  function updateGameChatFallbackState() {
+    document.body.classList.toggle("game-widget-local-chat-active", gameWidgetUsesLocalChatFallback());
+  }
+
+  function nativeChatPayload() {
+    updateGameChatFallbackState();
+    if (!nativeChatAvailable() || !chatPanel || !state.chatSettings) {
+      return { visible: false };
+    }
+    const rect = chatPanel.getBoundingClientRect();
+    const controlReserve = 42;
+    const resizeReserve = 30;
+    const height = Math.round(rect.height - controlReserve - resizeReserve);
+    const visible = !state.chatSettings.hidden && rect.width >= 100 && height >= 100;
+    if (!visible) return { visible: false };
+    return {
+      visible: true,
+      bounds: {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top + controlReserve),
+        width: Math.round(rect.width),
+        height,
+      },
+    };
+  }
+
+  function syncNativeChatView(force = false) {
+    if (!window.tgElectronChat?.available) return;
+    const payload = nativeChatPayload();
+    const signature = JSON.stringify(payload);
+    if (!force && signature === state.nativeChatLastPayload) return;
+    state.nativeChatLastPayload = signature;
+    state.nativeChatPanelActive = !!payload.visible;
+    document.body.classList.toggle("electron-native-chat-active", !!payload.visible);
+    try {
+      if (payload.visible) window.tgElectronChat.upsert(payload);
+      else window.tgElectronChat.close();
+    } catch (_) {}
+    queueNativeChatActionStateSync(force);
+  }
+
+  function queueNativeChatSync(force = false) {
+    if (!window.tgElectronChat?.available) return;
+    if (force) state.nativeChatSyncForce = true;
+    if (state.nativeChatSyncFrame) return;
+    state.nativeChatSyncFrame = requestAnimationFrame(() => {
+      state.nativeChatSyncFrame = 0;
+      const syncForce = !!state.nativeChatSyncForce || !!force;
+      state.nativeChatSyncForce = false;
+      syncNativeChatView(syncForce);
+    });
+  }
+
+  function forceNativeChatVisible(durationMs = 900) {
+    if (!window.tgElectronChat?.available) return;
+    const raise = () => {
+      try { window.tgElectronChat?.raise?.({ force: true, duration_ms: durationMs }); } catch (_) {}
+    };
+    try { syncNativeChatView(true); } catch (_) {}
+    raise();
+    for (const delay of [40, 120, 260, 520]) {
+      window.setTimeout(() => {
+        try { syncNativeChatView(true); } catch (_) {}
+        raise();
+      }, delay);
+    }
+  }
+
+  function nativeChatActionStatePayload() {
+    pruneTmuteState();
+    const mini = new Set(normalizeKeyList(state.widgetSettings?.miniJail?.active));
+    const real = new Set(normalizeKeyList(state.widgetSettings?.realJail?.active));
+    return {
+      updated_at: Date.now(),
+      chat: {
+        fontSize: Number(state.chatSettings?.fontSize) || 18,
+        fadeSec: Number.isFinite(Number(state.chatSettings?.fadeSec)) ? Number(state.chatSettings.fadeSec) : -1,
+      },
+      users: Array.from(state.participants.values()).map((p) => {
+        const key = keyFor(p);
+        return {
+          key,
+          id: String(p.id || p.speaker_id || ""),
+          speaker_id: String(p.speaker_id || p.id || ""),
+          username: String(p.username || "").replace(/^@/, ""),
+          name: String(p.name || ""),
+          is_host: !!p.is_host,
+          mini: mini.has(key),
+          real: real.has(key),
+          tmute_until: Number(state.tmuteUntilByKey.get(key)) || 0,
+        };
+      }),
+    };
+  }
+
+  function syncNativeChatActionState(force = false) {
+    if (!window.tgElectronChat?.sendActionState) return;
+    const payload = nativeChatActionStatePayload();
+    const signature = JSON.stringify({ chat: payload.chat, users: payload.users });
+    if (!force && signature === state.nativeChatActionStateSignature) return;
+    state.nativeChatActionStateSignature = signature;
+    try {
+      window.tgElectronChat.sendActionState(payload);
+    } catch (_) {}
+  }
+
+  function queueNativeChatActionStateSync(force = false) {
+    if (!window.tgElectronChat?.sendActionState) return;
+    if (state.nativeChatActionStateFrame) return;
+    state.nativeChatActionStateFrame = requestAnimationFrame(() => {
+      state.nativeChatActionStateFrame = 0;
+      syncNativeChatActionState(force);
+    });
+  }
+
   function applyChatSettings() {
     if (!chatPanel || !state.chatSettings) return;
     clampChatSettings(state.chatSettings);
@@ -1366,6 +1731,8 @@
     if (chatFade) chatFade.value = String(s.fadeSec);
     chatPanel.classList.toggle("chat-hidden", !!s.hidden);
     if (chatToggle) chatToggle.textContent = s.hidden ? "show" : "hide";
+    queueNativeChatSync();
+    queueNativeChatActionStateSync(true);
   }
 
   function setupChatControls() {
@@ -1452,7 +1819,11 @@
       y: 92,
       w: panelW,
       h: panelH,
+      open: true,
       hidden: false,
+      previewQuality: "medium",
+      viewerQuality: "high",
+      rotations: {},
       viewer: {
         open: false,
         key: "",
@@ -1470,9 +1841,12 @@
       const base = defaultStreamPreviewSettings();
       const saved = raw ? JSON.parse(raw) : {};
       const remote = settingSection("streamPreview") || {};
-      return Object.assign(base, saved, remote, {
-        viewer: Object.assign(base.viewer, saved.viewer || {}, remote.viewer || {}),
+      const merged = Object.assign(base, remote, saved, {
+        rotations: Object.assign({}, base.rotations || {}, remote.rotations || {}, saved.rotations || {}),
+        viewer: Object.assign(base.viewer, remote.viewer || {}, saved.viewer || {}),
       });
+      merged.open = merged.open !== false;
+      return merged;
     } catch (_) {
       return defaultStreamPreviewSettings();
     }
@@ -1487,6 +1861,7 @@
     const minW = 176;
     const minH = 136;
     const pad = 6;
+    s.open = s.open !== false;
     s.w = Math.min(window.innerWidth - pad * 2, Math.max(minW, Number(s.w) || minW));
     s.h = Math.min(window.innerHeight - pad * 2, Math.max(minH, Number(s.h) || minH));
     s.x = Math.min(window.innerWidth - s.w - pad, Math.max(pad, Number(s.x) || pad));
@@ -1499,6 +1874,9 @@
     viewer.open = !!viewer.open;
     viewer.key = String(viewer.key || "");
     s.viewer = viewer;
+    if (!STREAM_PREVIEW_QUALITY_PRESETS[s.previewQuality]) s.previewQuality = "medium";
+    if (!STREAM_VIEWER_QUALITY_PRESETS[s.viewerQuality]) s.viewerQuality = "high";
+    if (!s.rotations || typeof s.rotations !== "object" || Array.isArray(s.rotations)) s.rotations = {};
   }
 
   function streamParticipantKey(p) {
@@ -1564,6 +1942,109 @@
     return p?.stream && typeof p.stream === "object" ? p.stream : null;
   }
 
+  function streamPreviewMediaKey(p, large = false) {
+    const stream = streamPreviewStream(p);
+    if (!stream) return "none";
+    const kind = streamPreviewKind(p);
+    const ssrc = stream.ssrc ?? "";
+    const qualityKey = streamQualityKey(large);
+    const preset = streamQualityPreset(large);
+    const source = preset.source === "main" ? "main" : "thumb";
+    if (source === "thumb" && stream.thumb_mjpeg_url) return ["thumb", qualityKey, kind, ssrc, stream.thumb_mjpeg_url].join(":");
+    if (stream.mjpeg_url) return ["mjpeg", qualityKey, kind, ssrc, stream.mjpeg_url].join(":");
+    if (stream.thumb_mjpeg_url) return ["thumb", qualityKey, kind, ssrc, stream.thumb_mjpeg_url].join(":");
+    if (stream.raw && stream.url) return ["raw", kind, ssrc, stream.url].join(":");
+    if (stream.url) return ["video", kind, ssrc, stream.url].join(":");
+    return ["empty", kind, ssrc].join(":");
+  }
+
+  function streamQualityKey(large = false) {
+    const s = state.streamPreviewSettings || {};
+    const key = large ? s.viewerQuality : s.previewQuality;
+    const presets = large ? STREAM_VIEWER_QUALITY_PRESETS : STREAM_PREVIEW_QUALITY_PRESETS;
+    return presets[key] ? key : (large ? "high" : "medium");
+  }
+
+  function streamQualityPreset(large = false) {
+    const key = streamQualityKey(large);
+    return (large ? STREAM_VIEWER_QUALITY_PRESETS : STREAM_PREVIEW_QUALITY_PRESETS)[key];
+  }
+
+  function streamMjpegUrlWithQuality(url, preset) {
+    if (!url || !preset) return url || "";
+    try {
+      const parsed = new URL(url, window.location.href);
+      parsed.searchParams.set("w", String(preset.w));
+      parsed.searchParams.set("h", String(preset.h));
+      parsed.searchParams.set("fps", String(preset.fps));
+      parsed.searchParams.set("q", String(preset.q));
+      return parsed.pathname + parsed.search + parsed.hash;
+    } catch (_) {
+      const sep = url.includes("?") ? "&" : "?";
+      return `${url}${sep}w=${preset.w}&h=${preset.h}&fps=${preset.fps}&q=${preset.q}`;
+    }
+  }
+
+  function streamRotationKey(p) {
+    const stream = streamPreviewStream(p);
+    const ssrc = stream?.ssrc ?? stream?.channel ?? "";
+    return ssrc !== "" ? `stream:${ssrc}` : `participant:${streamParticipantKey(p)}`;
+  }
+
+  function streamRotation(p) {
+    const key = streamRotationKey(p);
+    const value = Number(state.streamPreviewSettings?.rotations?.[key] || 0);
+    const normalized = ((Math.round(value / 90) * 90) % 360 + 360) % 360;
+    return [0, 90, 180, 270].includes(normalized) ? normalized : 0;
+  }
+
+  function rotateStreamPreview(p) {
+    if (!p || !state.streamPreviewSettings) return;
+    const rotations = state.streamPreviewSettings.rotations || {};
+    const key = streamRotationKey(p);
+    const next = (streamRotation(p) + 90) % 360;
+    if (next) rotations[key] = next;
+    else delete rotations[key];
+    state.streamPreviewSettings.rotations = rotations;
+    applyStreamPreviewSettings(false);
+    renderStreamPreviews(false);
+    saveStreamPreviewSettings();
+  }
+
+  function applyStreamRotation(surface, p) {
+    if (!surface) return;
+    const deg = streamRotation(p);
+    surface.dataset.rotation = String(deg);
+    surface.style.setProperty("--stream-rotation", `${deg}deg`);
+    surface.classList.toggle("rotated-sideways", deg === 90 || deg === 270);
+    const updateScale = () => {
+      const rect = surface.getBoundingClientRect();
+      const w = Math.max(1, rect.width);
+      const h = Math.max(1, rect.height);
+      const scale = deg === 90 || deg === 270 ? Math.min(1, Math.min(w / h, h / w)) : 1;
+      surface.style.setProperty("--stream-rotation-scale", String(scale));
+    };
+    updateScale();
+    requestAnimationFrame(updateScale);
+  }
+
+  function participantForStreamKey(key) {
+    return streamPreviewRows().find((p) => streamParticipantKey(p) === key) || null;
+  }
+
+  function refreshStreamRotationScales() {
+    if (!streamPreviewList && !streamViewerBody) return;
+    streamPreviewList?.querySelectorAll(".stream-preview-item[data-key]").forEach((item) => {
+      const p = participantForStreamKey(item.dataset.key || "");
+      const surface = item.querySelector(".stream-preview-surface");
+      if (p && surface) applyStreamRotation(surface, p);
+    });
+    const viewerKey = state.streamPreviewSettings?.viewer?.key || "";
+    const active = participantForStreamKey(viewerKey);
+    const surface = streamViewerBody?.querySelector(".stream-preview-surface");
+    if (active && surface) applyStreamRotation(surface, active);
+  }
+
   function cacheBustStreamUrl(url, key = "_") {
     const sep = url.includes("?") ? "&" : "?";
     return `${url}${sep}${encodeURIComponent(key)}=${Date.now()}`;
@@ -1571,7 +2052,34 @@
 
   function refreshStreamPreviews() {
     state.streamPreviewSignature = "";
-    renderStreamPreviews(true);
+    queueStreamPreviewRender(true);
+  }
+
+  function queueStreamPreviewRender(force = false) {
+    state.streamPreviewForceRender = !!(state.streamPreviewForceRender || force);
+    if (state.streamPreviewRenderFrame) return;
+    state.streamPreviewRenderFrame = window.requestAnimationFrame(() => {
+      const shouldForce = !!state.streamPreviewForceRender;
+      state.streamPreviewRenderFrame = 0;
+      state.streamPreviewForceRender = false;
+      renderStreamPreviews(shouldForce);
+    });
+  }
+
+  function stopStreamPreviewMedia(root) {
+    if (!root) return;
+    root.querySelectorAll?.(".stream-preview-media.mjpeg").forEach((media) => {
+      media.dataset.mjpegToken = "";
+      try { media.removeAttribute("src"); } catch (_) {}
+      try { media.src = ""; } catch (_) {}
+    });
+    root.querySelectorAll?.(".stream-preview-media.raw").forEach((media) => {
+      media.dataset.rawToken = "";
+    });
+    root.querySelectorAll?.("video.stream-preview-media").forEach((media) => {
+      try { media.pause(); } catch (_) {}
+      try { media.removeAttribute("src"); media.load(); } catch (_) {}
+    });
   }
 
   function clampByte(value) {
@@ -1659,7 +2167,7 @@
     }
   }
 
-  function attachMjpegStreamImage(media, surface, url) {
+  function attachMjpegStreamImage(media, surface, url, fallbackUrl = "", large = false) {
     const token = `${url}:${Date.now()}:${Math.random()}`;
     media.dataset.mjpegToken = token;
     let retryCount = 0;
@@ -1694,15 +2202,34 @@
         connect("retry");
       }, delay);
     };
+    const activateRawFallback = () => {
+      if (!fallbackUrl || !isCurrent()) return false;
+      const parent = media.parentElement;
+      if (!parent) return false;
+      clearTimers();
+      media.dataset.mjpegToken = "";
+      try { media.removeAttribute("src"); } catch (_) {}
+      try { media.src = ""; } catch (_) {}
+      const canvas = document.createElement("canvas");
+      canvas.className = "stream-preview-media raw";
+      parent.replaceChild(canvas, media);
+      attachRawStreamCanvas(canvas, fallbackUrl, large);
+      return true;
+    };
 
     media.addEventListener("load", () => {
       if (!isCurrent()) return;
       retryCount = 0;
+      media.classList.add("stream-media-ready");
       surface.classList.add("has-real-stream");
     });
     media.addEventListener("error", () => {
       if (!isCurrent()) return;
-      surface.classList.remove("has-real-stream");
+      media.classList.remove("stream-media-ready");
+      if (!surface.querySelector(".stream-preview-media.stream-media-ready")) {
+        surface.classList.remove("has-real-stream");
+      }
+      if (retryCount >= 2 && activateRawFallback()) return;
       scheduleRetry();
     });
     if (window.requestAnimationFrame) {
@@ -1712,7 +2239,32 @@
     }
   }
 
+  function updateStreamSurfaceMeta(target, p, large = false) {
+    const surface = target?.querySelector?.(".stream-preview-surface");
+    if (!surface) return;
+    const kind = streamPreviewKind(p);
+    surface.classList.toggle("screen", kind === "screen");
+    surface.classList.toggle("video", kind !== "screen");
+    surface.classList.toggle("large", !!large);
+    surface.style.setProperty("--stream-color", participantColor(p));
+    const liveText = surface.querySelector(".stream-preview-live-text");
+    if (liveText) liveText.textContent = streamPreviewLabel(p);
+    const mic = surface.querySelector(".stream-preview-mic");
+    if (mic) {
+      mic.classList.toggle("muted", !!p.muted);
+      mic.title = p.muted ? "mic off" : "mic on";
+      mic.setAttribute("aria-label", p.muted ? "mic off" : "mic on");
+    }
+    const inlineName = surface.querySelector(".stream-preview-inline-name");
+    if (inlineName) {
+      inlineName.textContent = p.name || p.username || "Unknown";
+      inlineName.style.color = participantColor(p);
+    }
+    applyStreamRotation(surface, p);
+  }
+
   function fillStreamSurface(target, p, large = false) {
+    stopStreamPreviewMedia(target);
     target.innerHTML = "";
     const color = participantColor(p);
     const surface = document.createElement("div");
@@ -1722,18 +2274,51 @@
     visual.className = "stream-preview-visual";
     const stream = streamPreviewStream(p);
     const streamUrl = streamPreviewUrl(p);
+    const rawStreamUrl = typeof stream?.url === "string" ? stream.url : "";
+    const qualityKey = streamQualityKey(large);
+    const preset = streamQualityPreset(large);
+    const thumbPreset = large ? STREAM_PREVIEW_QUALITY_PRESETS.low : preset;
+    const thumbUrl = streamMjpegUrlWithQuality(stream?.thumb_mjpeg_url || stream?.mjpeg_url || "", thumbPreset);
+    const mainUrl = streamMjpegUrlWithQuality(stream?.mjpeg_url || stream?.thumb_mjpeg_url || "", preset);
     if (streamUrl) {
-      if (stream?.mjpeg_url) {
+      if (large && qualityKey !== "low" && stream?.thumb_mjpeg_url && stream?.mjpeg_url) {
+        const thumb = document.createElement("img");
+        thumb.className = "stream-preview-media mjpeg thumb-quality";
+        thumb.alt = "";
+        thumb.decoding = "async";
+        visual.appendChild(thumb);
+        attachMjpegStreamImage(thumb, surface, thumbUrl, rawStreamUrl, false);
+        const media = document.createElement("img");
+        media.className = "stream-preview-media mjpeg high-quality";
+        media.alt = "";
+        media.decoding = "async";
+        visual.appendChild(media);
+        attachMjpegStreamImage(media, surface, mainUrl, rawStreamUrl, true);
+      } else if (preset.source !== "main" && stream?.thumb_mjpeg_url) {
+        const media = document.createElement("img");
+        media.className = "stream-preview-media mjpeg thumb";
+        media.alt = "";
+        media.decoding = "async";
+        visual.appendChild(media);
+        attachMjpegStreamImage(media, surface, thumbUrl, rawStreamUrl, large);
+      } else if (stream?.mjpeg_url) {
         const media = document.createElement("img");
         media.className = "stream-preview-media mjpeg";
         media.alt = "";
         media.decoding = "async";
         visual.appendChild(media);
-        attachMjpegStreamImage(media, surface, stream.mjpeg_url);
-      } else if (stream?.raw) {
+        attachMjpegStreamImage(media, surface, mainUrl, rawStreamUrl, large);
+      } else if (stream?.thumb_mjpeg_url) {
+        const media = document.createElement("img");
+        media.className = "stream-preview-media mjpeg thumb";
+        media.alt = "";
+        media.decoding = "async";
+        visual.appendChild(media);
+        attachMjpegStreamImage(media, surface, thumbUrl, rawStreamUrl, large);
+      } else if (stream?.raw && rawStreamUrl) {
         const media = document.createElement("canvas");
         media.className = "stream-preview-media raw";
-        attachRawStreamCanvas(media, streamUrl, large);
+        attachRawStreamCanvas(media, rawStreamUrl, large);
         visual.appendChild(media);
       } else {
         const media = document.createElement("video");
@@ -1783,10 +2368,94 @@
     visual.append(avatar, camera, label);
     surface.append(visual);
     target.appendChild(surface);
+    applyStreamRotation(surface, p);
+  }
+
+  function createStreamPreviewItem(p, key) {
+    const item = document.createElement("div");
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.dataset.key = key;
+    const thumb = document.createElement("div");
+    thumb.className = "stream-preview-thumb";
+    const rotate = document.createElement("button");
+    rotate.type = "button";
+    rotate.className = "stream-preview-rotate";
+    rotate.title = "프리뷰 회전";
+    rotate.textContent = "↻";
+    rotate.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const current = participantForStreamKey(item.dataset.key || key);
+      rotateStreamPreview(current || p);
+    });
+    item.append(thumb, rotate);
+    item.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.streamPreviewSettings.viewer.open = true;
+      state.streamPreviewSettings.viewer.key = key;
+      applyStreamPreviewSettings();
+      renderStreamPreviews(false);
+      saveStreamPreviewSettings();
+    });
+    item.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      item.click();
+    });
+    return item;
+  }
+
+  function updateStreamPreviewItem(item, p, viewer, force = false) {
+    const key = streamParticipantKey(p);
+    const mediaKey = streamPreviewMediaKey(p, false);
+    item.className = `stream-preview-item ${streamPreviewKind(p)}`;
+    item.classList.toggle("active", viewer.open && viewer.key === key);
+    item.style.setProperty("--stream-color", participantColor(p));
+    item.dataset.key = key;
+    const rotate = item.querySelector(".stream-preview-rotate");
+    if (rotate) {
+      const deg = streamRotation(p);
+      rotate.textContent = deg ? `${deg}°` : "↻";
+      rotate.title = deg ? `프리뷰 회전: ${deg}°` : "프리뷰 회전";
+    }
+    const thumb = item.querySelector(".stream-preview-thumb");
+    if (thumb && (force || item.dataset.mediaKey !== mediaKey)) {
+      fillStreamSurface(thumb, p, false);
+      item.dataset.mediaKey = mediaKey;
+    } else {
+      updateStreamSurfaceMeta(thumb, p, false);
+    }
   }
 
   function renderStreamPreviews(force = false) {
+    state.streamPreviewRenderFrame = 0;
+    state.streamPreviewForceRender = false;
     if (!state.streamPreviewSettings || !streamPreviewPanel || !streamPreviewList) return;
+    if (state.streamPreviewSettings.open === false) {
+      state.streamPreviewSignature = "closed";
+      stopStreamPreviewMedia(streamPreviewList);
+      stopStreamPreviewMedia(streamViewerBody);
+      streamPreviewList.innerHTML = "";
+      streamViewerBody.innerHTML = "";
+      streamPreviewViewer.hidden = true;
+      streamPreviewPanel.classList.add("empty");
+      return;
+    }
+    if (state.streamPreviewSettings.hidden) {
+      state.streamPreviewSignature = "hidden";
+      stopStreamPreviewMedia(streamPreviewList);
+      stopStreamPreviewMedia(streamViewerBody);
+      streamPreviewList.innerHTML = "";
+      if (streamViewerBody) {
+        streamViewerBody.dataset.key = "";
+        streamViewerBody.innerHTML = "";
+      }
+      streamPreviewViewer.hidden = true;
+      streamPreviewPanel.classList.add("empty");
+      return;
+    }
     const rows = streamPreviewRows();
     const activeKeys = new Set(rows.map(streamParticipantKey));
     const viewer = state.streamPreviewSettings.viewer || {};
@@ -1794,45 +2463,83 @@
       viewer.key = "";
       viewer.open = false;
     }
-    const signature = rows
-      .map((p) => [streamParticipantKey(p), p.name, p.username, p.avatar_url, p.video ? 1 : 0, p.screen ? 1 : 0, p.muted ? 1 : 0, streamPreviewUrl(p), participantColor(p)].join(":"))
-      .join("|") + `|${viewer.key}|${viewer.open ? 1 : 0}`;
-    const changed = force || signature !== state.streamPreviewSignature;
-    if (changed) {
-      state.streamPreviewSignature = signature;
-      streamPreviewList.innerHTML = "";
-      for (const p of rows) {
-        const key = streamParticipantKey(p);
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = `stream-preview-item ${streamPreviewKind(p)}`;
-        item.classList.toggle("active", viewer.open && viewer.key === key);
-        item.style.setProperty("--stream-color", participantColor(p));
-        item.dataset.key = key;
-        const thumb = document.createElement("div");
-        thumb.className = "stream-preview-thumb";
-        fillStreamSurface(thumb, p, false);
-        item.append(thumb);
-        item.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          state.streamPreviewSettings.viewer.open = true;
-          state.streamPreviewSettings.viewer.key = key;
-          applyStreamPreviewSettings();
-          renderStreamPreviews(true);
-          saveStreamPreviewSettings();
-        });
-        streamPreviewList.appendChild(item);
-      }
+    const existing = new Map(
+      Array.from(streamPreviewList.querySelectorAll(".stream-preview-item[data-key]"))
+        .map((item) => [item.dataset.key, item])
+    );
+    const used = new Set();
+    const orderBefore = Array.from(streamPreviewList.querySelectorAll(".stream-preview-item[data-key]"))
+      .map((item) => item.dataset.key)
+      .join("|");
+    const orderAfter = rows.map((p) => streamParticipantKey(p)).join("|");
+    const fragment = orderBefore === orderAfter ? null : document.createDocumentFragment();
+    for (const p of rows) {
+      const key = streamParticipantKey(p);
+      let item = existing.get(key);
+      if (!item) item = createStreamPreviewItem(p, key);
+      used.add(key);
+      updateStreamPreviewItem(item, p, viewer, force);
+      if (fragment) fragment.appendChild(item);
     }
+    for (const [key, item] of existing) {
+      if (used.has(key)) continue;
+      stopStreamPreviewMedia(item);
+      item.remove();
+    }
+    if (fragment) streamPreviewList.appendChild(fragment);
+    state.streamPreviewSignature = orderAfter;
+
     streamPreviewPanel.classList.toggle("empty", rows.length === 0);
     const active = rows.find((p) => streamParticipantKey(p) === viewer.key);
     streamPreviewViewer.hidden = !(viewer.open && active);
-    if (active && streamViewerBody && (changed || streamViewerBody.dataset.key !== streamParticipantKey(active))) {
-      streamViewerBody.dataset.key = streamParticipantKey(active);
-      fillStreamSurface(streamViewerBody, active, true);
+    if (active && streamViewerBody) {
+      const activeKey = streamParticipantKey(active);
+      const viewerMediaKey = streamPreviewMediaKey(active, true);
+      if (force || streamViewerBody.dataset.key !== activeKey || streamViewerBody.dataset.mediaKey !== viewerMediaKey) {
+        streamViewerBody.dataset.key = activeKey;
+        streamViewerBody.dataset.mediaKey = viewerMediaKey;
+        fillStreamSurface(streamViewerBody, active, true);
+      } else {
+        updateStreamSurfaceMeta(streamViewerBody, active, true);
+      }
     } else if (!active && streamViewerBody) {
+      stopStreamPreviewMedia(streamViewerBody);
       streamViewerBody.dataset.key = "";
+      streamViewerBody.dataset.mediaKey = "";
+      streamViewerBody.innerHTML = "";
+    }
+    updateStreamQualityButtons();
+  }
+
+  function cycleStreamQuality(large = false) {
+    if (!state.streamPreviewSettings) return;
+    const prop = large ? "viewerQuality" : "previewQuality";
+    const presets = large ? STREAM_VIEWER_QUALITY_PRESETS : STREAM_PREVIEW_QUALITY_PRESETS;
+    const current = presets[state.streamPreviewSettings[prop]] ? state.streamPreviewSettings[prop] : (large ? "high" : "medium");
+    const next = STREAM_QUALITY_ORDER[(STREAM_QUALITY_ORDER.indexOf(current) + 1) % STREAM_QUALITY_ORDER.length];
+    state.streamPreviewSettings[prop] = next;
+    applyStreamPreviewSettings(false);
+    refreshStreamPreviews();
+    saveStreamPreviewSettings();
+  }
+
+  function updateStreamQualityButtons() {
+    if (!state.streamPreviewSettings) return;
+    const preview = streamQualityPreset(false);
+    const viewer = streamQualityPreset(true);
+    if (streamPreviewQuality) {
+      streamPreviewQuality.textContent = preview.label;
+      streamPreviewQuality.title = preview.title;
+    }
+    if (streamViewerQuality) {
+      streamViewerQuality.textContent = viewer.label;
+      streamViewerQuality.title = viewer.title;
+    }
+    if (streamViewerRotate) {
+      const active = participantForStreamKey(state.streamPreviewSettings.viewer?.key || "");
+      const deg = active ? streamRotation(active) : 0;
+      streamViewerRotate.textContent = deg ? `${deg}°` : "↻";
+      streamViewerRotate.title = deg ? `큰 화면 회전: ${deg}°` : "큰 화면 회전";
     }
   }
 
@@ -1840,13 +2547,19 @@
     if (!state.streamPreviewSettings || !streamPreviewPanel) return;
     clampStreamPreviewSettings(state.streamPreviewSettings);
     const s = state.streamPreviewSettings;
+    streamPreviewPanel.hidden = s.open === false;
+    if (s.open === false) {
+      streamPreviewViewer.hidden = true;
+      if (render) renderStreamPreviews(true);
+      return;
+    }
     streamPreviewPanel.style.left = `${s.x}px`;
     streamPreviewPanel.style.top = `${s.y}px`;
     streamPreviewPanel.style.width = `${s.w}px`;
     streamPreviewPanel.style.height = `${s.h}px`;
     streamPreviewPanel.classList.toggle("preview-hidden", !!s.hidden);
     if (streamPreviewToggle) {
-      streamPreviewToggle.textContent = s.hidden ? "show" : "hide";
+      streamPreviewToggle.textContent = s.hidden ? "show preview" : "hide";
       streamPreviewToggle.title = s.hidden ? "show preview" : "hide preview";
       streamPreviewToggle.setAttribute("aria-label", s.hidden ? "show preview" : "hide preview");
     }
@@ -1855,17 +2568,110 @@
     streamPreviewViewer.style.top = `${viewer.y}px`;
     streamPreviewViewer.style.width = `${viewer.w}px`;
     streamPreviewViewer.style.height = `${viewer.h}px`;
+    updateStreamQualityButtons();
+    refreshStreamRotationScales();
     if (render) renderStreamPreviews(true);
   }
 
   function setupStreamPreviewControls() {
     state.streamPreviewSettings = loadStreamPreviewSettings();
     applyStreamPreviewSettings(true);
+    streamPreviewToggle?.addEventListener("pointerdown", (ev) => {
+      if (!state.streamPreviewSettings?.hidden || !state.controlMode || ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pointerId = ev.pointerId;
+      const start = {
+        x: ev.clientX,
+        y: ev.clientY,
+        panel: { ...state.streamPreviewSettings },
+        dragging: false,
+      };
+      const markPointerHandled = () => {
+        streamPreviewToggle.dataset.hiddenShowPointerHandled = "1";
+        window.setTimeout(() => {
+          if (streamPreviewToggle.dataset.hiddenShowPointerHandled === "1") {
+            delete streamPreviewToggle.dataset.hiddenShowPointerHandled;
+          }
+        }, 450);
+      };
+      const commitPosition = () => {
+        const pad = 6;
+        const hiddenW = 176;
+        const hiddenH = 36;
+        const maxX = Math.max(pad, window.innerWidth - hiddenW - pad);
+        const maxY = Math.max(pad, window.innerHeight - hiddenH - pad);
+        state.streamPreviewSettings.x = Math.min(maxX, Math.max(pad, Number(state.streamPreviewSettings.x) || pad));
+        state.streamPreviewSettings.y = Math.min(maxY, Math.max(pad, Number(state.streamPreviewSettings.y) || pad));
+        applyStreamPreviewSettings(false);
+      };
+      streamPreviewPanel?.classList.add("dragging");
+      try { streamPreviewToggle.setPointerCapture?.(pointerId); } catch (_) {}
+      const move = (moveEv) => {
+        if (moveEv.pointerId !== undefined && moveEv.pointerId !== pointerId) return;
+        if (moveEv.buttons !== undefined && (moveEv.buttons & 1) === 0) {
+          end();
+          return;
+        }
+        const dx = moveEv.clientX - start.x;
+        const dy = moveEv.clientY - start.y;
+        if (!start.dragging && Math.hypot(dx, dy) < 4) return;
+        start.dragging = true;
+        moveEv.preventDefault();
+        state.streamPreviewSettings.x = start.panel.x + dx;
+        state.streamPreviewSettings.y = start.panel.y + dy;
+        commitPosition();
+      };
+      const cleanup = () => {
+        streamPreviewPanel?.classList.remove("dragging");
+        try { streamPreviewToggle.releasePointerCapture?.(pointerId); } catch (_) {}
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", cancel);
+        streamPreviewToggle.removeEventListener("lostpointercapture", cancel);
+      };
+      const end = () => {
+        cleanup();
+        markPointerHandled();
+        if (start.dragging) {
+          commitPosition();
+          saveStreamPreviewSettings();
+        } else {
+          state.streamPreviewSettings.open = true;
+          state.streamPreviewSettings.hidden = false;
+          applyStreamPreviewSettings(true);
+          saveStreamPreviewSettings();
+        }
+      };
+      const cancel = () => {
+        cleanup();
+        if (start.dragging) {
+          commitPosition();
+          saveStreamPreviewSettings();
+        }
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end, { once: true });
+      window.addEventListener("pointercancel", cancel, { once: true });
+      streamPreviewToggle.addEventListener("lostpointercapture", cancel, { once: true });
+    });
     streamPreviewToggle?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
+      if (consumeHiddenShowPointerClick(streamPreviewToggle)) return;
+      state.streamPreviewSettings.open = true;
       state.streamPreviewSettings.hidden = !state.streamPreviewSettings.hidden;
-      applyStreamPreviewSettings();
+      applyStreamPreviewSettings(true);
+      saveStreamPreviewSettings();
+    });
+    streamPreviewClose?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      state.streamPreviewSettings.open = false;
+      state.streamPreviewSettings.hidden = true;
+      state.streamPreviewSettings.viewer.open = false;
+      state.streamPreviewSettings.viewer.key = "";
+      applyStreamPreviewSettings(true);
       saveStreamPreviewSettings();
     });
     streamPreviewRefresh?.addEventListener("click", (ev) => {
@@ -1873,17 +2679,34 @@
       ev.stopPropagation();
       refreshStreamPreviews();
     });
+    streamPreviewQuality?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      cycleStreamQuality(false);
+    });
     streamViewerRefresh?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       refreshStreamPreviews();
+    });
+    streamViewerRotate?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const active = participantForStreamKey(state.streamPreviewSettings?.viewer?.key || "");
+      if (active) rotateStreamPreview(active);
+    });
+    streamViewerQuality?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      cycleStreamQuality(true);
     });
     streamViewerClose?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       state.streamPreviewSettings.viewer.open = false;
       state.streamPreviewSettings.viewer.key = "";
-      applyStreamPreviewSettings(true);
+      applyStreamPreviewSettings(false);
+      renderStreamPreviews(false);
       saveStreamPreviewSettings();
     });
 
@@ -1963,6 +2786,8 @@
         y: Math.max(18, window.innerHeight - 355),
         w: 420,
         h: 245,
+        z: 10,
+        open: true,
         hidden: false,
         textScale: 1,
       },
@@ -1971,17 +2796,20 @@
         y: 120,
         w: 620,
         h: 410,
+        z: 20,
         open: false,
         hidden: true,
         query: "",
         url: "",
         videoId: "",
+        fullscreen: false,
       },
       electronBrowser: {
         x: Math.max(18, Math.round(window.innerWidth * 0.5) - 430),
         y: 96,
         w: Math.min(860, Math.max(520, window.innerWidth - 80)),
         h: Math.min(560, Math.max(340, window.innerHeight - 160)),
+        z: 30,
         open: false,
         hidden: true,
         debug: false,
@@ -1992,12 +2820,14 @@
         y: 110,
         w: 720,
         h: 590,
+        z: 40,
         open: false,
         hidden: true,
         selected: "pokemon-gold",
         rom: "pk_gold.gb",
         groupPlay: true,
         debug: false,
+        paused: false,
         speed: 1,
         volume: 0.75,
         layoutDebug: false,
@@ -2015,6 +2845,7 @@
         y: 170,
         w: 390,
         h: 430,
+        z: 50,
         open: false,
         hidden: true,
         selectedKey: "",
@@ -2025,6 +2856,7 @@
         y: 96,
         w: 390,
         h: 460,
+        z: 60,
         open: false,
         hidden: true,
         scale: 0.45,
@@ -2036,6 +2868,7 @@
         y: 128,
         w: 410,
         h: 480,
+        z: 70,
         worldX: 5.65,
         worldZ: CAMPFIRE_CENTER.z,
         worldYaw: 0,
@@ -2058,18 +2891,21 @@
       const raw = localStorage.getItem(WIDGET_SETTINGS_KEY);
       const saved = raw ? JSON.parse(raw) : {};
       const remote = settingSection("widgets") || {};
-      const merged = Object.assign(base, saved, remote);
-      merged.controls = Object.assign(base.controls, saved.controls || {}, remote.controls || {});
-      merged.price = Object.assign(base.price, saved.price || {}, remote.price || {});
-      merged.youtube = Object.assign(base.youtube, saved.youtube || {}, remote.youtube || {});
-      merged.electronBrowser = normalizeElectronBrowserWidget(Object.assign(base.electronBrowser, saved.electronBrowser || {}, remote.electronBrowser || {}));
-      merged.game = normalizeGameWidget(Object.assign(base.game, saved.game || {}, remote.game || {}));
-      merged.characterMove = normalizeCharacterMoveWidget(Object.assign(base.characterMove, saved.characterMove || {}, remote.characterMove || {}));
-      merged.miniJail = normalizePrisonWidget(Object.assign(base.miniJail, saved.miniJail || {}, remote.miniJail || {}), "mini");
-      merged.realJail = normalizePrisonWidget(Object.assign(base.realJail, saved.realJail || {}, remote.realJail || {}), "real");
-      const memoSource = Array.isArray(remote.memos) ? remote.memos : (Array.isArray(saved.memos) ? saved.memos : []);
+      const merged = Object.assign(base, remote, saved);
+      merged.controls = Object.assign(base.controls, remote.controls || {}, saved.controls || {});
+      merged.price = Object.assign(base.price, remote.price || {}, saved.price || {});
+      merged.youtube = Object.assign(base.youtube, remote.youtube || {}, saved.youtube || {});
+      merged.price.z = normalizeWidgetZ(merged.price.z, base.price.z);
+      merged.price.open = merged.price.open !== false;
+      merged.youtube.z = normalizeWidgetZ(merged.youtube.z, base.youtube.z);
+      merged.electronBrowser = normalizeElectronBrowserWidget(Object.assign(base.electronBrowser, remote.electronBrowser || {}, saved.electronBrowser || {}));
+      merged.game = normalizeGameWidget(Object.assign(base.game, remote.game || {}, saved.game || {}));
+      merged.characterMove = normalizeCharacterMoveWidget(Object.assign(base.characterMove, remote.characterMove || {}, saved.characterMove || {}));
+      merged.miniJail = normalizePrisonWidget(Object.assign(base.miniJail, remote.miniJail || {}, saved.miniJail || {}), "mini");
+      merged.realJail = normalizePrisonWidget(Object.assign(base.realJail, remote.realJail || {}, saved.realJail || {}), "real");
+      const memoSource = Array.isArray(saved.memos) ? saved.memos : (Array.isArray(remote.memos) ? remote.memos : []);
       merged.memos = memoSource.map(normalizeMemoWidget).filter(Boolean);
-      const browserSource = Array.isArray(remote.browsers) ? remote.browsers : (Array.isArray(saved.browsers) ? saved.browsers : []);
+      const browserSource = Array.isArray(saved.browsers) ? saved.browsers : (Array.isArray(remote.browsers) ? remote.browsers : []);
       merged.browsers = browserSource.map(normalizeBrowserWidget).filter(Boolean);
       return merged;
     } catch (_) {
@@ -2174,6 +3010,7 @@
       y: Number(memo.y),
       w: Number(memo.w),
       h: Number(memo.h),
+      z: normalizeWidgetZ(memo.z),
       fontSize: Number(memo.fontSize) || 18,
       hidden: !!memo.hidden,
     };
@@ -2189,6 +3026,7 @@
       y: Number(browser.y),
       w: Number(browser.w),
       h: Number(browser.h),
+      z: normalizeWidgetZ(browser.z),
       hidden: !!browser.hidden,
     };
   }
@@ -2201,6 +3039,7 @@
       y: Number(browser.y),
       w: Number(browser.w),
       h: Number(browser.h),
+      z: normalizeWidgetZ(browser.z, defaults.z),
       open: !!browser.open,
       hidden: !!browser.hidden,
       debug: !!browser.debug,
@@ -2280,6 +3119,7 @@
       y: Number(widget.y),
       w: Number(widget.w),
       h: Number(widget.h),
+      z: normalizeWidgetZ(widget.z, defaults.z),
       open: !!widget.open,
       hidden: !!widget.hidden,
       selectedKey: String(widget.selectedKey || ""),
@@ -2296,6 +3136,7 @@
       y: Number(widget.y),
       w: Number(widget.w),
       h: Number(widget.h),
+      z: normalizeWidgetZ(widget.z, defaults.z),
       open: !!widget.open,
       hidden: !!widget.hidden,
       selected: selected === "pokemon-gold" ? selected : defaults.selected,
@@ -2371,6 +3212,7 @@
       y: Number(widget?.y),
       w: Number(widget?.w),
       h: Number(widget?.h),
+      z: normalizeWidgetZ(widget?.z, defaults.z),
       open: !!widget?.open,
       hidden: !!widget?.hidden,
       scale,
@@ -2412,15 +3254,80 @@
     box.y = Math.min(window.innerHeight - effectiveH - pad, Math.max(pad, Number(box.y) || pad));
   }
 
+  function normalizeWidgetZ(value, fallback = 0) {
+    const number = Number(value);
+    const base = Number.isFinite(number) ? number : Number(fallback);
+    return Math.round(Math.min(WIDGET_Z_MAX, Math.max(0, Number.isFinite(base) ? base : 0)));
+  }
+
+  function widgetSettingBoxes() {
+    const widgets = state.widgetSettings;
+    if (!widgets) return [];
+    const boxes = [
+      widgets.price,
+      widgets.youtube,
+      widgets.electronBrowser,
+      widgets.game,
+      widgets.characterMove,
+      widgets.miniJail,
+      widgets.realJail,
+      ...(Array.isArray(widgets.memos) ? widgets.memos : []),
+      ...(Array.isArray(widgets.browsers) ? widgets.browsers : []),
+    ];
+    return boxes.filter((box) => box && typeof box === "object");
+  }
+
+  function compactWidgetZOrder() {
+    const boxes = widgetSettingBoxes()
+      .map((box, index) => ({ box, index, z: normalizeWidgetZ(box.z) }))
+      .sort((a, b) => (a.z - b.z) || (a.index - b.index));
+    boxes.forEach((item, index) => {
+      item.box.z = (index + 1) * WIDGET_Z_STEP;
+    });
+  }
+
+  function nextWidgetZ() {
+    const boxes = widgetSettingBoxes();
+    let maxZ = 0;
+    for (const box of boxes) maxZ = Math.max(maxZ, normalizeWidgetZ(box.z));
+    if (maxZ >= WIDGET_Z_MAX - WIDGET_Z_STEP) {
+      compactWidgetZOrder();
+      maxZ = 0;
+      for (const box of boxes) maxZ = Math.max(maxZ, normalizeWidgetZ(box.z));
+    }
+    return Math.min(WIDGET_Z_MAX, maxZ + WIDGET_Z_STEP);
+  }
+
+  function bringWidgetToFront(box, apply, save = saveWidgetSettingsSoon) {
+    if (!box || typeof box !== "object") return false;
+    const current = normalizeWidgetZ(box.z);
+    let maxOtherZ = 0;
+    for (const item of widgetSettingBoxes()) {
+      if (item !== box) maxOtherZ = Math.max(maxOtherZ, normalizeWidgetZ(item.z));
+    }
+    if (current > maxOtherZ && current > 0) return false;
+    box.z = nextWidgetZ();
+    try { apply?.(); } catch (_) {}
+    try { save?.(); } catch (_) {}
+    return true;
+  }
+
   function applyWidgetBox(el, box, minW, minH) {
-    const hiddenW = box.hidden ? 128 : 0;
+    const hiddenW = box.hidden ? 176 : 0;
     const hiddenH = box.hidden ? 36 : 0;
     clampWidgetBox(box, minW, minH, hiddenW, hiddenH);
+    box.z = normalizeWidgetZ(box.z);
     el.style.left = `${box.x}px`;
     el.style.top = `${box.y}px`;
     el.style.width = `${box.w}px`;
     el.style.height = `${box.h}px`;
+    el.style.zIndex = String(100 + box.z);
     el.classList.toggle("hidden-widget", !!box.hidden);
+  }
+
+  function applyNativeWidgetLayer(el, box, active) {
+    if (!el || !box) return;
+    el.style.zIndex = String(100 + normalizeWidgetZ(box.z));
   }
 
   function isWidgetDragBlockedTarget(target, currentTarget) {
@@ -2466,11 +3373,20 @@
         state.gameLocalOverrideUntil = Date.now() + 5000;
       }
     };
+    const refreshNativeChatAfterWidgetPointer = () => {
+      queueNativeChatSync(true);
+    };
+    el?.addEventListener("pointerdown", () => {
+      bringWidgetToFront(box, apply, saveWidgetSettingsSoon);
+      refreshNativeChatAfterWidgetPointer();
+    }, true);
     function begin(ev, mode) {
       if (!state.controlMode) return;
       if (mode === "move" && isWidgetDragBlockedTarget(ev.target, ev.currentTarget)) return;
       ev.preventDefault();
       ev.stopPropagation();
+      bringWidgetToFront(box, apply, saveWidgetSettingsSoon);
+      refreshNativeChatAfterWidgetPointer();
       protectLocalWidgetDrag();
       const pointerId = ev.pointerId;
       const target = ev.currentTarget;
@@ -2565,7 +3481,7 @@
       try { button.setPointerCapture?.(pointerId); } catch (_) {}
       const commitPosition = () => {
         const pad = 6;
-        const maxX = Math.max(pad, window.innerWidth - 128 - pad);
+        const maxX = Math.max(pad, window.innerWidth - 176 - pad);
         const maxY = Math.max(pad, window.innerHeight - 36 - pad);
         box.x = Math.min(maxX, Math.max(pad, Number(box.x) || pad));
         box.y = Math.min(maxY, Math.max(pad, Number(box.y) || pad));
@@ -2708,7 +3624,7 @@
   }
 
   async function refreshPriceWidget(force = false) {
-    if (!state.widgetSettings?.price || state.widgetSettings.price.hidden) return;
+    if (!state.widgetSettings?.price || state.widgetSettings.price.open === false || state.widgetSettings.price.hidden) return;
     if (state.priceWidgetLoading && !force) return;
     state.priceWidgetLoading = true;
     updatePriceWidgetBody();
@@ -2746,6 +3662,7 @@
       y: Math.min(window.innerHeight - 190, 120 + count * 24),
       w: 300,
       h: 170,
+      z: nextWidgetZ(),
       fontSize: 18,
       hidden: false,
     });
@@ -2765,6 +3682,7 @@
       y: Math.min(window.innerHeight - 360, 150 + count * 28),
       w: 520,
       h: 340,
+      z: nextWidgetZ(),
       hidden: false,
     });
     renderWidgets();
@@ -3492,8 +4410,35 @@
     widget.open = true;
     widget.hidden = false;
     widget.pending = normalizeKeyList(widget.active);
+    widget.z = nextWidgetZ();
     renderWidgets();
     saveWidgetSettings();
+  }
+
+  function prisonWidgetElementId(kind) {
+    return kind === "real" ? "real-jail-widget" : "mini-jail-widget";
+  }
+
+  function capturePrisonRosterScroll(kind) {
+    const roster = document.getElementById(prisonWidgetElementId(kind))?.querySelector(".prison-roster");
+    if (!roster) return;
+    state.prisonRosterScroll[kind] = roster.scrollTop || 0;
+  }
+
+  function captureOpenPrisonRosterScrolls() {
+    capturePrisonRosterScroll("mini");
+    capturePrisonRosterScroll("real");
+  }
+
+  function restorePrisonRosterScroll(kind, roster) {
+    if (!roster) return;
+    const top = Number(state.prisonRosterScroll?.[kind] || 0);
+    if (!top) return;
+    const apply = () => {
+      roster.scrollTop = Math.min(top, Math.max(0, roster.scrollHeight - roster.clientHeight));
+    };
+    apply();
+    window.requestAnimationFrame(apply);
   }
 
   function prisonAvatarMarkup(p) {
@@ -3532,6 +4477,7 @@
       } else {
         widget.pending = normalizeKeyList([...widget.pending, key]);
       }
+      capturePrisonRosterScroll(kind);
       renderWidgets();
       saveWidgetSettings();
     });
@@ -3554,6 +4500,7 @@
       ev.preventDefault();
       ev.stopPropagation();
       widget.pending = widget.pending.filter((item) => item !== key);
+      captureOpenPrisonRosterScrolls();
       renderWidgets();
       saveWidgetSettings();
     });
@@ -3584,12 +4531,95 @@
     saveWidgetSettings();
   }
 
+  function findParticipantKeyForMessageData(data) {
+    return speakerKey(data, true) || speakerKey(data);
+  }
+
+  function applyDirectPrisonAction(kind, data) {
+    const key = findParticipantKeyForMessageData(data);
+    const widget = prisonWidgetForKind(kind);
+    const other = otherPrisonWidgetForKind(kind);
+    if (!key || !widget || !state.participants.has(key)) return false;
+    const alreadyActive = normalizeKeyList(widget.active).includes(key);
+    widget.open = true;
+    widget.hidden = false;
+    widget.z = nextWidgetZ();
+    if (alreadyActive) {
+      widget.active = removeKeysFromList(widget.active, [key]);
+      widget.pending = removeKeysFromList(widget.pending, [key]);
+      if (kind === "real") removeJailLocalPlacements([key]);
+    } else {
+      widget.active = normalizeKeyList([...widget.active, key]);
+      widget.pending = normalizeKeyList([...widget.pending, key]);
+    }
+    widget.scale = clampPrisonScale(widget.scale, kind === "real" ? 0.36 : 0.45);
+    if (!alreadyActive && other) {
+      other.active = removeKeysFromList(other.active, [key]);
+      other.pending = removeKeysFromList(other.pending, [key]);
+    }
+    if (!alreadyActive && kind === "real") removeVisualEffectsForKey(key);
+    else if (kind !== "real") removeJailLocalPlacements([key]);
+    renderParticipants();
+    renderWidgets();
+    updateChatMessageMenuButtons();
+    queueNativeChatActionStateSync(true);
+    saveWidgetSettings();
+    return true;
+  }
+
+  function chatActionDisplayName(data) {
+    return eventDisplayName(data?.name || data?.username || data?.user?.name || data?.user?.username || "누군가");
+  }
+
+  function showTmuteEvent(data) {
+    showEventToast({
+      before: "",
+      name: chatActionDisplayName(data),
+      after: " 아가리 봉합 1분!",
+    }, "leave", data?.color || "");
+  }
+
+  async function sendTmuteReplyForMessage(data) {
+    if (!data?.message?.chat_id || !data?.message?.message_id) return false;
+    const active = tmuteUntilForData(data) > Date.now();
+    await sendOverlayMessage(active ? "/unmute" : "/tmute 1m", [], null, data.message);
+    setTmuteStateForData(data, !active);
+    if (!active) showTmuteEvent(data);
+    return true;
+  }
+
+  function applyNativeChatAction(payload) {
+    const action = String(payload?.action || "");
+    const data = payload?.user || payload?.data || payload || {};
+    if (action === "mini_jail") {
+      applyDirectPrisonAction("mini", data);
+      return;
+    }
+    if (action === "real_jail") {
+      applyDirectPrisonAction("real", data);
+      return;
+    }
+    if (action === "tmute") {
+      setTmuteStateForData(data, true);
+      showTmuteEvent(data);
+      return;
+    }
+    if (action === "tmute_clear") {
+      setTmuteStateForData(data, false);
+    }
+  }
+
+  if (window.tgElectronChat?.onNativeAction) {
+    window.tgElectronChat.onNativeAction(applyNativeChatAction);
+  }
+
   function openCharacterMoveWidget() {
     const widget = characterMoveWidget();
     if (!widget) return;
     widget.open = true;
     widget.hidden = false;
     widget.selectedKey = selectedCharacterMoveKey();
+    widget.z = nextWidgetZ();
     renderWidgets();
     saveWidgetSettings();
   }
@@ -3967,6 +4997,7 @@
       } else {
         for (const p of rows) roster.appendChild(createPrisonParticipantButton(p, widget, kind));
       }
+      restorePrisonRosterScroll(kind, roster);
       const actions = document.createElement("div");
       actions.className = "prison-actions";
       const applyButton = document.createElement("button");
@@ -3987,6 +5018,7 @@
         ev.stopPropagation();
         widget.pending = [];
         widget.active = [];
+        capturePrisonRosterScroll(kind);
         renderParticipants();
         renderWidgets();
         saveWidgetSettings();
@@ -4167,13 +5199,14 @@
     youtube.videoId = videoId;
     youtube.open = true;
     youtube.hidden = false;
-    renderWidgets();
+    renderWidgets({ force: true });
     saveWidgetSettings();
   }
 
   async function searchYoutubeWidget(youtube, inputValue = "") {
     const value = String(inputValue || youtube?.query || youtube?.url || "").trim();
     if (!youtube || !value) return;
+    clientLog("youtube_search_start", { value: value.slice(0, 120) }, 1000);
     const videoId = extractYouTubeVideoId(value);
     if (videoId) {
       setYoutubeVideo(youtube, videoId, { resetQuery: true });
@@ -4185,7 +5218,7 @@
     state.youtubeSearchLoading = true;
     state.youtubeSearchError = "";
     state.youtubeSearchResults = [];
-    renderWidgets();
+    renderWidgets({ force: true });
     try {
       const payload = await fetch(`/api/youtube/search?q=${encodeURIComponent(value)}&_=${Date.now()}`, { cache: "no-store" }).then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -4193,18 +5226,20 @@
       });
       state.youtubeSearchResults = Array.isArray(payload.results) ? payload.results : [];
       state.youtubeSearchError = state.youtubeSearchResults.length ? "" : "no results";
+      clientLog("youtube_search_ok", { results: state.youtubeSearchResults.length }, 1000);
     } catch (exc) {
       state.youtubeSearchError = String(exc?.message || exc || "search failed");
+      clientLog("youtube_search_failed", { message: state.youtubeSearchError }, 0);
     } finally {
       state.youtubeSearchLoading = false;
-      renderWidgets();
+      renderWidgets({ force: true });
       saveWidgetSettings();
     }
   }
 
   function renderPriceWidget() {
     const price = state.widgetSettings?.price;
-    if (!price) return;
+    if (!price || price.open === false) return;
     const card = document.createElement("section");
     card.id = "price-widget";
     card.className = "overlay-widget price-widget";
@@ -4216,6 +5251,7 @@
       <button class="price-font-down" type="button" title="smaller price text">-</button>
       <button class="price-font-up" type="button" title="larger price text">+</button>
       <button class="widget-hide" type="button" title="show/hide">${widgetHideText(price.hidden, "price")}</button>
+      <button class="widget-delete" type="button" title="close price">x</button>
     `;
     const body = document.createElement("div");
     body.className = "widget-body price-widget-body";
@@ -4233,6 +5269,7 @@
     renderPriceRows(body);
     const hideButton = header.querySelector(".widget-hide");
     const showPriceWidget = () => {
+      price.open = true;
       price.hidden = false;
       renderWidgets();
       saveWidgetSettings();
@@ -4251,6 +5288,14 @@
       ev.preventDefault();
       ev.stopPropagation();
       refreshPriceWidget(true);
+    });
+    header.querySelector(".widget-delete")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      price.open = false;
+      price.hidden = true;
+      renderWidgets();
+      saveWidgetSettings();
     });
     header.querySelector(".price-font-down")?.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -4385,7 +5430,6 @@
         commitUrl();
       }
     });
-    input?.addEventListener("change", commitUrl);
     header.querySelector(".browser-widget-go")?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -4434,7 +5478,7 @@
     const rom = safeFilename(game?.rom || "pk_gold.gb") || "pk_gold.gb";
     const speed = gameSpeedLabel(game?.speed || 1).slice(1);
     const volume = Math.round(normalizeGameVolume(game?.volume ?? 0.75) * 100);
-    return `/static/game_player.html?game=${encodeURIComponent(selected)}&rom=${encodeURIComponent(rom)}&debug=${game?.debug ? "1" : "0"}&layout=${game?.layoutDebug ? "1" : "0"}&speed=${encodeURIComponent(speed)}&volume=${encodeURIComponent(volume)}&v=21`;
+    return `/static/game_player.html?game=${encodeURIComponent(selected)}&rom=${encodeURIComponent(rom)}&debug=${game?.debug ? "1" : "0"}&layout=${game?.layoutDebug ? "1" : "0"}&speed=${encodeURIComponent(speed)}&volume=${encodeURIComponent(volume)}&v=22`;
   }
 
   function gameRomLabel(row) {
@@ -4506,6 +5550,10 @@
 
   function postGameWidgetLayoutDebug(game = state.widgetSettings?.game) {
     return postGameWidgetMessage({ type: "tg-game-layout-debug", enabled: !!game?.layoutDebug });
+  }
+
+  function postGameWidgetPause(game = state.widgetSettings?.game) {
+    return postGameWidgetMessage({ type: "tg-game-pause", paused: !!game?.paused });
   }
 
   function updateGameWidgetStatus(text) {
@@ -4770,6 +5818,12 @@
       layoutDebug.classList.toggle("active", !!game.layoutDebug);
       layoutDebug.textContent = `layout ${game.layoutDebug ? "on" : "off"}`;
     }
+    const pause = card.querySelector(".game-widget-pause");
+    if (pause) {
+      pause.classList.toggle("active", !!game.paused);
+      pause.textContent = game.paused ? "resume" : "pause";
+      pause.title = game.paused ? "resume game" : "pause game";
+    }
     const speed = card.querySelector(".game-widget-speed");
     if (speed) speed.textContent = gameSpeedLabel(game.speed || 1);
     const volume = card.querySelector(".game-widget-volume");
@@ -4781,7 +5835,8 @@
     const guide = card.querySelector(".game-widget-guide");
     if (guide) guide.innerHTML = gameWidgetGuideHtml(game);
     positionGameManualUi(card, game);
-    if (!game.lastCommand) updateGameWidgetStatus(gameWidgetDefaultStatus(game));
+    if (game.paused) updateGameWidgetStatus("게임 일시 정지");
+    else if (!game.lastCommand) updateGameWidgetStatus(gameWidgetDefaultStatus(game));
     card.dataset.groupPlay = String(game.groupPlay !== false);
     card.dataset.debug = String(!!game.debug);
     card.dataset.manualOpen = String(!!game.manualOpen);
@@ -4820,6 +5875,7 @@
     return !!(
       game?.open &&
       !game.hidden &&
+      !game.paused &&
       game.groupPlay === false &&
       !state.characterDriveMode &&
       !state.characterPlaceMode &&
@@ -4902,7 +5958,7 @@
     })[0];
     if (!chosen) return false;
     const game = state.widgetSettings?.game;
-    if (!game?.open || game.hidden || game.groupPlay === false) return false;
+    if (!game?.open || game.hidden || game.paused || game.groupPlay === false) return false;
     const sent = postGameWidgetMessage({
       type: "tg-game-input",
       commands: chosen.commands,
@@ -4942,7 +5998,7 @@
 
   function handleGameChatCommand(data) {
     const game = state.widgetSettings?.game;
-    if (!game?.open || game.hidden || game.groupPlay === false || data?.type !== "text") return false;
+    if (!game?.open || game.hidden || game.paused || game.groupPlay === false || data?.type !== "text") return false;
     const key = speakerKey(data, true) || speakerKey(data);
     if (!key || !state.participants.has(key) || isRealJailed(key)) return false;
     const commands = gameCommandTokens(data.text);
@@ -4953,6 +6009,11 @@
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
     const payload = event.data || {};
+    if (payload.type === "tg-game-key-visual") {
+      forceNativeChatVisible(700);
+      setGameButtonPressed(payload.command, !!payload.down, payload.down ? 0 : 1);
+      return;
+    }
     if (payload.type !== "tg-game-status") return;
     pushGameLog(payload.status || "iframe", payload.message || payload.rom || "");
     if (
@@ -5018,6 +6079,7 @@
         <button class="game-widget-new" type="button" title="restart without state">new</button>
         <button class="game-widget-save" type="button" title="quick save">save</button>
       </div>
+      <button class="game-widget-pause${game.paused ? " active" : ""}" type="button" title="${game.paused ? "resume game" : "pause game"}">${game.paused ? "resume" : "pause"}</button>
       <button class="game-widget-layout-debug${game.layoutDebug ? " active" : ""}" type="button" title="show layout debug">layout ${game.layoutDebug ? "on" : "off"}</button>
       <button class="widget-hide" type="button" title="show/hide">${widgetHideText(game.hidden, "game")}</button>
       <button class="game-widget-stop" type="button" title="close game">x</button>
@@ -5036,6 +6098,14 @@
     frame.className = "game-widget-frame";
     frame.src = gamePlayerUrl(game);
     frame.referrerPolicy = "no-referrer";
+    const keepNativeChatVisible = () => {
+      forceNativeChatVisible(1000);
+    };
+    frame.addEventListener("focus", keepNativeChatVisible);
+    frame.addEventListener("pointerenter", keepNativeChatVisible);
+    frame.addEventListener("pointerdown", keepNativeChatVisible, true);
+    frame.addEventListener("pointerup", keepNativeChatVisible, true);
+    frame.addEventListener("click", keepNativeChatVisible, true);
     const status = document.createElement("div");
     status.className = "game-widget-status";
     status.textContent = game.lastCommand || gameWidgetDefaultStatus(game);
@@ -5060,6 +6130,7 @@
         postGameWidgetSpeed(game);
         postGameWidgetVolume(game);
         postGameWidgetLayoutDebug(game);
+        postGameWidgetPause(game);
         syncGameWidgetViewport();
       }, 320);
       if (game.debug) debugLog.scrollTop = debugLog.scrollHeight;
@@ -5083,7 +6154,9 @@
     const showGameWidget = () => {
       game.hidden = false;
       game.open = true;
+      game.paused = false;
       renderWidgets();
+      window.setTimeout(() => postGameWidgetPause(game), 360);
       saveWidgetSettings();
     };
     hideButton?.addEventListener("click", (ev) => {
@@ -5093,9 +6166,12 @@
       if (!game.hidden) {
         clearGameVoteBuffer();
         requestGameWidgetSave();
+        game.paused = true;
+        postGameWidgetPause(game);
         game.hidden = true;
         apply();
         hideButton.textContent = widgetHideText(true, "game");
+        updateGameWidgetButtons(game);
         saveWidgetSettings();
         return;
       }
@@ -5168,6 +6244,19 @@
       updateGameWidgetButtons(game);
       saveWidgetSettingsSoon();
     });
+    header.querySelector(".game-widget-pause")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      clearGameVoteBuffer();
+      state.gameLocalOverrideUntil = Date.now() + 5000;
+      game.paused = !game.paused;
+      updateGameWidgetButtons(game);
+      const sent = postGameWidgetPause(game);
+      updateGameWidgetStatus(sent
+        ? (game.paused ? "게임 일시 정지" : "게임 재개")
+        : "game frame not ready");
+      saveWidgetSettingsSoon();
+    });
     header.querySelector(".game-widget-layout-debug")?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5184,6 +6273,10 @@
       ev.preventDefault();
       ev.stopPropagation();
       const command = String(button.getAttribute("data-game-command") || "");
+      if (game.paused) {
+        updateGameWidgetStatus("게임 일시 정지 중");
+        return;
+      }
       const sent = postGameWidgetMessage({ type: "tg-game-input", commands: [command], source: "widget-button", name: "host" });
       if (sent) {
         setGameButtonPressed(command, true, 160);
@@ -5397,6 +6490,7 @@
     browser.open = true;
     browser.hidden = false;
     browser.url = url;
+    browser.z = nextWidgetZ();
     state.widgetSettings.electronBrowser = browser;
     renderWidgets();
     saveWidgetSettings();
@@ -5430,17 +6524,7 @@
   function setElectronNativeViewDragSuppressed(active) {
     const next = !!active;
     if (state.electronNativeViewsSuppressedForDrag === next) return;
-    const api = electronBrowserApi();
-    if (!api || typeof api.upsert !== "function") {
-      state.electronNativeViewsSuppressedForDrag = false;
-      return;
-    }
-    state.electronNativeViewsSuppressedForDrag = next;
-    if (next) {
-      api.upsert({ id: "web", visible: false });
-      api.upsert({ id: "youtube", visible: false });
-      return;
-    }
+    state.electronNativeViewsSuppressedForDrag = false;
     window.requestAnimationFrame(() => {
       const browser = state.widgetSettings?.electronBrowser;
       const browserViewport = widgetLayer?.querySelector("#electron-browser-widget .electron-browser-viewport");
@@ -5492,6 +6576,55 @@
     renderElectronBrowserLogPanel(widgetLayer?.querySelector(".electron-browser-debug-log"));
   }
 
+  function setYoutubeWidgetFullscreen(active, options = {}) {
+    const youtube = state.widgetSettings?.youtube;
+    if (!youtube) return;
+    const next = !!active;
+    if (!!youtube.fullscreen === next) {
+      if (!next && options.forceSync) {
+        state.youtubeNativeDebugUntil = Date.now() + 1500;
+        youtube.open = true;
+        youtube.hidden = false;
+        renderWidgets({ force: true });
+        scheduleOpenElectronNativeViewSync();
+        saveWidgetSettingsSoon(250);
+      }
+      return;
+    }
+    youtube.fullscreen = next;
+    youtube.open = true;
+    youtube.hidden = false;
+    if (next) youtube.z = nextWidgetZ();
+    renderWidgets({ force: true });
+    scheduleOpenElectronNativeViewSync();
+    saveWidgetSettingsSoon(250);
+  }
+
+  function exitYoutubeWidgetFullscreen(options = {}) {
+    const youtube = state.widgetSettings?.youtube;
+    if (!youtube) return false;
+    if (!youtube.fullscreen) {
+      if (options.forceSync) {
+        state.youtubeNativeDebugUntil = Date.now() + 1500;
+        youtube.open = true;
+        youtube.hidden = false;
+        renderWidgets({ force: true });
+        scheduleOpenElectronNativeViewSync();
+        saveWidgetSettingsSoon(250);
+      }
+      return false;
+    }
+    youtube.fullscreen = false;
+    state.youtubeNativeDebugUntil = Date.now() + 1500;
+    youtube.open = true;
+    youtube.hidden = false;
+    electronBrowserApi()?.fullscreen?.({ id: "youtube", active: false });
+    renderWidgets({ force: true });
+    scheduleOpenElectronNativeViewSync();
+    saveWidgetSettingsSoon(250);
+    return true;
+  }
+
   function setupElectronBrowserBridge() {
     if (state.electronBrowserBridgeBound) return;
     const api = electronBrowserApi();
@@ -5500,6 +6633,50 @@
     api.onEvent((event) => {
       if (!event || typeof event !== "object") return;
       const eventId = String(event.id || "web").toLowerCase();
+      if (event.type === "focus") {
+        if (eventId === "youtube") {
+          const youtube = state.widgetSettings?.youtube;
+          if (youtube?.open && !youtube.hidden) {
+            youtube.z = nextWidgetZ();
+            renderWidgets();
+            saveWidgetSettingsSoon(120);
+            syncOpenElectronNativeViews();
+          }
+        } else if (eventId === "web") {
+          const browser = state.widgetSettings?.electronBrowser;
+          if (browser?.open && !browser.hidden) {
+            browser.z = nextWidgetZ();
+            renderWidgets();
+            saveWidgetSettingsSoon(120);
+            syncOpenElectronNativeViews();
+          }
+        }
+        return;
+      }
+      if (eventId === "youtube" && event.type === "fullscreen") {
+        const active = !!event.active;
+        clientLog("youtube_fullscreen_event", { active }, 0);
+        setYoutubeWidgetFullscreen(active, { forceSync: !active });
+        return;
+      }
+      if (eventId === "youtube" && event.type === "escape") {
+        const exited = exitYoutubeWidgetFullscreen({ forceSync: true });
+        if (!exited) electronBrowserApi()?.fullscreen?.({ id: "youtube", active: false });
+        clientLog("youtube_escape_event", {
+          source: event.source || "",
+          input_type: event.inputType || "",
+          exited,
+          fullscreen: !!state.widgetSettings?.youtube?.fullscreen,
+        }, 0);
+        return;
+      }
+      if (event.type === "window-resize") {
+        clientLog("electron_window_resize_event", {
+          youtube_fullscreen: !!state.widgetSettings?.youtube?.fullscreen,
+        }, 700);
+        scheduleOpenElectronNativeViewSync();
+        return;
+      }
       if (eventId !== "web") return;
       const browser = state.widgetSettings?.electronBrowser;
       if (event.type === "log") {
@@ -5526,7 +6703,10 @@
   function syncElectronBrowserView(browser, viewport) {
     const api = electronBrowserApi();
     if (!api || typeof api.upsert !== "function") return;
-    if (state.electronNativeViewsSuppressedForDrag) return;
+    if (document.body.classList.contains("app-settings-open")) {
+      api.upsert({ id: "web", visible: false, pause: false });
+      return;
+    }
     if (!browser?.open || browser.hidden || !viewport) {
       api.upsert({ id: "web", visible: false });
       return;
@@ -5543,9 +6723,26 @@
         visible: true,
         url,
         debug: !!browser.debug,
+        z: normalizeWidgetZ(browser.z),
         bounds: electronBrowserBounds(viewport),
       });
     });
+  }
+
+  function reusableElectronBrowserWidget() {
+    const browser = state.widgetSettings?.electronBrowser;
+    const card = widgetLayer?.querySelector("#electron-browser-widget");
+    if (!browser || !card || browser.open === false) return null;
+    const activeInside = !!(document.activeElement && card.contains(document.activeElement));
+    if (!activeInside && browser.hidden) return null;
+    if (!activeInside && !browser.url) return null;
+    applyWidgetBox(card, browser, 620, browser.debug ? 390 : 300);
+    applyNativeWidgetLayer(card, browser, hasElectronBrowserApi() && browser.open && !browser.hidden && !!normalizeBrowserUrl(browser.url));
+    const hide = card.querySelector(".widget-hide");
+    if (hide) hide.textContent = widgetHideText(browser.hidden, "web");
+    const viewport = card.querySelector(".electron-browser-viewport");
+    if (viewport) syncElectronBrowserView(browser, viewport);
+    return card;
   }
 
   function renderElectronBrowserWidget() {
@@ -5600,6 +6797,7 @@
     const input = header.querySelector(".electron-browser-url");
     const apply = () => {
       applyWidgetBox(card, browser, 620, browser.debug ? 390 : 300);
+      applyNativeWidgetLayer(card, browser, hasElectronBrowserApi() && browser.open && !browser.hidden && !!normalizeBrowserUrl(browser.url));
       syncElectronBrowserView(browser, viewport);
     };
     apply();
@@ -5620,7 +6818,6 @@
         commitUrl();
       }
     });
-    input?.addEventListener("change", commitUrl);
     header.querySelector(".electron-browser-go")?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5699,7 +6896,10 @@
   function syncYoutubeNativeView(youtube, viewport) {
     const api = electronBrowserApi();
     if (!api || typeof api.upsert !== "function") return false;
-    if (state.electronNativeViewsSuppressedForDrag) return true;
+    if (document.body.classList.contains("app-settings-open")) {
+      api.upsert({ id: "youtube", visible: false, pause: false });
+      return true;
+    }
     if (!youtube?.open || youtube.hidden || !youtube.videoId || !viewport) {
       api.upsert({ id: "youtube", visible: false, pause: true });
       return true;
@@ -5711,11 +6911,23 @@
       }
       const url = youtubeNativeEmbedUrl(youtube.videoId);
       if (!url) return;
+      const bounds = electronBrowserBounds(viewport);
+      if (youtube.fullscreen || Date.now() < (Number(state.youtubeNativeDebugUntil) || 0)) {
+        clientLog("youtube_native_sync", {
+          fullscreen: !!youtube.fullscreen,
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        }, 250);
+      }
       api.upsert({
         id: "youtube",
         visible: true,
         url,
-        bounds: electronBrowserBounds(viewport),
+        fullscreen: !!youtube.fullscreen,
+        z: normalizeWidgetZ(youtube.z),
+        bounds,
       });
     });
     return true;
@@ -5777,9 +6989,10 @@
       closeElectronNativeView("youtube");
       return;
     }
+    setupElectronBrowserBridge();
     const card = document.createElement("section");
     card.id = "youtube-widget";
-    card.className = "overlay-widget youtube-widget";
+    card.className = `overlay-widget youtube-widget${youtube.fullscreen ? " youtube-widget-fullscreen" : ""}`;
     const dragStrip = document.createElement("div");
     dragStrip.className = "widget-drag-strip youtube-widget-drag";
     dragStrip.title = "move YouTube widget";
@@ -5789,6 +7002,7 @@
       <input class="youtube-widget-query" type="text" placeholder="YouTube URL or search" value="${escapeHtml(youtube.query || youtube.url || "")}">
       <button class="youtube-widget-search" type="button" title="search or load">go</button>
       <button class="youtube-widget-open" type="button" title="open YouTube">open</button>
+      <button class="youtube-widget-fullscreen-toggle" type="button" title="fill app window">full</button>
       <button class="widget-hide" type="button" title="show/hide">${widgetHideText(youtube.hidden, "youtube")}</button>
       <button class="youtube-widget-stop" type="button" title="close and stop">x</button>
     `;
@@ -5797,13 +7011,19 @@
     const resize = document.createElement("div");
     resize.className = "widget-resize";
     resize.title = "resize";
-    card.append(dragStrip, header, body, resize);
+    const fullscreenExit = document.createElement("button");
+    fullscreenExit.className = "youtube-widget-fullscreen-exit";
+    fullscreenExit.type = "button";
+    fullscreenExit.textContent = "exit";
+    fullscreenExit.title = "exit fullscreen";
+    card.append(dragStrip, header, body, resize, fullscreenExit);
     widgetLayer.appendChild(card);
     const input = header.querySelector(".youtube-widget-query");
     const currentYoutube = () => state.widgetSettings?.youtube || youtube;
     let nativeViewport = null;
     const apply = () => {
       applyWidgetBox(card, youtube, 360, 260);
+      applyNativeWidgetLayer(card, youtube, hasElectronBrowserApi() && youtube.open && !youtube.hidden && !!youtube.videoId);
       if (nativeViewport) syncYoutubeNativeView(youtube, nativeViewport);
     };
     const renderBody = () => {
@@ -5853,6 +7073,11 @@
         submit();
       }
     });
+    input?.addEventListener("input", () => {
+      const active = currentYoutube();
+      active.query = input.value;
+      saveWidgetSettingsSoon(900);
+    });
     header.querySelector(".youtube-widget-search")?.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
@@ -5870,11 +7095,25 @@
       if (electronBrowserApi()?.openExternal) electronBrowserApi().openExternal(url);
       else window.open(url, "_blank", "noopener,noreferrer");
     });
+    header.querySelector(".youtube-widget-fullscreen-toggle")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const active = currentYoutube();
+      if (!active.videoId) return;
+      active.fullscreen = true;
+      active.open = true;
+      active.hidden = false;
+      active.z = nextWidgetZ();
+      clientLog("youtube_widget_fullscreen_request", { videoId: active.videoId || "" }, 0);
+      electronBrowserApi()?.fullscreen?.({ id: "youtube", active: true });
+      renderWidgets({ force: true });
+      saveWidgetSettingsSoon(120);
+    });
     const showYoutubeWidget = () => {
       const active = currentYoutube();
       active.hidden = false;
       active.open = true;
-      renderWidgets();
+      renderWidgets({ force: true });
       saveWidgetSettings();
     };
     const hideButton = header.querySelector(".widget-hide");
@@ -5890,13 +7129,15 @@
         showYoutubeWidget();
         return;
       }
+      active.fullscreen = false;
+      electronBrowserApi()?.fullscreen?.({ id: "youtube", active: false });
       active.hidden = true;
       active.open = true;
       if (active.hidden) {
         postYoutubeCommand("pauseVideo");
         hideElectronNativeView("youtube", true);
       }
-      renderWidgets();
+      renderWidgets({ force: true });
       saveWidgetSettings();
     });
     bindHiddenShowHandle(card, hideButton, youtube, apply, saveWidgetSettings, showYoutubeWidget);
@@ -5904,6 +7145,7 @@
       ev.preventDefault();
       ev.stopPropagation();
       const active = currentYoutube();
+      active.fullscreen = false;
       active.open = false;
       active.hidden = true;
       active.query = "";
@@ -5913,8 +7155,13 @@
       state.youtubeSearchResults = [];
       state.youtubeSearchError = "";
       closeElectronNativeView("youtube");
-      renderWidgets();
+      renderWidgets({ force: true });
       saveWidgetSettings();
+    });
+    fullscreenExit.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      exitYoutubeWidgetFullscreen();
     });
     body.addEventListener("dblclick", (ev) => {
       const active = currentYoutube();
@@ -5922,7 +7169,7 @@
       ev.preventDefault();
       active.videoId = "";
       closeElectronNativeView("youtube");
-      renderWidgets();
+      renderWidgets({ force: true });
       saveWidgetSettings();
     });
     card.dataset.videoId = youtube.hidden ? "" : String(youtube.videoId || "");
@@ -5930,15 +7177,19 @@
   }
 
   function reusableYoutubeWidget() {
-    if (hasElectronBrowserApi()) return null;
     const youtube = state.widgetSettings?.youtube;
     const card = widgetLayer?.querySelector("#youtube-widget");
     if (!youtube || !card || youtube.open === false) return null;
-    if (!youtube.videoId) return null;
-    if (card.dataset.videoId !== String(youtube.videoId || "")) return null;
+    const activeInside = !!(document.activeElement && card.contains(document.activeElement));
+    const expectedVideoId = youtube.hidden ? "" : String(youtube.videoId || "");
+    const stableVideo = !!youtube.videoId && card.dataset.videoId === expectedVideoId;
+    if (!activeInside && !stableVideo) return null;
     applyWidgetBox(card, youtube, 360, 260);
+    applyNativeWidgetLayer(card, youtube, hasElectronBrowserApi() && youtube.open && !youtube.hidden && !!youtube.videoId);
     const hide = card.querySelector(".widget-hide");
     if (hide) hide.textContent = widgetHideText(youtube.hidden, "youtube");
+    const viewport = card.querySelector(".youtube-native-player");
+    if (viewport) syncYoutubeNativeView(youtube, viewport);
     return card;
   }
 
@@ -5956,12 +7207,14 @@
       return;
     }
     state.widgetRenderPending = false;
-    const preservedYoutube = reusableYoutubeWidget();
+    captureOpenPrisonRosterScrolls();
+    const preservedYoutube = force ? null : reusableYoutubeWidget();
     const preservedGame = reusableGameWidget();
-    clearWidgetLayerExcept([preservedYoutube, preservedGame]);
+    const preservedElectronBrowser = force ? null : reusableElectronBrowserWidget();
+    clearWidgetLayerExcept([preservedYoutube, preservedGame, preservedElectronBrowser]);
     renderPriceWidget();
     if (!preservedYoutube) renderYoutubeWidget();
-    renderElectronBrowserWidget();
+    if (!preservedElectronBrowser) renderElectronBrowserWidget();
     if (!preservedGame) renderGameWidget();
     renderCharacterMoveWidget();
     renderPrisonWidget("mini");
@@ -5972,7 +7225,28 @@
     for (const browser of state.widgetSettings.browsers || []) {
       renderBrowserWidget(browser);
     }
+    updateGameChatFallbackState();
+    queueNativeChatSync(true);
+    updateChatMessageMenuButtons();
+    queueNativeChatActionStateSync();
   }
+
+  function syncOpenElectronNativeViews() {
+    const browser = state.widgetSettings?.electronBrowser;
+    const browserViewport = widgetLayer?.querySelector("#electron-browser-widget .electron-browser-viewport");
+    if (browser && browserViewport) syncElectronBrowserView(browser, browserViewport);
+    const youtube = state.widgetSettings?.youtube;
+    const youtubeViewport = widgetLayer?.querySelector("#youtube-widget .youtube-native-player");
+    if (youtube && youtubeViewport) syncYoutubeNativeView(youtube, youtubeViewport);
+  }
+
+  function scheduleOpenElectronNativeViewSync() {
+    for (const delay of [0, 40, 120, 260]) {
+      window.setTimeout(syncOpenElectronNativeViews, delay);
+    }
+  }
+
+  window.addEventListener("resize", scheduleOpenElectronNativeViewSync);
 
   function refreshOpenPrisonWidgets() {
     if (!state.widgetSettings) return;
@@ -6002,6 +7276,8 @@
     state.widgetSettings.browsers = state.widgetSettings.browsers.map(normalizeBrowserWidget).filter(Boolean);
     state.widgetSettings.controls = Object.assign(defaultWidgetSettings().controls, state.widgetSettings.controls || {});
     state.widgetSettings.price = Object.assign(defaultWidgetSettings().price, state.widgetSettings.price || {});
+    state.widgetSettings.price.z = normalizeWidgetZ(state.widgetSettings.price.z, defaultWidgetSettings().price.z);
+    state.widgetSettings.price.open = state.widgetSettings.price.open !== false;
     state.widgetSettings.game = normalizeGameWidget(state.widgetSettings.game);
     state.widgetSettings.characterMove = normalizeCharacterMoveWidget(state.widgetSettings.characterMove);
     state.widgetSettings.miniJail = normalizePrisonWidget(state.widgetSettings.miniJail, "mini");
@@ -6012,6 +7288,8 @@
       : {};
     Object.assign(youtubeSettings, Object.assign(defaultWidgetSettings().youtube, youtubeSettings));
     if (youtubeSettings.open === undefined) youtubeSettings.open = !youtubeSettings.hidden;
+    youtubeSettings.fullscreen = false;
+    youtubeSettings.z = normalizeWidgetZ(youtubeSettings.z, defaultWidgetSettings().youtube.z);
     state.widgetSettings.youtube = youtubeSettings;
     state.widgetSettings.electronBrowser = normalizeElectronBrowserWidget(state.widgetSettings.electronBrowser);
     applyWidgetControlsPosition();
@@ -6022,9 +7300,20 @@
     state.widgetSettings = loadWidgetSettings();
     applyWidgetSettings();
     setupWidgetControlsDrag();
+    widgetAddPreview?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (!state.streamPreviewSettings) state.streamPreviewSettings = loadStreamPreviewSettings();
+      state.streamPreviewSettings.open = true;
+      state.streamPreviewSettings.hidden = false;
+      applyStreamPreviewSettings(true);
+      saveStreamPreviewSettings();
+      refreshStreamPreviews();
+    });
     widgetAddPrice?.addEventListener("click", (ev) => {
       ev.preventDefault();
+      state.widgetSettings.price.open = true;
       state.widgetSettings.price.hidden = false;
+      state.widgetSettings.price.z = nextWidgetZ();
       renderWidgets();
       saveWidgetSettings();
       refreshPriceWidget(true);
@@ -6052,6 +7341,7 @@
       state.widgetSettings.game.closedAt = 0;
       state.widgetSettings.game.open = true;
       state.widgetSettings.game.hidden = false;
+      state.widgetSettings.game.z = nextWidgetZ();
       renderWidgets();
       saveWidgetSettings();
     });
@@ -6063,6 +7353,7 @@
       ev.preventDefault();
       state.widgetSettings.electronBrowser.open = true;
       state.widgetSettings.electronBrowser.hidden = false;
+      state.widgetSettings.electronBrowser.z = nextWidgetZ();
       renderWidgets();
       saveWidgetSettings();
     });
@@ -6070,6 +7361,7 @@
       ev.preventDefault();
       state.widgetSettings.youtube.open = true;
       state.widgetSettings.youtube.hidden = false;
+      state.widgetSettings.youtube.z = nextWidgetZ();
       renderWidgets();
       saveWidgetSettings();
     });
@@ -6094,7 +7386,7 @@
   function loadTopicSettings() {
     try {
       const raw = localStorage.getItem(TOPIC_SETTINGS_KEY);
-      return Object.assign(defaultTopicSettings(), raw ? JSON.parse(raw) : {}, settingSection("topic") || {});
+      return Object.assign(defaultTopicSettings(), settingSection("topic") || {}, raw ? JSON.parse(raw) : {});
     } catch (_) {
       return defaultTopicSettings();
     }
@@ -6630,7 +7922,7 @@
     state.audio.eventGain.gain.setTargetAtTime(enabled ? state.soundSettings.eventVolume : 0, now, 0.03);
     state.audio.fireGain?.gain.setTargetAtTime(enabled ? state.soundSettings.fireVolume : 0, now, 0.03);
     state.audio.lifeGain?.gain.setTargetAtTime(enabled ? state.soundSettings.lifeVolume : 0, now, 0.03);
-    state.audio.babbleGain?.gain.setTargetAtTime(enabled ? state.soundSettings.babbleVolume : 0, now, 0.03);
+    state.audio.babbleGain?.gain.setTargetAtTime(enabled ? state.soundSettings.babbleVolume * BABBLE_OUTPUT_GAIN : 0, now, 0.03);
   }
 
   function overlayPanTarget(ctx, pan, target) {
@@ -7352,28 +8644,77 @@
         updateComposerPreview();
         clearSendPhoto();
         clearSendReply();
+      } catch (exc) {
+        clientLog("send_submit_failed", { message: String(exc?.message || exc || "send failed") }, 0);
       } finally {
         state.sendInFlight = false;
         updateSendButton();
         chatSendText?.focus();
       }
     });
-    chatMenuReply?.addEventListener("click", () => {
+    const bindChatMenuAction = (button, handler) => {
+      if (!button) return;
+      let handledAt = 0;
+      const run = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (button.disabled) return;
+        const now = Date.now();
+        if (now - handledAt < 220) return;
+        handledAt = now;
+        handler(ev);
+      };
+      button.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }, true);
+      button.addEventListener("pointerup", run, true);
+      button.addEventListener("click", run, true);
+      button.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") run(ev);
+      });
+    };
+    chatMessageMenu?.addEventListener("pointerdown", (ev) => {
+      ev.stopPropagation();
+    }, true);
+    chatMessageMenu?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+    }, true);
+    bindChatMenuAction(chatMenuReply, () => {
       if (state.menuTarget) setSendReply(state.menuTarget.data);
       hideChatMessageMenu();
     });
-    chatMenuQuote?.addEventListener("click", () => {
+    bindChatMenuAction(chatMenuQuote, () => {
       if (state.menuTarget?.quoteText) setSendReply(state.menuTarget.data, state.menuTarget.quoteText);
       hideChatMessageMenu();
     });
-    chatMenuDelete?.addEventListener("click", async () => {
+    bindChatMenuAction(chatMenuMiniJail, () => {
+      if (state.menuTarget) applyDirectPrisonAction("mini", state.menuTarget.data);
+      hideChatMessageMenu();
+    });
+    bindChatMenuAction(chatMenuRealJail, () => {
+      if (state.menuTarget) applyDirectPrisonAction("real", state.menuTarget.data);
+      hideChatMessageMenu();
+    });
+    bindChatMenuAction(chatMenuTmute, async () => {
+      const target = state.menuTarget;
+      hideChatMessageMenu();
+      if (!target) return;
+      try {
+        await sendTmuteReplyForMessage(target.data);
+      } catch (exc) {
+        clientLog("tmute_send_failed", { message: String(exc?.message || exc || "tmute failed") }, 0);
+      }
+    });
+    bindChatMenuAction(chatMenuDelete, async () => {
       const target = state.menuTarget;
       hideChatMessageMenu();
       if (!target) return;
       await deleteOverlayMessage(target.data.message);
-      removeChatLineElement(target.el);
+      removeChatLineByRef(target.data.message);
     });
-    document.addEventListener("click", () => {
+    document.addEventListener("click", (ev) => {
+      if (chatMessageMenu && !chatMessageMenu.hidden && ev.target instanceof Node && chatMessageMenu.contains(ev.target)) return;
       hideChatMessageMenu();
       hideMentionMenu();
       hideEmojiPicker(true);
@@ -7450,7 +8791,7 @@
   function loadToastSettings() {
     try {
       const raw = localStorage.getItem(TOAST_SETTINGS_KEY);
-      const settings = Object.assign(defaultToastSettings(), raw ? JSON.parse(raw) : {}, settingSection("toast") || {});
+      const settings = Object.assign(defaultToastSettings(), settingSection("toast") || {}, raw ? JSON.parse(raw) : {});
       if (settings.levelUpTemplate === "{name} 레벨 업 Lv. {old_level} → {new_level}") {
         settings.levelUpTemplate = LEVEL_UP_TEMPLATE_DEFAULT;
       }
@@ -7569,14 +8910,22 @@
     if (clientId && clientId === state.clientId) return;
     const nextSettings = adaptOverlaySettings(settings);
     state.overlaySettings = nextSettings;
+    const localLayout = {
+      chat: hasLocalSetting(CHAT_SETTINGS_KEY),
+      topic: hasLocalSetting(TOPIC_SETTINGS_KEY),
+      toast: hasLocalSetting(TOAST_SETTINGS_KEY),
+      streamPreview: hasLocalSetting(STREAM_PREVIEW_SETTINGS_KEY),
+      widgets: hasLocalSetting(WIDGET_SETTINGS_KEY),
+      camera: hasLocalSetting(CAMERA_SETTINGS_KEY),
+    };
     state.remoteApplying = true;
     try {
-      if (nextSettings.chat && state.chatSettings) {
+      if (nextSettings.chat && state.chatSettings && !localLayout.chat) {
         Object.assign(state.chatSettings, nextSettings.chat);
         applyChatSettings();
         storageSet(CHAT_SETTINGS_KEY, JSON.stringify(state.chatSettings));
       }
-      if (nextSettings.topic && state.topicSettings) {
+      if (nextSettings.topic && state.topicSettings && !localLayout.topic) {
         Object.assign(state.topicSettings, nextSettings.topic);
         refreshTopicLayout(topicEditor?.classList.contains("editing"));
         storageSet(TOPIC_SETTINGS_KEY, JSON.stringify(state.topicSettings));
@@ -7596,12 +8945,12 @@
         applySoundSettings({ syncAudio: true });
         storageSet(SOUND_SETTINGS_KEY, JSON.stringify(state.soundSettings));
       }
-      if (nextSettings.toast && state.toastSettings) {
+      if (nextSettings.toast && state.toastSettings && !localLayout.toast) {
         Object.assign(state.toastSettings, nextSettings.toast);
         applyToastSettings();
         storageSet(TOAST_SETTINGS_KEY, JSON.stringify(state.toastSettings));
       }
-      if (nextSettings.streamPreview && state.streamPreviewSettings) {
+      if (nextSettings.streamPreview && state.streamPreviewSettings && !localLayout.streamPreview) {
         Object.assign(state.streamPreviewSettings, nextSettings.streamPreview, {
           viewer: Object.assign(
             state.streamPreviewSettings.viewer || {},
@@ -7611,7 +8960,7 @@
         applyStreamPreviewSettings(true);
         storageSet(STREAM_PREVIEW_SETTINGS_KEY, JSON.stringify(state.streamPreviewSettings));
       }
-      if (nextSettings.widgets && state.widgetSettings) {
+      if (nextSettings.widgets && state.widgetSettings && !localLayout.widgets) {
         const { game: incomingGame, ...incomingWidgets } = nextSettings.widgets;
         const localGame = state.widgetSettings.game || {};
         const localGameProtected = Date.now() < (state.gameLocalOverrideUntil || 0);
@@ -7641,7 +8990,7 @@
         storageSet(WIDGET_SETTINGS_KEY, JSON.stringify(state.widgetSettings));
         refreshPriceWidget(false);
       }
-      if (nextSettings.camera) {
+      if (nextSettings.camera && !localLayout.camera) {
         applyCameraControl({ type: "videochat_camera", ...nextSettings.camera });
       }
     } finally {
@@ -7736,6 +9085,62 @@
 
   function hasRole(value, role) {
     return rolesOf(value).includes(String(role || "").trim().toLowerCase());
+  }
+
+  function participantAppearanceKey(p) {
+    return [
+      hasRole(p, "girl") ? "girl" : "default",
+      p?.is_host ? "host" : "guest",
+    ].join("|");
+  }
+
+  function recreateCharacterForAppearance(p, previous) {
+    const key = keyFor(p);
+    const keep = {
+      position: previous.position.clone(),
+      rotation: previous.rotation.clone(),
+      enterStartedAt: previous.userData.enterStartedAt,
+      enterFrom: previous.userData.enterFrom?.clone?.() || null,
+      enterDone: previous.userData.enterDone,
+      entryEffect: previous.userData.entryEffect,
+      exitEffect: previous.userData.exitEffect,
+      target: previous.userData.target?.clone?.() || null,
+      layout: previous.userData.layout,
+      layoutIndex: previous.userData.layoutIndex,
+      layoutCount: previous.userData.layoutCount,
+      prisonKind: previous.userData.prisonKind,
+      prisonScale: previous.userData.prisonScale,
+      fireHopUntil: previous.userData.fireHopUntil,
+      levelEffectKind: previous.userData.levelEffectKind,
+      levelEffectStart: previous.userData.levelEffectStart,
+      cheerStartedAt: previous.userData.cheerRig?.startedAt || 0,
+      cheerUntil: previous.userData.cheerRig?.until || 0,
+    };
+    state.three.scene.remove(previous);
+    state.characters.delete(key);
+    const next = createCharacter(p);
+    next.position.copy(keep.position);
+    next.rotation.copy(keep.rotation);
+    next.userData.enterStartedAt = keep.enterStartedAt;
+    next.userData.enterFrom = keep.enterFrom;
+    next.userData.enterDone = keep.enterDone;
+    next.userData.entryEffect = keep.entryEffect;
+    next.userData.exitEffect = keep.exitEffect;
+    next.userData.target = keep.target;
+    next.userData.layout = keep.layout;
+    next.userData.layoutIndex = keep.layoutIndex;
+    next.userData.layoutCount = keep.layoutCount;
+    next.userData.prisonKind = keep.prisonKind;
+    next.userData.prisonScale = keep.prisonScale;
+    next.userData.fireHopUntil = keep.fireHopUntil;
+    next.userData.levelEffectKind = keep.levelEffectKind;
+    next.userData.levelEffectStart = keep.levelEffectStart;
+    if (next.userData.cheerRig) {
+      next.userData.cheerRig.startedAt = keep.cheerStartedAt;
+      next.userData.cheerRig.until = keep.cheerUntil;
+    }
+    clientLog("character_recreated_for_role", { key, appearance: next.userData.appearanceKey }, 1000);
+    return next;
   }
 
   function levelTier(level, isHost = false) {
@@ -8003,6 +9408,7 @@
     const key = keyFor(p);
     const group = new THREE.Group();
     group.userData.key = key;
+    group.userData.appearanceKey = participantAppearanceKey(p);
     group.userData.baseY = 0;
     group.userData.enterStartedAt = performance.now();
     group.userData.enterFrom = null;
@@ -8366,7 +9772,12 @@
 
     rows.forEach((p, i) => {
       const key = keyFor(p);
-      const char = state.characters.get(key) || createCharacter(p);
+      let char = state.characters.get(key);
+      const appearanceKey = participantAppearanceKey(p);
+      if (char && char.userData.appearanceKey !== appearanceKey && !char.userData.leavingUntil) {
+        char = recreateCharacterForAppearance(p, char);
+      }
+      if (!char) char = createCharacter(p);
       const prisonKind = prisonKindForKey(key);
       const realJailed = prisonKind === "real";
       const customPlacement = characterPlacementForKey(key);
@@ -8536,9 +9947,10 @@
       el.style.opacity = String(Math.max(0, 1 - progress * 0.86));
       el.style.filter = `brightness(${1 + (1 - progress) * 0.35}) drop-shadow(0 0 ${Math.round(18 + (1 - progress) * 18)}px rgba(235,248,255,${0.38 * (1 - progress)}))`;
     }
-    renderStreamPreviews();
     if (prisonChanged) refreshOpenPrisonWidgets();
     if (placementChanged) refreshOpenCharacterMoveWidget();
+    updateChatMessageMenuButtons();
+    queueNativeChatActionStateSync();
   }
 
   function setSnapshot(data) {
@@ -8562,6 +9974,7 @@
     }
     state.hasSnapshot = true;
     renderParticipants();
+    queueStreamPreviewRender();
     refreshOpenPrisonWidgets();
   }
 
@@ -8715,14 +10128,22 @@
   function createBabbleRichText(text, options = {}, className = "") {
     const outer = document.createElement("span");
     outer.className = `babble-text${className ? ` ${className}` : ""}`;
+    const split = splitCommentThreadText(text, options.entities || []);
+    if (split.prefix) {
+      const prefix = document.createElement("span");
+      prefix.className = "comment-prefix";
+      prefix.dataset.noQuote = "1";
+      prefix.textContent = split.prefix;
+      outer.appendChild(prefix);
+    }
     const live = document.createElement("span");
     live.className = "babble-live";
     const final = document.createElement("span");
     final.className = "babble-final";
     final.hidden = true;
-    appendRichText(final, text, options);
+    appendRichText(final, split.text, { ...options, entities: split.entities });
     outer.append(live, final);
-    outer._babbleText = String(text || "");
+    outer._babbleText = String(split.text || "");
     outer._babbleLive = live;
     outer._babbleFinal = final;
     return outer;
@@ -8922,7 +10343,12 @@
 
   mediaLightbox.addEventListener("click", closeMediaLightbox);
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && !mediaLightbox.hidden) closeMediaLightbox();
+    if (ev.key !== "Escape") return;
+    if (exitYoutubeWidgetFullscreen()) {
+      ev.preventDefault();
+      return;
+    }
+    if (!mediaLightbox.hidden) closeMediaLightbox();
   });
 
   function chatLogIsAtBottom() {
@@ -8980,16 +10406,19 @@
     if (!reply || (!reply.name && !reply.text)) return null;
     const quote = document.createElement("div");
     quote.className = "reply-quote";
+    const targetKey = messageKeyFromRef(reply.message);
     if (reply.message?.chat_id && reply.message?.message_id) {
-      quote.dataset.replyTargetKey = `${reply.message.chat_id}:${reply.message.message_id}`;
+      quote.dataset.replyTargetKey = targetKey;
       quote.title = "인용 메시지로 이동";
     }
+    const deleted = targetKey && state.deletedMessageKeys.has(targetKey);
+    if (deleted) quote.classList.add("deleted-reply");
     const name = document.createElement("span");
     name.className = "reply-name";
-    name.textContent = reply.name || "Unknown";
+    name.textContent = deleted ? "" : (reply.name || "Unknown");
     const text = document.createElement("span");
     text.className = "reply-text";
-    text.textContent = reply.quote_text || reply.text || "메시지";
+    text.textContent = deleted ? "삭제된 메시지" : (reply.quote_text || reply.text || "메시지");
     quote.append(name, text);
     quote.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -8998,9 +10427,22 @@
     return quote;
   }
 
+  function markReplyQuotesDeleted(key) {
+    if (!key) return;
+    for (const quote of Array.from(document.querySelectorAll(`.reply-quote[data-reply-target-key="${CSS.escape(key)}"]`))) {
+      quote.classList.add("deleted-reply");
+      const name = quote.querySelector(".reply-name");
+      const text = quote.querySelector(".reply-text");
+      if (name) name.textContent = "";
+      if (text) text.textContent = "삭제된 메시지";
+    }
+  }
+
   function removeChatLineByRef(ref) {
-    if (!ref?.chat_id || !ref?.message_id) return;
-    const key = `${ref.chat_id}:${ref.message_id}`;
+    const key = messageKeyFromRef(ref);
+    if (!key) return;
+    state.deletedMessageKeys.add(key);
+    markReplyQuotesDeleted(key);
     for (const el of Array.from(chatLog?.querySelectorAll(".chat-line[data-message-key]") || [])) {
       if (el.dataset.messageKey === key) removeChatLineElement(el);
     }
@@ -9056,6 +10498,7 @@
     }
     const header = document.createElement("span");
     header.className = "chat-header";
+    header.dataset.noQuote = "1";
     if (isHost) {
       const crown = document.createElement("span");
       crown.className = "chat-crown";
@@ -9081,15 +10524,16 @@
       if (typeof data.text === "string" && data.text.trim()) {
         const msg = document.createElement("span");
         msg.className = "chat-text photo-caption";
-        appendRichText(msg, data.text, { entities: data.entities || [] });
+        appendMessageText(msg, data.text, { entities: data.entities || [] });
         item.appendChild(msg);
       }
     } else {
       const msg = document.createElement("span");
       msg.className = "chat-text";
-      appendRichText(msg, String(data.text || ""), { entities: data.entities || [] });
+      appendMessageText(msg, String(data.text || ""), { entities: data.entities || [] });
       const separator = document.createElement("span");
       separator.className = "chat-separator";
+      separator.dataset.noQuote = "1";
       separator.textContent = ": ";
       item.append(separator, msg);
       if (data.stt_label) {
@@ -9796,6 +11240,7 @@
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
     state.videochatWs = ws;
+    ws.onopen = () => clientLog("videochat_ws_open", {}, 2000);
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -9815,14 +11260,23 @@
             sharedLinkPreview?.applyRemote?.(data);
           }
         }
-      } catch (_) {}
+      } catch (exc) {
+        clientLog("videochat_ws_message_error", { message: String(exc?.message || exc || "parse failed") }, 0);
+      }
     };
-    ws.onclose = () => setTimeout(connectVideochat, 1500);
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    ws.onclose = (ev) => {
+      clientLog("videochat_ws_close", { code: ev.code, reason: ev.reason }, 3000);
+      setTimeout(connectVideochat, 1500);
+    };
+    ws.onerror = () => {
+      clientLog("videochat_ws_error", {}, 3000);
+      try { ws.close(); } catch (_) {}
+    };
   }
 
   function connectChatSpeech() {
     const ws = new WebSocket(state.cfg.chat_ws_url);
+    ws.onopen = () => clientLog("chat_ws_open", { url: state.cfg.chat_ws_url }, 2000);
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -9850,10 +11304,18 @@
           return;
         }
         showSpeech(data);
-      } catch (_) {}
+      } catch (exc) {
+        clientLog("chat_ws_message_error", { message: String(exc?.message || exc || "parse failed") }, 0);
+      }
     };
-    ws.onclose = () => setTimeout(connectChatSpeech, 1500);
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    ws.onclose = (ev) => {
+      clientLog("chat_ws_close", { code: ev.code, reason: ev.reason }, 3000);
+      setTimeout(connectChatSpeech, 1500);
+    };
+    ws.onerror = () => {
+      clientLog("chat_ws_error", {}, 3000);
+      try { ws.close(); } catch (_) {}
+    };
   }
 
   function createJailCage() {

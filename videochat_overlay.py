@@ -8,10 +8,12 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -68,6 +70,7 @@ VIDEOCHAT_STREAM_PREVIEW_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_STRE
 VIDEOCHAT_TGCALLS_PREVIEW_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_TGCALLS_PREVIEW_ENABLED"), False)
 VIDEOCHAT_TGCALLS_AUTO_JOIN = level_core.env_bool(os.getenv("VIDEOCHAT_TGCALLS_AUTO_JOIN"), True)
 VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN = level_core.env_bool(os.getenv("VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN"), True)
+VIDEOCHAT_GRACEFUL_SHUTDOWN_SEC = max(1.0, min(30.0, float(os.getenv("VIDEOCHAT_GRACEFUL_SHUTDOWN_SEC", "3") or "3")))
 VIDEOCHAT_DIAGNOSTICS_ENABLED = level_core.env_bool(os.getenv("VIDEOCHAT_DIAGNOSTICS_ENABLED"), True)
 VIDEOCHAT_DIAG_INTERVAL_SEC = max(1.0, float(os.getenv("VIDEOCHAT_DIAG_INTERVAL_SEC", "5") or "5"))
 TGCALLS_IDENTITY_REFRESH_SEC = 30.0
@@ -87,7 +90,15 @@ TGCALLS_MJPEG_FPS = max(1, min(30, int(os.getenv("TGCALLS_MJPEG_FPS", "30") or "
 TGCALLS_MJPEG_QUALITY = max(35, min(95, int(os.getenv("TGCALLS_MJPEG_QUALITY", "82") or "82")))
 TGCALLS_MJPEG_WIDTH = max(0, int(os.getenv("TGCALLS_MJPEG_WIDTH", "1280") or "1280"))
 TGCALLS_MJPEG_HEIGHT = max(0, int(os.getenv("TGCALLS_MJPEG_HEIGHT", "720") or "720"))
+TGCALLS_THUMB_MJPEG_FPS = max(1, min(15, int(os.getenv("TGCALLS_THUMB_MJPEG_FPS", "12") or "12")))
+TGCALLS_THUMB_MJPEG_QUALITY = max(25, min(85, int(os.getenv("TGCALLS_THUMB_MJPEG_QUALITY", "55") or "55")))
+TGCALLS_THUMB_MJPEG_WIDTH = max(96, min(640, int(os.getenv("TGCALLS_THUMB_MJPEG_WIDTH", "320") or "320")))
+TGCALLS_THUMB_MJPEG_HEIGHT = max(54, min(360, int(os.getenv("TGCALLS_THUMB_MJPEG_HEIGHT", "180") or "180")))
 TGCALLS_MJPEG_KEEPALIVE_SEC = max(1.0, min(15.0, float(os.getenv("TGCALLS_MJPEG_KEEPALIVE_SEC", "2.5") or "2.5")))
+TGCALLS_MJPEG_MAX_CLIENTS = max(1, min(48, int(os.getenv("TGCALLS_MJPEG_MAX_CLIENTS", "24") or "24")))
+TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC = max(1, min(12, int(os.getenv("TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC", "6") or "6")))
+TGCALLS_MJPEG_MAX_STREAM_SEC = max(10.0, min(600.0, float(os.getenv("TGCALLS_MJPEG_MAX_STREAM_SEC", "90") or "90")))
+TGCALLS_MJPEG_ENCODE_WORKERS = max(1, min(4, int(os.getenv("TGCALLS_MJPEG_ENCODE_WORKERS", "2") or "2")))
 MARKET_PRICE_CACHE_SEC = max(5.0, min(120.0, float(os.getenv("MARKET_PRICE_CACHE_SEC", "30") or "30")))
 MARKET_PRICE_SYMBOLS = [
     ("BTC-USD", "BTC"),
@@ -149,15 +160,17 @@ stream_channel_error = ""
 stream_channel_supported = False
 stream_channel_reason = "not_checked"
 tgcalls_frame_state: dict[int, dict] = {}
-tgcalls_jpeg_cache: dict[int, dict] = {}
-tgcalls_jpeg_locks: dict[int, asyncio.Lock] = {}
+tgcalls_jpeg_cache: dict[tuple[int, str], dict] = {}
+tgcalls_jpeg_locks: dict[tuple[int, str], asyncio.Lock] = {}
 market_prices_cache: dict = {"updated_at": 0.0, "assets": []}
 youtube_search_cache: dict[str, dict] = {}
 tgcalls_mjpeg_active_clients = 0
+tgcalls_mjpeg_active_by_ssrc: dict[int, int] = {}
 tgcalls_mjpeg_total_clients = 0
 tgcalls_mjpeg_encoded_frames = 0
 tgcalls_mjpeg_last_encode_ms = 0.0
 tgcalls_mjpeg_max_encode_ms = 0.0
+tgcalls_mjpeg_shutdown_requested = False
 tgcalls_joined_chat_id = 0
 tgcalls_receiver_app = None
 tgcalls_receiver_client = None
@@ -173,6 +186,7 @@ tgcalls_receiver_status: dict = {
     "reason": "not_started",
     "updated_at": 0.0,
 }
+tgcalls_encode_executor = ThreadPoolExecutor(max_workers=TGCALLS_MJPEG_ENCODE_WORKERS, thread_name_prefix="tgcalls-jpeg")
 
 
 def parse_args() -> argparse.Namespace:
@@ -204,6 +218,10 @@ def clean_env_int_list(*names: str) -> list[int]:
                 out.append(number)
                 seen.add(number)
     return out
+
+
+def videochat_chat_id_candidates() -> list[int]:
+    return clean_env_int_list("TD_CHAT_ID", "TGCALLS_CHAT_IDS", "CHAT_ID", "VIDEOCHAT_LEVEL_CHAT_ID")
 
 
 def tgcalls_session_path() -> Path:
@@ -302,6 +320,18 @@ def diagnostic_log(event: str, **fields) -> None:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     except Exception:
         pass
+
+
+def compact_log_value(value, limit: int = 500):
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [compact_log_value(item, limit) for item in value[:20]]
+    if isinstance(value, dict):
+        return {str(key)[:80]: compact_log_value(item, limit) for key, item in list(value.items())[:40]}
+    return str(value)[:limit]
 
 
 async def diagnostic_watchdog() -> None:
@@ -864,10 +894,52 @@ async def get_full_chat_for_call(client, entity):
     raise RuntimeError(f"Unsupported Telegram entity type for videochat: {type(entity).__name__}")
 
 
+async def resolve_call_from_entity(client, entity, source_label: str = ""):
+    full, call_source = await get_full_chat_for_call(client, entity)
+    call = getattr(full.full_chat, "call", None)
+    if call is None:
+        suffix = f" ({source_label})" if source_label else ""
+        print(f"[videochat] no active call/livestream in {call_source}{suffix}", flush=True)
+        return None
+    print(
+        f"[videochat] call found: id={getattr(call, 'id', None)} "
+        f"access_hash={'yes' if getattr(call, 'access_hash', None) else 'no'} "
+        f"source={source_label or call_source}",
+        flush=True,
+    )
+    return call
+
+
+async def resolve_call_from_chat_ids(client):
+    candidates = videochat_chat_id_candidates()
+    if not candidates:
+        return None
+    for idx, chat_id in enumerate(candidates, 1):
+        try:
+            entity = await client.get_entity(chat_id)
+        except Exception as exc:
+            print(
+                f"[videochat] chat id candidate #{idx} resolve failed: "
+                f"{exc.__class__.__name__}",
+                flush=True,
+            )
+            continue
+        call = await resolve_call_from_entity(client, entity, f"chat_id_candidate_{idx}")
+        if call is not None:
+            return call
+    return None
+
+
 async def resolve_call(client, link: str):
     global invite_flood_wait_until, resolved_videochat_entity
     from telethon.errors import FloodWaitError, UserAlreadyParticipantError
     from telethon.tl import functions
+
+    call = await resolve_call_from_chat_ids(client)
+    if call is not None:
+        return call
+    if not link:
+        return None
 
     invite_hash = link_to_invite_hash(link)
     if invite_hash:
@@ -911,17 +983,7 @@ async def resolve_call(client, link: str):
             entity = await client.get_entity(username)
             resolved_videochat_entity = entity
 
-    full, call_source = await get_full_chat_for_call(client, entity)
-    call = getattr(full.full_chat, "call", None)
-    if call is None:
-        print(f"[videochat] no active call/livestream in {call_source}", flush=True)
-        return None
-    print(
-        f"[videochat] call found: id={getattr(call, 'id', None)} "
-        f"access_hash={'yes' if getattr(call, 'access_hash', None) else 'no'}",
-        flush=True,
-    )
-    return call
+    return await resolve_call_from_entity(client, entity, "TD_VIDEOCHAT_LINK")
 
 
 async def collect_participants(client, call, limit: int = 100) -> list[dict]:
@@ -1112,12 +1174,13 @@ def attach_tgcalls_streams(rows: list[dict]) -> None:
                 "format": frame.get("format") or "yuv420p",
                 "url": f"/api/videochat/tgcalls/frame/{int(source)}.json",
                 "mjpeg_url": f"/api/videochat/tgcalls/mjpeg/{int(source)}",
+                "thumb_mjpeg_url": f"/api/videochat/tgcalls/mjpeg-thumb/{int(source)}",
                 "updated_at": frame.get("updated_at", 0),
             }
             break
 
 
-def encode_tgcalls_frame_jpeg(frame: dict) -> bytes:
+def encode_tgcalls_frame_jpeg(frame: dict, target_w: int, target_h: int, quality: int) -> bytes:
     import cv2
     import numpy as np
 
@@ -1132,8 +1195,6 @@ def encode_tgcalls_frame_jpeg(frame: dict) -> bytes:
         bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
     else:
         bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-    target_w = TGCALLS_MJPEG_WIDTH
-    target_h = TGCALLS_MJPEG_HEIGHT
     if target_w > 0 and target_h > 0 and (width != target_w or height != target_h):
         scale = min(target_w / width, target_h / height)
         resized_w = max(1, int(round(width * scale)))
@@ -1144,29 +1205,75 @@ def encode_tgcalls_frame_jpeg(frame: dict) -> bytes:
         y = (target_h - resized_h) // 2
         canvas[y:y + resized_h, x:x + resized_w] = resized
         bgr = canvas
-    ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), TGCALLS_MJPEG_QUALITY])
+    ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
     return encoded.tobytes() if ok else b""
 
 
-async def get_cached_tgcalls_jpeg(ssrc: int, frame: dict) -> tuple[int, bytes]:
+def mjpeg_int_query(request: Request, name: str, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(str(request.query_params.get(name, default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def tgcalls_mjpeg_profile(request: Request, variant: str = "main") -> dict:
+    if variant == "thumb":
+        default_w = TGCALLS_THUMB_MJPEG_WIDTH
+        default_h = TGCALLS_THUMB_MJPEG_HEIGHT
+        default_quality = TGCALLS_THUMB_MJPEG_QUALITY
+        default_fps = TGCALLS_THUMB_MJPEG_FPS
+        variant = "thumb"
+    else:
+        default_w = TGCALLS_MJPEG_WIDTH
+        default_h = TGCALLS_MJPEG_HEIGHT
+        default_quality = TGCALLS_MJPEG_QUALITY
+        default_fps = TGCALLS_MJPEG_FPS
+        variant = "main"
+    target_w = mjpeg_int_query(request, "w", default_w, 96 if variant == "thumb" else 160, 1280)
+    target_h = mjpeg_int_query(request, "h", default_h, 54 if variant == "thumb" else 90, 720)
+    quality = mjpeg_int_query(request, "q", default_quality, 25, 95)
+    fps_max = 15 if variant == "thumb" else 30
+    fps = mjpeg_int_query(request, "fps", default_fps, 1, fps_max)
+    cache_variant = f"{variant}:{target_w}x{target_h}:q{quality}"
+    return {
+        "variant": variant,
+        "cache_variant": cache_variant,
+        "target_w": target_w,
+        "target_h": target_h,
+        "quality": quality,
+        "fps": fps,
+    }
+
+
+async def get_cached_tgcalls_jpeg(ssrc: int, frame: dict, profile: dict) -> tuple[int, bytes]:
     global tgcalls_mjpeg_encoded_frames, tgcalls_mjpeg_last_encode_ms, tgcalls_mjpeg_max_encode_ms
     seq = int(frame.get("seq") or 0)
-    cached = tgcalls_jpeg_cache.get(ssrc)
+    cache_key = (int(ssrc), str(profile.get("cache_variant") or profile.get("variant") or "main"))
+    cached = tgcalls_jpeg_cache.get(cache_key)
     if cached and int(cached.get("seq") or 0) == seq:
         return seq, bytes(cached.get("jpeg") or b"")
-    lock = tgcalls_jpeg_locks.setdefault(ssrc, asyncio.Lock())
+    lock = tgcalls_jpeg_locks.setdefault(cache_key, asyncio.Lock())
     async with lock:
-        cached = tgcalls_jpeg_cache.get(ssrc)
+        cached = tgcalls_jpeg_cache.get(cache_key)
         if cached and int(cached.get("seq") or 0) == seq:
             return seq, bytes(cached.get("jpeg") or b"")
         started = time.perf_counter()
-        jpeg = await asyncio.to_thread(encode_tgcalls_frame_jpeg, dict(frame))
+        loop = asyncio.get_running_loop()
+        jpeg = await loop.run_in_executor(
+            tgcalls_encode_executor,
+            encode_tgcalls_frame_jpeg,
+            dict(frame),
+            int(profile.get("target_w") or 0),
+            int(profile.get("target_h") or 0),
+            int(profile.get("quality") or TGCALLS_MJPEG_QUALITY),
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000
         tgcalls_mjpeg_last_encode_ms = elapsed_ms
         tgcalls_mjpeg_max_encode_ms = max(tgcalls_mjpeg_max_encode_ms, elapsed_ms)
         if jpeg:
             tgcalls_mjpeg_encoded_frames += 1
-            tgcalls_jpeg_cache[ssrc] = {
+            tgcalls_jpeg_cache[cache_key] = {
                 "seq": seq,
                 "jpeg": jpeg,
                 "updated_at": time.time(),
@@ -1247,9 +1354,47 @@ async def run_tgcalls_receiver() -> None:
     session_path.parent.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(session_path), int(TD_API_ID), TD_API_HASH)
     tgcalls_receiver_client = client
-    await client.connect()
+    try:
+        await client.connect()
+    except sqlite3.OperationalError as exc:
+        message = str(exc)
+        reason = "session_database_locked" if "database is locked" in message.lower() else f"sqlite:{message}"
+        tgcalls_receiver_status = {
+            "enabled": True,
+            "running": False,
+            "joined": False,
+            "reason": reason,
+            "session": str(session_path),
+            "updated_at": time.time(),
+        }
+        diagnostic_log("tgcalls_connect_failed", reason=reason, session=str(session_path))
+        print(
+            "[videochat:tgcalls] receiver session database is locked. "
+            "Stop other probes/apps using the same TGCALLS_SESSION, then start again.",
+            flush=True,
+        )
+        with suppress(Exception):
+            await client.disconnect()
+        tgcalls_receiver_client = None
+        return
+    except Exception as exc:
+        tgcalls_receiver_status = {
+            "enabled": True,
+            "running": False,
+            "joined": False,
+            "reason": f"connect_failed:{exc.__class__.__name__}",
+            "session": str(session_path),
+            "updated_at": time.time(),
+        }
+        diagnostic_log("tgcalls_connect_failed", reason=exc.__class__.__name__, session=str(session_path))
+        print(f"[videochat:tgcalls] receiver connect failed: {exc}", flush=True)
+        with suppress(Exception):
+            await client.disconnect()
+        tgcalls_receiver_client = None
+        return
     if not await client.is_user_authorized():
         await client.disconnect()
+        tgcalls_receiver_client = None
         tgcalls_receiver_status = {
             "enabled": True,
             "running": False,
@@ -1306,7 +1451,23 @@ async def run_tgcalls_receiver() -> None:
             await set_videochat_snapshot(videochat_state.get("participants") or [], source="tgcalls_frame", notify_levels=False)
     tgcalls_frame_handler_func = on_tgcalls_frame
 
-    await app.start()
+    try:
+        await app.start()
+    except Exception as exc:
+        tgcalls_receiver_status = {
+            "enabled": True,
+            "running": False,
+            "joined": False,
+            "reason": f"start_failed:{exc.__class__.__name__}",
+            "updated_at": time.time(),
+        }
+        diagnostic_log("tgcalls_start_failed", reason=exc.__class__.__name__, message=str(exc))
+        print(f"[videochat:tgcalls] receiver start failed: {exc}", flush=True)
+        await cleanup_tgcalls_receiver(app, client, 0)
+        tgcalls_receiver_app = None
+        tgcalls_receiver_client = None
+        tgcalls_frame_handler_func = None
+        return
     tgcalls_receiver_status = {
         "enabled": True,
         "running": True,
@@ -1373,8 +1534,11 @@ async def run_tgcalls_receiver() -> None:
 
 async def run_telethon_watcher() -> None:
     global telethon_client, videochat_call, stream_channel_supported, stream_channel_reason, tgcalls_receiver_task
-    if not VIDEOCHAT_WATCH_ENABLED or not VIDEOCHAT_LINK:
-        print("[videochat] watcher disabled or TD_VIDEOCHAT_LINK empty", flush=True)
+    if not VIDEOCHAT_WATCH_ENABLED:
+        print("[videochat] watcher disabled", flush=True)
+        return
+    if not VIDEOCHAT_LINK and not videochat_chat_id_candidates():
+        print("[videochat] watcher disabled; TD_VIDEOCHAT_LINK and TD_CHAT_ID are empty", flush=True)
         return
     if not TD_API_ID or not TD_API_HASH:
         print("[videochat] TD_API_ID/TD_API_HASH missing; watcher disabled", flush=True)
@@ -1467,6 +1631,24 @@ async def start_tgcalls_receiver(reason: str = "api") -> dict:
         "updated_at": time.time(),
     }
     tgcalls_receiver_task = asyncio.create_task(run_tgcalls_receiver(), name="videochat-tgcalls-receiver")
+    def _receiver_done(task: asyncio.Task) -> None:
+        global tgcalls_receiver_status
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            tgcalls_receiver_status = {
+                "enabled": True,
+                "running": False,
+                "joined": False,
+                "reason": f"task_failed:{exc.__class__.__name__}",
+                "updated_at": time.time(),
+            }
+            diagnostic_log("tgcalls_task_failed", reason=exc.__class__.__name__, message=str(exc))
+            print(f"[videochat:tgcalls] receiver task failed: {exc}", flush=True)
+
+    tgcalls_receiver_task.add_done_callback(_receiver_done)
     await asyncio.sleep(0)
     return tgcalls_receiver_status
 
@@ -1517,6 +1699,8 @@ async def reconcile_tgcalls_auto_join(reason: str = "settings", *, subaccount_pr
 async def lifespan(app: FastAPI):
     global watcher_task, tgcalls_receiver_task, diagnostic_task, level_store, level_store_mtime, overlay_settings_state
     global tgcalls_receiver_app, tgcalls_receiver_client, tgcalls_frame_handler_func, tgcalls_joined_chat_id
+    global tgcalls_mjpeg_shutdown_requested
+    tgcalls_mjpeg_shutdown_requested = False
     AVATARS_DIR.mkdir(parents=True, exist_ok=True)
     level_store = load_level_store()
     overlay_settings_state = load_overlay_settings_state()
@@ -1532,6 +1716,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         force_exit = False
+        tgcalls_mjpeg_shutdown_requested = True
         diagnostic_log("shutdown_begin")
         if diagnostic_task is not None:
             diagnostic_task.cancel()
@@ -1563,6 +1748,8 @@ async def lifespan(app: FastAPI):
         tgcalls_receiver_client = None
         tgcalls_frame_handler_func = None
         tgcalls_joined_chat_id = 0
+        with suppress(Exception):
+            tgcalls_encode_executor.shutdown(wait=False, cancel_futures=True)
         if force_exit and VIDEOCHAT_FORCE_EXIT_ON_SHUTDOWN:
             print("[videochat] forcing process exit after shutdown timeout", flush=True)
             os._exit(0)
@@ -1573,26 +1760,34 @@ _INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace(
     "{{CB}}", CACHE_BUSTER
 )
 
+
+class NoStoreStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
+class QuietStreamingResponse(StreamingResponse):
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        except asyncio.CancelledError:
+            return
+
+
 app = FastAPI(lifespan=lifespan)
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 STICKERS_DIR.mkdir(parents=True, exist_ok=True)
 ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-app.mount("/shared", StaticFiles(directory=str(SHARED_STATIC_DIR)), name="shared")
+app.mount("/static", NoStoreStaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/shared", NoStoreStaticFiles(directory=str(SHARED_STATIC_DIR)), name="shared")
 app.mount("/avatars", StaticFiles(directory=str(AVATARS_DIR)), name="avatars")
 app.mount("/photos", StaticFiles(directory=str(PHOTOS_DIR)), name="photos")
 app.mount("/stickers", StaticFiles(directory=str(STICKERS_DIR)), name="stickers")
 app.mount("/animations", StaticFiles(directory=str(ANIMATIONS_DIR)), name="animations")
-
-
-@app.middleware("http")
-async def no_store_development_static(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith(("/static/", "/shared/")):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2193,6 +2388,10 @@ async def get_videochat_streams(request: Request):
                 }
                 for key, value in sorted(tgcalls_frame_state.items())
             ],
+            "mjpeg_active": tgcalls_mjpeg_active_clients,
+            "mjpeg_active_by_ssrc": dict(tgcalls_mjpeg_active_by_ssrc),
+            "mjpeg_max_clients": TGCALLS_MJPEG_MAX_CLIENTS,
+            "mjpeg_max_clients_per_ssrc": TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC,
         },
     }
 
@@ -2208,6 +2407,10 @@ async def get_tgcalls_status(request: Request):
         "subaccount_present": videochat_state_has_subaccount(),
         "login_command": tgcalls_receiver_status.get("login_command") or tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
+        "mjpeg_active": tgcalls_mjpeg_active_clients,
+        "mjpeg_active_by_ssrc": dict(tgcalls_mjpeg_active_by_ssrc),
+        "mjpeg_max_clients": TGCALLS_MJPEG_MAX_CLIENTS,
+        "mjpeg_max_clients_per_ssrc": TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC,
     }
 
 
@@ -2223,6 +2426,8 @@ async def post_tgcalls_start(request: Request):
         "subaccount_present": videochat_state_has_subaccount(),
         "login_command": status.get("login_command") or tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
+        "mjpeg_active": tgcalls_mjpeg_active_clients,
+        "mjpeg_active_by_ssrc": dict(tgcalls_mjpeg_active_by_ssrc),
     }
 
 
@@ -2238,25 +2443,42 @@ async def post_tgcalls_stop(request: Request):
         "subaccount_present": videochat_state_has_subaccount(),
         "login_command": tgcalls_login_command(),
         "sources": len(tgcalls_frame_state),
+        "mjpeg_active": tgcalls_mjpeg_active_clients,
+        "mjpeg_active_by_ssrc": dict(tgcalls_mjpeg_active_by_ssrc),
     }
 
 
-async def mjpeg_frame_generator(ssrc: int, request: Request):
+async def mjpeg_frame_generator(ssrc: int, request: Request, variant: str = "main"):
     global tgcalls_mjpeg_active_clients, tgcalls_mjpeg_total_clients
     boundary = b"--frame\r\n"
-    delay = 1.0 / max(1, TGCALLS_MJPEG_FPS)
+    profile = tgcalls_mjpeg_profile(request, variant)
+    variant = str(profile.get("variant") or "main")
+    fps = int(profile.get("fps") or TGCALLS_MJPEG_FPS)
+    delay = 1.0 / max(1, fps)
     last_seq = -1
     last_sent_at = 0.0
+    opened_at = time.monotonic()
     tgcalls_mjpeg_active_clients += 1
+    tgcalls_mjpeg_active_by_ssrc[int(ssrc)] = tgcalls_mjpeg_active_by_ssrc.get(int(ssrc), 0) + 1
     tgcalls_mjpeg_total_clients += 1
     diagnostic_log(
         "mjpeg_open",
         ssrc=int(ssrc),
+        variant=variant,
+        profile=profile.get("cache_variant"),
+        fps=fps,
         active=tgcalls_mjpeg_active_clients,
+        active_ssrc=tgcalls_mjpeg_active_by_ssrc.get(int(ssrc), 0),
         total=tgcalls_mjpeg_total_clients,
     )
     try:
         while True:
+            if tgcalls_mjpeg_shutdown_requested:
+                diagnostic_log("mjpeg_shutdown", ssrc=int(ssrc), variant=variant)
+                break
+            if time.monotonic() - opened_at >= TGCALLS_MJPEG_MAX_STREAM_SEC:
+                diagnostic_log("mjpeg_rotate", ssrc=int(ssrc), variant=variant, age_sec=round(time.monotonic() - opened_at, 1))
+                break
             if await request.is_disconnected():
                 break
             frame = tgcalls_frame_state.get(int(ssrc))
@@ -2269,7 +2491,7 @@ async def mjpeg_frame_generator(ssrc: int, request: Request):
                 await asyncio.sleep(delay)
                 continue
             try:
-                last_seq, jpeg = await get_cached_tgcalls_jpeg(int(ssrc), frame)
+                last_seq, jpeg = await get_cached_tgcalls_jpeg(int(ssrc), frame, profile)
             except Exception as exc:
                 print(f"[videochat:tgcalls] mjpeg encode failed: {exc}", flush=True)
                 await asyncio.sleep(delay)
@@ -2289,22 +2511,61 @@ async def mjpeg_frame_generator(ssrc: int, request: Request):
             await asyncio.sleep(delay)
     finally:
         tgcalls_mjpeg_active_clients = max(0, tgcalls_mjpeg_active_clients - 1)
-        diagnostic_log("mjpeg_close", ssrc=int(ssrc), active=tgcalls_mjpeg_active_clients)
+        current_ssrc = max(0, tgcalls_mjpeg_active_by_ssrc.get(int(ssrc), 0) - 1)
+        if current_ssrc:
+            tgcalls_mjpeg_active_by_ssrc[int(ssrc)] = current_ssrc
+        else:
+            tgcalls_mjpeg_active_by_ssrc.pop(int(ssrc), None)
+        diagnostic_log(
+            "mjpeg_close",
+            ssrc=int(ssrc),
+            variant=variant,
+            active=tgcalls_mjpeg_active_clients,
+            active_ssrc=current_ssrc,
+        )
 
 
-@app.get("/api/videochat/tgcalls/mjpeg/{ssrc}")
-async def get_tgcalls_mjpeg(ssrc: int, request: Request):
+def assert_tgcalls_mjpeg_slot(ssrc: int) -> None:
+    if tgcalls_mjpeg_active_clients >= TGCALLS_MJPEG_MAX_CLIENTS:
+        diagnostic_log("mjpeg_reject_total", ssrc=int(ssrc), active=tgcalls_mjpeg_active_clients)
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many mjpeg clients: {tgcalls_mjpeg_active_clients}/{TGCALLS_MJPEG_MAX_CLIENTS}",
+            headers={"Retry-After": "3"},
+        )
+    active_ssrc = tgcalls_mjpeg_active_by_ssrc.get(int(ssrc), 0)
+    if active_ssrc >= TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC:
+        diagnostic_log("mjpeg_reject_ssrc", ssrc=int(ssrc), active_ssrc=active_ssrc)
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many mjpeg clients for source: {active_ssrc}/{TGCALLS_MJPEG_MAX_CLIENTS_PER_SSRC}",
+            headers={"Retry-After": "3"},
+        )
+
+
+def tgcalls_mjpeg_response(ssrc: int, request: Request, variant: str = "main") -> StreamingResponse:
     require_local_request(request)
     if int(ssrc) not in tgcalls_frame_state:
         raise HTTPException(status_code=404, detail="frame not available")
-    return StreamingResponse(
-        mjpeg_frame_generator(int(ssrc), request),
+    assert_tgcalls_mjpeg_slot(int(ssrc))
+    return QuietStreamingResponse(
+        mjpeg_frame_generator(int(ssrc), request, variant=variant),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
         },
     )
+
+
+@app.get("/api/videochat/tgcalls/mjpeg/{ssrc}")
+async def get_tgcalls_mjpeg(ssrc: int, request: Request):
+    return tgcalls_mjpeg_response(int(ssrc), request, variant="main")
+
+
+@app.get("/api/videochat/tgcalls/mjpeg-thumb/{ssrc}")
+async def get_tgcalls_mjpeg_thumb(ssrc: int, request: Request):
+    return tgcalls_mjpeg_response(int(ssrc), request, variant="thumb")
 
 
 @app.get("/api/videochat/tgcalls/frame/{ssrc}.json")
@@ -2421,6 +2682,20 @@ async def post_videochat_levels_reload(request: Request):
     }
 
 
+@app.post("/api/videochat/client-log")
+async def post_videochat_client_log(request: Request):
+    require_local_request(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid log payload")
+    event = str(payload.get("event") or "client").strip()[:80] or "client"
+    fields = compact_log_value(payload.get("fields") if isinstance(payload.get("fields"), dict) else {})
+    client_id = str(payload.get("client_id") or "")[:80]
+    diagnostic_log("client_log", client_id=client_id, client_event=event, fields=fields)
+    print(f"[videochat:client] {event} client={client_id} fields={json.dumps(fields, ensure_ascii=False)}", flush=True)
+    return {"ok": True}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -2459,4 +2734,11 @@ if __name__ == "__main__":
     print(f"[INFO] Videochat overlay: http://{WEB_HOST}:{WEB_PORT}/", flush=True)
     if VIDEOCHAT_LINK:
         print(f"[INFO] Videochat link: {VIDEOCHAT_LINK}", flush=True)
-    uvicorn.run(app, host=WEB_HOST, port=WEB_PORT, log_level="warning")
+    uvicorn.run(
+        app,
+        host=WEB_HOST,
+        port=WEB_PORT,
+        log_level="warning",
+        timeout_keep_alive=2,
+        timeout_graceful_shutdown=VIDEOCHAT_GRACEFUL_SHUTDOWN_SEC,
+    )

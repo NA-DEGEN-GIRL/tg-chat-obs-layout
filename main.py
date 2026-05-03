@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -32,12 +32,14 @@ from fastapi.staticfiles import StaticFiles
 from telebot.types import ChatPermissions, ReplyParameters
 
 import level_system as level_core
-from stt import STTManager
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 load_dotenv()
+
+# sounddevice/PortAudio must see audio env vars before import.
+from stt import STTManager
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
@@ -75,6 +77,8 @@ VIDEOCHAT_FIRE_USER_COOLDOWN_SEC = float(os.getenv("VIDEOCHAT_FIRE_USER_COOLDOWN
 VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC = float(os.getenv("VIDEOCHAT_FIRE_GLOBAL_COOLDOWN_SEC", "1") or "1")
 VIDEOCHAT_CHEER_DEFAULT_SEC = 5.0
 VIDEOCHAT_CHEER_MAX_SEC = 600.0
+DASARANG_CHICKEN_KEYWORD = "다사랑치킨"
+DASARANG_CHICKEN_BONUS_FIELD = "bonus_dasarang_chicken_at"
 VIDEOCHAT_BOT_NAMES = {
     x.strip().lower()
     for x in os.getenv("VIDEOCHAT_BOT_NAMES", "na_stream_bot").split(",")
@@ -108,6 +112,10 @@ TELEGRAM_USER_SEND_PANEL = os.getenv("TELEGRAM_USER_SEND_PANEL", "0").strip() in
 TELEGRAM_USER_SEND_FALLBACK_BOT = os.getenv("TELEGRAM_USER_SEND_FALLBACK_BOT", "0").strip() in {
     "1", "true", "True", "yes", "on"
 }
+TELEGRAM_USER_SEND_ASYNC = os.getenv("TELEGRAM_USER_SEND_ASYNC", "1").strip() not in {
+    "0", "false", "False", "no", "off"
+}
+TELEGRAM_USER_SEND_QUEUE_MAX = max(1, min(500, int(os.getenv("TELEGRAM_USER_SEND_QUEUE_MAX", "100") or "100")))
 TELEGRAM_USER_SEND_MAX_CHARS = int(os.getenv("TELEGRAM_USER_SEND_MAX_CHARS", "1000") or "1000")
 TELEGRAM_USER_SEND_MAX_PHOTO_MB = float(os.getenv("TELEGRAM_USER_SEND_MAX_PHOTO_MB", "8") or "8")
 TELEGRAM_USER_SEND_MAX_MEDIA_MB = float(os.getenv("TELEGRAM_USER_SEND_MAX_MEDIA_MB", "50") or "50")
@@ -191,6 +199,9 @@ PERMS_STREAM_OFF = ChatPermissions(
 clients: set[WebSocket] = set()
 clients_lock = asyncio.Lock()
 main_loop: asyncio.AbstractEventLoop | None = None
+send_queue: asyncio.Queue | None = None
+send_worker_task: asyncio.Task | None = None
+send_queue_started_at = 0.0
 
 stt_manager: STTManager | None = None
 bot_user_id: int | None = None
@@ -198,6 +209,8 @@ bot_display_name: str = "Bot"
 bot_username: str = ""
 stt_user_client = None
 telegram_user_sender_id: str = ""
+telegram_user_sender_name: str = ""
+telegram_user_sender_username: str = ""
 telegram_delete_listener_registered = False
 telegram_message_listener_registered = False
 telegram_peer_cache: dict[int, Any] = {}
@@ -206,6 +219,9 @@ telegram_peer_cache: dict[int, Any] = {}
 active_thread: tuple[int, int] | None = None
 # STT 출력 목적지 목록. 각 항목: {"chat_id": int, "thread_id": int | None}
 tts_destinations: list[dict] = []
+remote_stt_clients: set[str] = set()
+remote_stt_destinations: list[dict] = []
+remote_stt_started_manager = False
 
 _colors_lock = threading.Lock()
 _user_colors: dict[str, str] = {}
@@ -231,6 +247,7 @@ _custom_emoji_meta_cache_lock = threading.Lock()
 _custom_emoji_meta_cache: dict[str, dict[str, Any]] = {}
 _send_dedupe_lock = threading.Lock()
 _send_dedupe: dict[tuple[str, str, str], dict[str, float | int]] = {}
+_send_comment_echo_suppress: dict[tuple[str, str, str], dict[str, float | int]] = {}
 SEND_DEDUPE_TTL_SEC = 8.0
 _seen_message_lock = threading.Lock()
 _seen_message_ids: dict[tuple[str, int], float] = {}
@@ -993,6 +1010,18 @@ def bot_speaker_payload() -> dict:
     }
 
 
+def main_account_speaker_payload() -> dict:
+    return {
+        "name": telegram_user_sender_name or VIDEOCHAT_HOST_NAME or bot_display_name,
+        "speaker_id": telegram_user_sender_id or (str(VIDEOCHAT_HOST_USER_ID) if VIDEOCHAT_HOST_USER_ID else ""),
+        "username": telegram_user_sender_username or VIDEOCHAT_HOST_USERNAME,
+        "is_host": True,
+        "is_bot": False,
+        "role": "king",
+        "roles": ["king"],
+    }
+
+
 async def broadcast(payload: dict) -> None:
     msg = json.dumps(payload, ensure_ascii=False)
     async with clients_lock:
@@ -1034,6 +1063,68 @@ def _matches_active_thread(message) -> bool:
         message.chat.id == at[0]
         and getattr(message, "message_thread_id", None) == at[1]
     )
+
+
+COMMENT_THREAD_PREFIX = "(댓) "
+
+
+def shifted_text_entities_payload(rows: list[dict], offset_units: int) -> list[dict]:
+    shifted = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["offset"] = int(item.get("offset", 0)) + offset_units
+        except (TypeError, ValueError):
+            item["offset"] = offset_units
+        shifted.append(item)
+    return shifted
+
+
+def comment_thread_text_payload(text: str, entities: list[dict]) -> tuple[str, list[dict]]:
+    if not text:
+        return text, entities
+    return (
+        f"{COMMENT_THREAD_PREFIX}{text}",
+        shifted_text_entities_payload(entities, utf16_units(COMMENT_THREAD_PREFIX)),
+    )
+
+
+def comment_thread_quote_text(text: str) -> str:
+    text = str(text or "").replace("\r", "").strip()
+    if not text:
+        return ""
+    if text.startswith(COMMENT_THREAD_PREFIX):
+        return text[:160]
+    return f"{COMMENT_THREAD_PREFIX}{text}"[:160]
+
+
+def comment_thread_reply_summary_payload(message) -> dict | None:
+    quote_text = comment_thread_quote_text(message_quote_text(message))
+    if not quote_text:
+        return None
+    reply = getattr(message, "reply_to_message", None)
+    profile = message_profile(reply) if reply is not None else {}
+    payload = {
+        "name": profile.get("name") or "Unknown",
+        "text": quote_text,
+        "quote_text": quote_text,
+    }
+    if reply is not None:
+        payload["message"] = message_ref_payload(reply)
+    return payload
+
+
+def telethon_matches_active_thread(event, message=None) -> bool:
+    at = active_thread
+    if at is None:
+        return False
+    try:
+        chat_id_int = int(getattr(event, "chat_id", None))
+    except (TypeError, ValueError):
+        return False
+    if chat_id_int != at[0]:
+        return False
+    return telethon_thread_id(message if message is not None else getattr(event, "message", None)) == at[1]
 
 
 def _is_overlay_source(message) -> bool:
@@ -1086,6 +1177,76 @@ def mark_overlay_send_for_dedupe(kind: str, marker: str, count: int) -> None:
         _send_dedupe[key] = {"remaining": count - 1, "expires": now + SEND_DEDUPE_TTL_SEC}
 
 
+def mark_overlay_echo_suppression(kind: str, marker: str, count: int) -> None:
+    marker = str(marker or "")
+    if not marker or count <= 0:
+        return
+    sender_ids = local_overlay_sender_ids()
+    if not sender_ids:
+        return
+    now = time.monotonic()
+    with _send_dedupe_lock:
+        for sender_id in sender_ids:
+            _send_dedupe[(sender_id, kind, marker)] = {
+                "remaining": count,
+                "expires": now + SEND_DEDUPE_TTL_SEC,
+            }
+
+
+def local_overlay_sender_ids() -> list[str]:
+    rows = [
+        telegram_user_sender_id,
+        str(VIDEOCHAT_HOST_USER_ID or ""),
+        str(bot_user_id or ""),
+    ]
+    result = []
+    for value in rows:
+        value = str(value or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def mark_comment_thread_echo_suppression(kind: str, marker: str, count: int) -> None:
+    marker = str(marker or "")
+    if not marker or count <= 0:
+        return
+    sender_ids = local_overlay_sender_ids()
+    if not sender_ids:
+        return
+    now = time.monotonic()
+    with _send_dedupe_lock:
+        for sender_id in sender_ids:
+            _send_comment_echo_suppress[(sender_id, kind, marker)] = {
+                "remaining": count,
+                "expires": now + SEND_DEDUPE_TTL_SEC,
+            }
+
+
+def should_skip_comment_thread_echo(profile: dict, kind: str, marker: str) -> bool:
+    key = (str(profile.get("speaker_id") or ""), kind, str(marker or ""))
+    if not key[0] or not key[2]:
+        return False
+    now = time.monotonic()
+    with _send_dedupe_lock:
+        expired = [k for k, v in _send_comment_echo_suppress.items() if float(v.get("expires", 0)) <= now]
+        for k in expired:
+            _send_comment_echo_suppress.pop(k, None)
+        state = _send_comment_echo_suppress.get(key)
+        if not state:
+            return False
+        remaining = int(state.get("remaining", 0))
+        if remaining <= 0:
+            _send_comment_echo_suppress.pop(key, None)
+            return False
+        remaining -= 1
+        if remaining <= 0:
+            _send_comment_echo_suppress.pop(key, None)
+        else:
+            state["remaining"] = remaining
+        return True
+
+
 def should_skip_overlay_duplicate(profile: dict, kind: str, marker: str) -> bool:
     key = (str(profile.get("speaker_id") or ""), kind, marker)
     if not key[0]:
@@ -1119,15 +1280,21 @@ def message_overlay_payload(message, text: str | None = None) -> dict | None:
     body, stt_label = split_stt_label_from_text(body, profile)
     if not body:
         return None
+    comment_thread = _matches_active_thread(message)
+    if comment_thread and should_skip_comment_thread_echo(profile, "text", body):
+        return None
     cache_custom_emoji_entities(getattr(message, "entities", None), body)
+    entities = text_entities_payload(getattr(message, "entities", None), body)
+    if comment_thread:
+        body, entities = comment_thread_text_payload(body, entities)
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     payload = {
         "type": "text",
         "name": name,
         "text": body,
-        "entities": text_entities_payload(getattr(message, "entities", None), body),
+        "entities": entities,
         "message": message_ref_payload(message),
-        "reply": reply_summary_payload(message),
+        "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
         "color": color,
         "speaker_id": profile["speaker_id"],
         "username": profile["username"],
@@ -1185,16 +1352,18 @@ def overlay_payload_once(message, text: str | None = None, extra: dict | None = 
     return payload
 
 
-def emit_text_overlay(message, text: str | None = None, extra: dict | None = None) -> None:
+def emit_text_overlay(message, text: str | None = None, extra: dict | None = None) -> bool:
     payload = overlay_payload_once(message, text, extra)
     if payload is None:
-        return
+        return False
     schedule_overlay_broadcast(payload)
+    return True
 
 
-def reply_to_with_overlay(message, text: str):
+def reply_to_with_overlay(message, text: str, emit_overlay: bool = True):
     sent = bot.reply_to(message, text)
-    emit_text_overlay(sent, text)
+    if emit_overlay:
+        emit_text_overlay(sent, text)
     return sent
 
 
@@ -1202,7 +1371,7 @@ def send_message_with_overlay(chat_id: int, text: str, **kwargs):
     sent = bot.send_message(chat_id, text, **kwargs)
     payload = overlay_payload_once(sent, text)
     if payload is not None:
-        schedule_overlay_broadcast(payload, wait=True)
+        schedule_overlay_broadcast(payload, wait=False)
     return sent
 
 
@@ -1265,6 +1434,26 @@ def telethon_reply_summary(reply, source_msg=None) -> dict | None:
             "thread_id": getattr(reply, "reply_to_msg_id", None),
         },
     }
+
+
+def telethon_comment_thread_reply_summary(reply, source_msg=None) -> dict | None:
+    quote_text = comment_thread_quote_text(telethon_reply_quote_text(source_msg) if source_msg is not None else "")
+    if not quote_text:
+        return None
+    sender = getattr(reply, "sender", None) if reply is not None else None
+    profile = telethon_profile(sender) if sender is not None else {}
+    payload = {
+        "name": profile.get("name") or "Unknown",
+        "text": quote_text,
+        "quote_text": quote_text,
+    }
+    if reply is not None:
+        payload["message"] = {
+            "chat_id": str(getattr(reply, "chat_id", "") or ""),
+            "message_id": getattr(reply, "id", None),
+            "thread_id": getattr(reply, "reply_to_msg_id", None),
+        }
+    return payload
 
 
 def is_external_telethon_bot(sender) -> bool:
@@ -1356,12 +1545,18 @@ async def telethon_message_payload(event, sender=None) -> dict | None:
         sender = await event.get_sender()
     profile = enrich_profile_level(telethon_profile(sender))
     text, stt_label = split_stt_label_from_text(text, profile)
+    comment_thread = telethon_matches_active_thread(event, msg)
+    if comment_thread and should_skip_comment_thread_echo(profile, "text", text):
+        return None
     entities = text_entities_payload(getattr(msg, "entities", None), text)
     cache_custom_emoji_entities(getattr(msg, "entities", None), text)
+    if comment_thread:
+        text, entities = comment_thread_text_payload(text, entities)
     identity_id = int(profile["speaker_id"]) if str(profile["speaker_id"]).lstrip("-").isdigit() else 0
     reply = None
     try:
-        reply = await msg.get_reply_message()
+        if not comment_thread or telethon_reply_quote_text(msg):
+            reply = await msg.get_reply_message()
     except Exception:
         reply = None
     common = {
@@ -1372,7 +1567,7 @@ async def telethon_message_payload(event, sender=None) -> dict | None:
             "message_id": message_id,
             "thread_id": getattr(msg, "reply_to_msg_id", None),
         },
-        "reply": telethon_reply_summary(reply, msg),
+        "reply": telethon_comment_thread_reply_summary(reply, msg) if comment_thread else telethon_reply_summary(reply, msg),
         "color": color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0],
         "speaker_id": profile["speaker_id"],
         "username": profile["username"],
@@ -1528,6 +1723,7 @@ def split_stt_label_from_text(text: str, profile: dict | None = None) -> tuple[s
             profile.get("is_bot")
             or profile.get("is_host")
             or (bot_user_id is not None and str(profile.get("speaker_id") or "") == str(bot_user_id))
+            or (telegram_user_sender_id and str(profile.get("speaker_id") or "") == str(telegram_user_sender_id))
             or (VIDEOCHAT_HOST_USER_ID and str(profile.get("speaker_id") or "") == str(VIDEOCHAT_HOST_USER_ID))
         )
         if not is_stt_sender:
@@ -1550,9 +1746,23 @@ def stt_telegram_message(text: str) -> tuple[str, str | None]:
     )
 
 
+async def refresh_telegram_user_sender_profile(client) -> None:
+    global telegram_user_sender_id, telegram_user_sender_name, telegram_user_sender_username
+    if telegram_user_sender_id and telegram_user_sender_name:
+        return
+    try:
+        me = await client.get_me()
+        telegram_user_sender_id = str(getattr(me, "id", "") or "")
+        telegram_user_sender_name = telethon_display_name(me)
+        telegram_user_sender_username = (getattr(me, "username", None) or "").strip()
+    except Exception as exc:
+        print(f"[WARN] Telegram user profile lookup failed: {exc}", flush=True)
+
+
 async def ensure_telegram_user_client():
-    global stt_user_client, telegram_user_sender_id, telegram_delete_listener_registered, telegram_message_listener_registered
+    global stt_user_client, telegram_delete_listener_registered, telegram_message_listener_registered
     if stt_user_client is not None and stt_user_client.is_connected():
+        await refresh_telegram_user_sender_profile(stt_user_client)
         return stt_user_client
     if not TD_API_ID or not TD_API_HASH:
         raise RuntimeError("Telegram user send requires TD_API_ID and TD_API_HASH")
@@ -1580,12 +1790,7 @@ async def ensure_telegram_user_client():
                 raise
             password = getpass.getpass("Telegram 2FA password for STT sender: ")
             await stt_user_client.sign_in(password=password)
-    if not telegram_user_sender_id:
-        try:
-            me = await stt_user_client.get_me()
-            telegram_user_sender_id = str(getattr(me, "id", "") or "")
-        except Exception as exc:
-            print(f"[WARN] Telegram user id lookup failed: {exc}", flush=True)
+    await refresh_telegram_user_sender_profile(stt_user_client)
     if not telegram_delete_listener_registered:
         try:
             from telethon import events
@@ -1659,7 +1864,7 @@ async def telegram_peer_for_dest(client, chat_id: int):
     return peer
 
 
-async def send_stt_by_bot(dest: dict, text: str, emit_overlay: bool = True) -> None:
+async def send_stt_by_bot(dest: dict, text: str, emit_overlay: bool = True):
     message, parse_mode = stt_telegram_message(text)
     kwargs = {}
     if parse_mode:
@@ -1671,17 +1876,20 @@ async def send_stt_by_bot(dest: dict, text: str, emit_overlay: bool = True) -> N
         # forum 토픽 / 댓글창 양쪽 모두 정확히 들어감.
         kwargs["reply_to_message_id"] = dest["thread_id"]
         kwargs["allow_sending_without_reply"] = True
+        mark_comment_thread_echo_suppression("text", text, 1)
     sent = await asyncio.to_thread(bot.send_message, dest["chat_id"], message, **kwargs)
     seen = mark_message_seen_from_message(sent)
-    if emit_overlay and main_loop is not None and not seen:
+    emit_chat_overlay = emit_overlay and dest.get("thread_id") is None
+    if emit_chat_overlay and main_loop is not None and not seen:
         payload = message_overlay_payload(sent, text)
         if payload is not None:
             payload["stt_label"] = stt_label_payload()
             payload["videochat_alias"] = host_speaker_payload()
             await broadcast(payload)
+    return sent
 
 
-async def send_stt_by_user(dest: dict, text: str) -> None:
+async def send_stt_by_user(dest: dict, text: str):
     client = await ensure_telegram_user_client()
     message, parse_mode = stt_telegram_message(text)
     kwargs = {}
@@ -1689,19 +1897,42 @@ async def send_stt_by_user(dest: dict, text: str) -> None:
         kwargs["parse_mode"] = "html"
     if dest.get("thread_id") is not None:
         kwargs["reply_to"] = dest["thread_id"]
-    await client.send_message(dest["chat_id"], message, **kwargs)
+        mark_comment_thread_echo_suppression("text", text, 1)
+    return await client.send_message(dest["chat_id"], message, **kwargs)
 
 
-async def dispatch_stt_message(dest: dict, text: str, emit_overlay: bool = True) -> None:
+async def dispatch_stt_message(dest: dict, text: str, emit_overlay: bool = True):
     if STT_SEND_AS == "user":
         try:
-            await send_stt_by_user(dest, text)
-            return
+            return await send_stt_by_user(dest, text)
         except Exception as exc:
             print(f"[STT] user dispatch failed dest={dest}: {exc}", flush=True)
             if not STT_SEND_AS_USER_FALLBACK_BOT:
                 raise
-    await send_stt_by_bot(dest, text, emit_overlay=emit_overlay)
+    return await send_stt_by_bot(dest, text, emit_overlay=emit_overlay)
+
+
+def stt_remote_sample_rate() -> int:
+    provider = STT_PROVIDER.lower()
+    return 16000 if provider == "gemini" else 24000
+
+
+def add_remote_stt_destinations(targets: list[str] | None = None) -> list[dict]:
+    dests = overlay_send_destinations(targets or ["main"])
+    if not dests:
+        dests = overlay_send_destinations(["main"])
+    for dest in dests:
+        if dest not in tts_destinations:
+            tts_destinations.append(dest)
+            remote_stt_destinations.append(dest)
+    return dests
+
+
+def remove_remote_stt_destinations() -> None:
+    for dest in list(remote_stt_destinations):
+        with suppress(ValueError):
+            tts_destinations.remove(dest)
+    remote_stt_destinations.clear()
 
 
 def overlay_send_destinations(targets: list[str] | None = None) -> list[dict]:
@@ -1715,6 +1946,15 @@ def overlay_send_destinations(targets: list[str] | None = None) -> list[dict]:
             dest["target"] = "here"
             dests.append(dest)
     return dests
+
+
+def suppress_here_echo_count(dests: list[dict], reply_to: dict | None = None) -> int:
+    if reply_to:
+        return 0
+    has_main = any(dest.get("target") == "main" for dest in dests)
+    if not has_main:
+        return 0
+    return sum(1 for dest in dests if dest.get("target") == "here")
 
 
 def detect_image_mime(data: bytes) -> str | None:
@@ -1861,6 +2101,28 @@ def message_ref_payload(message) -> dict:
         "chat_id": str(getattr(getattr(message, "chat", None), "id", "")),
         "message_id": getattr(message, "message_id", None),
         "thread_id": getattr(message, "message_thread_id", None),
+    }
+
+
+def sent_message_ref_payload(message, dest: dict | None = None) -> dict | None:
+    if message is None:
+        return None
+    dest = dest or {}
+    chat_id = (
+        getattr(getattr(message, "chat", None), "id", None)
+        or getattr(message, "chat_id", None)
+        or dest.get("chat_id")
+    )
+    message_id = (
+        getattr(message, "message_id", None)
+        or getattr(message, "id", None)
+    )
+    if chat_id is None or message_id is None:
+        return None
+    return {
+        "chat_id": str(chat_id),
+        "message_id": message_id,
+        "thread_id": getattr(message, "message_thread_id", None) or dest.get("thread_id"),
     }
 
 
@@ -2359,12 +2621,19 @@ async def dispatch_overlay_user_message(
         print(f"[SEND] user client unavailable: {exc}", flush=True)
         if not TELEGRAM_USER_SEND_FALLBACK_BOT:
             return [{"dest": dest, "ok": False, "via": "user", "error": str(exc)} for dest in dests]
+    suppress_here_count = suppress_here_echo_count(dests, reply_to)
+    visible_echo_count = max(1, len(dests) - suppress_here_count)
     if text:
-        mark_overlay_send_for_dedupe("text", text, len(dests))
+        mark_overlay_send_for_dedupe("text", text, visible_echo_count)
+        mark_comment_thread_echo_suppression("text", text, suppress_here_count)
     if media:
-        mark_overlay_send_for_dedupe(media.get("kind", "media"), media["sha256"], len(dests))
+        media_kind = media.get("kind", "media")
+        mark_overlay_send_for_dedupe(media_kind, media["sha256"], visible_echo_count)
+        mark_comment_thread_echo_suppression(media_kind, media["sha256"], suppress_here_count)
     if sticker:
-        mark_overlay_send_for_dedupe("sticker", str(sticker.get("file_unique_id") or sticker.get("key") or ""), len(dests))
+        sticker_marker = str(sticker.get("file_unique_id") or sticker.get("key") or "")
+        mark_overlay_send_for_dedupe("sticker", sticker_marker, visible_echo_count)
+        mark_comment_thread_echo_suppression("sticker", sticker_marker, suppress_here_count)
     for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
@@ -2413,6 +2682,104 @@ async def dispatch_overlay_user_message(
     return results
 
 
+def send_job_summary(job: dict) -> dict:
+    return {
+        "job_id": job.get("job_id"),
+        "targets": len(job.get("targets") or []),
+        "has_text": bool(str(job.get("text") or "").strip()),
+        "text_len": len(str(job.get("text") or "")),
+        "has_media": bool(job.get("media")),
+        "has_sticker": bool(job.get("sticker")),
+        "has_custom_emoji": bool(job.get("custom_emoji")),
+        "reply": bool(job.get("reply_to")),
+    }
+
+
+async def run_send_worker() -> None:
+    global send_queue_started_at
+    send_queue_started_at = time.time()
+    print("[SEND] async send worker started", flush=True)
+    while True:
+        if send_queue is None:
+            await asyncio.sleep(0.25)
+            continue
+        job = await send_queue.get()
+        started = time.monotonic()
+        try:
+            results = await dispatch_overlay_user_message(
+                job["text"],
+                job["targets"],
+                job.get("media"),
+                job.get("reply_to"),
+                sticker=job.get("sticker"),
+                custom_emoji=job.get("custom_emoji"),
+                custom_entities=job.get("custom_entities"),
+            )
+            ok = [r for r in results if r.get("ok")]
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            if ok:
+                via = ",".join(sorted({str(r.get("via") or "?") for r in ok}))
+                print(
+                    f"[SEND] queued_ok job={job.get('job_id')} sent={len(ok)} via={via} "
+                    f"elapsed_ms={elapsed_ms} queue={send_queue.qsize()}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[SEND] queued_failed job={job.get('job_id')} elapsed_ms={elapsed_ms} "
+                    f"results={json.dumps(results, ensure_ascii=False)}",
+                    flush=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            print(f"[SEND] queued_exception job={job.get('job_id')} elapsed_ms={elapsed_ms} error={exc}", flush=True)
+        finally:
+            send_queue.task_done()
+
+
+def enqueue_overlay_send(
+    text: str,
+    targets: list[str],
+    media: dict | None = None,
+    reply_to: dict | None = None,
+    sticker: dict | None = None,
+    custom_emoji: dict | None = None,
+    custom_entities: list[dict] | None = None,
+) -> dict:
+    if send_queue is None:
+        raise HTTPException(status_code=503, detail="send queue not ready")
+    if send_queue.full():
+        raise HTTPException(status_code=429, detail="send queue is full")
+    job = {
+        "job_id": secrets.token_hex(6),
+        "created_at": time.time(),
+        "text": text,
+        "targets": targets,
+        "media": media,
+        "reply_to": reply_to,
+        "sticker": sticker,
+        "custom_emoji": custom_emoji,
+        "custom_entities": custom_entities,
+    }
+    send_queue.put_nowait(job)
+    summary = send_job_summary(job)
+    print(
+        f"[SEND] queued job={summary['job_id']} targets={summary['targets']} "
+        f"text_len={summary['text_len']} media={summary['has_media']} "
+        f"sticker={summary['has_sticker']} emoji={summary['has_custom_emoji']} "
+        f"queue={send_queue.qsize()}",
+        flush=True,
+    )
+    return {
+        "ok": True,
+        "queued": True,
+        "job_id": job["job_id"],
+        "queue_size": send_queue.qsize(),
+    }
+
+
 async def notify_owner_delete_failed(chat_id: int, message_id: int, error: str) -> None:
     if OWNER_ID == 0:
         return
@@ -2443,22 +2810,29 @@ async def delete_telegram_message(chat_id: int, message_id: int) -> dict:
 
 
 async def stt_on_text(text: str) -> None:
-    host = enrich_profile_level(host_speaker_payload())
-    if STT_SEND_AS == "bot":
-        profile = enrich_profile_level(bot_speaker_payload())
-    else:
-        profile = host
+    if not telegram_user_sender_name and TD_API_ID and TD_API_HASH:
+        with suppress(Exception):
+            await ensure_telegram_user_client()
+    profile = enrich_profile_level(main_account_speaker_payload())
     print(f"[STT] {profile['name']}: {text}", flush=True)
+    dests = list(tts_destinations)
+    show_main_overlay = any(dest.get("thread_id") is None for dest in dests)
+    show_here_overlay = bool(dests) and not show_main_overlay
 
     color_identity = profile.get("speaker_id") or VIDEOCHAT_HOST_USER_ID or bot_user_id or 0
     try:
         color_seed = int(str(color_identity).lstrip("-") or "0")
     except ValueError:
         color_seed = VIDEOCHAT_HOST_USER_ID or bot_user_id or 0
+    overlay_text = text
+    overlay_entities = []
+    if show_here_overlay:
+        overlay_text, overlay_entities = comment_thread_text_payload(text, [])
     payload = {
         "type": "text",
         "name": profile["name"],
-        "text": text,
+        "text": overlay_text,
+        "entities": overlay_entities,
         "color": color_for(color_seed),
         "speaker_id": profile["speaker_id"],
         "username": profile["username"],
@@ -2470,16 +2844,30 @@ async def stt_on_text(text: str) -> None:
         "level_label": profile["level_label"],
         "stt_label": stt_label_payload(),
     }
-    if STT_SEND_AS == "bot":
-        payload["videochat_alias"] = host_speaker_payload()
-    dests = list(tts_destinations)
+    main_echo_count = sum(1 for dest in dests if dest.get("thread_id") is None)
+    if show_main_overlay and main_echo_count:
+        mark_overlay_echo_suppression("text", text, main_echo_count)
+    sent_ok = False
+    first_sent_ref = None
+    main_sent_ref = None
     for i, dest in enumerate(dests):
         if i > 0:
             await asyncio.sleep(TG_DISPATCH_GAP_SEC)
         try:
-            await dispatch_stt_message(dest, text, emit_overlay=(i == 0))
+            sent = await dispatch_stt_message(dest, text, emit_overlay=False)
+            sent_ok = True
+            sent_ref = sent_message_ref_payload(sent, dest)
+            if sent_ref and first_sent_ref is None:
+                first_sent_ref = sent_ref
+            if sent_ref and dest.get("thread_id") is None and main_sent_ref is None:
+                main_sent_ref = sent_ref
         except Exception as e:
             print(f"[STT] dispatch error dest={dest}: {e}", flush=True)
+    if sent_ok and main_loop is not None:
+        sent_ref = main_sent_ref or first_sent_ref
+        if sent_ref:
+            payload["message"] = sent_ref
+        await broadcast(payload)
 
 
 @bot.message_handler(commands=["stt_on"])
@@ -2555,13 +2943,12 @@ def cmd_stt_off(message):
 def cmd_here_on(message):
     if not _is_owner(message):
         return
-    emit_text_overlay(message)
     thread_id = getattr(message, "message_thread_id", None)
     if thread_id is None:
-        reply_to_with_overlay(message, "댓글창(thread) 안에서만 사용 가능합니다")
+        reply_to_with_overlay(message, "댓글창(thread) 안에서만 사용 가능합니다", emit_overlay=False)
         return
     if _is_main_chat(message):
-        reply_to_with_overlay(message, "메인 그룹은 이미 표시 중 - here_on 불필요")
+        reply_to_with_overlay(message, "메인 그룹은 이미 표시 중 - here_on 불필요", emit_overlay=False)
         return
 
     global active_thread
@@ -2575,6 +2962,7 @@ def cmd_here_on(message):
     reply_to_with_overlay(
         message,
         f"이 댓글창 오버레이 활성화 (chat_id={message.chat.id}, thread={thread_id})",
+        emit_overlay=False,
     )
     print(f"[INFO] here_on: {new_thread}", flush=True)
 
@@ -2757,6 +3145,7 @@ def cmd_add_role(message):
         reply_to_with_overlay(message, role_usage("add_role"))
         return
     _record, roles = set_record_roles(profile, "add", roles_to_add)
+    notify_videochat_level_reload()
     reply_to_with_overlay(message, f"{role_target_label(profile)} roles: {format_roles(roles)}")
 
 
@@ -2771,6 +3160,7 @@ def cmd_remove_role(message):
         reply_to_with_overlay(message, role_usage("remove_role"))
         return
     _record, roles = set_record_roles(profile, "remove", roles_to_remove)
+    notify_videochat_level_reload()
     reply_to_with_overlay(message, f"{role_target_label(profile)} roles: {format_roles(roles)}")
 
 
@@ -2784,20 +3174,22 @@ def cmd_reset_role(message):
         reply_to_with_overlay(message, role_usage("reset_role"))
         return
     _record, roles = set_record_roles(profile, "reset")
+    notify_videochat_level_reload()
     reply_to_with_overlay(message, f"{role_target_label(profile)} roles 초기화: {format_roles(roles)}")
 
 
 def format_level_notice(template: str, profile: dict, level: int, old_level: int, *, delta: int | None = None) -> str:
     username = str(profile.get("username") or "").lstrip("@")
+    reason = level_reason(level).strip()
     text = template.format(
         name=str(profile.get("name") or username or "Unknown"),
         username=username or "-",
         level=level,
         old_level=old_level,
         delta=delta if delta is not None else level - old_level,
-        reason=level_reason(level),
+        reason=reason,
     )
-    return text.replace("(@-)", "")
+    return re.sub(r"\s+-\s*$", "", text.replace("(@-)", "")).strip()
 
 
 def level_usage(command: str) -> str:
@@ -3055,10 +3447,16 @@ def maybe_emit_level_notice(profile: dict) -> None:
         notify_videochat_level_effect(profile, old_level, new_level)
 
 
-def maybe_emit_videochat_effect_level_notice(profile: dict, effect: str) -> None:
+def maybe_emit_videochat_effect_level_notice(profile: dict, effect: str, source: str = "") -> None:
     if not VIDEOCHAT_LEVEL_SYSTEM_ENABLED or profile.get("is_bot"):
         return
     record, old_level, new_level = _level_system.observe_videochat_effect(profile, effect)
+    debug_source = f" source={source}" if source else ""
+    print(
+        f"[LEVEL] videochat effect observed: effect={effect} user={profile.get('name') or profile.get('username')} "
+        f"{old_level}->{new_level}{debug_source}",
+        flush=True,
+    )
     if new_level <= old_level:
         return
     try:
@@ -3080,6 +3478,41 @@ def maybe_emit_videochat_effect_level_notice(profile: dict, effect: str) -> None
         _level_system.mark_notified_level(key, new_level)
     notify_videochat_level_reload()
     notify_videochat_level_effect(notice_profile, old_level, new_level)
+
+
+def maybe_apply_dasarang_chicken_bonus(profile: dict, text: str) -> dict:
+    if not VIDEOCHAT_LEVEL_SYSTEM_ENABLED or profile.get("is_bot"):
+        return profile
+    if DASARANG_CHICKEN_KEYWORD not in str(text or ""):
+        return profile
+    record, old_level, new_level, applied = _level_system.apply_once_bonus(
+        profile,
+        DASARANG_CHICKEN_BONUS_FIELD,
+        delta=1,
+        minimum_level=4,
+    )
+    print(
+        f"[LEVEL] dasarang chicken bonus checked: user={profile.get('name') or profile.get('username')} "
+        f"{old_level}->{new_level} applied={applied}",
+        flush=True,
+    )
+    if not applied:
+        return profile
+    notice_profile = profile_from_level_record(record)
+    key = str(record.get("key") or _level_system.key_for_profile(notice_profile))
+    text = f"{role_target_label(notice_profile)} 다사랑치킨 보너스! 현재 Lv. {new_level}"
+    try:
+        send_message_with_overlay(CHAT_ID, text)
+    except Exception as exc:
+        print(f"[WARN] dasarang chicken level notice failed: {exc}", flush=True)
+    if key:
+        _level_system.mark_notified_level(key, new_level)
+    notify_videochat_level_reload()
+    notify_videochat_level_effect(notice_profile, old_level, new_level)
+    updated = dict(profile)
+    updated["level"] = new_level
+    updated["level_label"] = f"Lv. {new_level}"
+    return updated
 
 
 @bot.message_handler(commands=["commands", "help"])
@@ -3163,7 +3596,9 @@ def cmd_level_scan(message):
 def cmd_level_up(message):
     if not _is_owner(message):
         return
-    emit_text_overlay(message)
+    if not emit_text_overlay(message):
+        print(f"[LEVEL] duplicate level adjustment ignored: {message_debug_ref(message)}", flush=True)
+        return
     profile, args = role_target_from_message(message, role_command_args(message))
     if profile is None or not args:
         reply_to_with_overlay(message, level_usage("level_up"))
@@ -3234,11 +3669,18 @@ def videochat_effect_profile_payload(profile: dict) -> dict:
     }
 
 
+def message_debug_ref(message) -> str:
+    chat = getattr(message, "chat", None)
+    return f"chat={getattr(chat, 'id', '')} msg={getattr(message, 'message_id', '')}"
+
+
 @bot.message_handler(commands=["cheer"])
 def cmd_cheer(message):
     if not _is_overlay_source(message):
         return
-    emit_text_overlay(message)
+    if not emit_text_overlay(message):
+        print(f"[LEVEL] duplicate cheer command ignored: {message_debug_ref(message)}", flush=True)
+        return
     profile = enrich_profile_level(message_profile(message))
     maybe_emit_level_notice(profile)
     action, duration_sec = parse_cheer_command(role_command_args(message))
@@ -3250,7 +3692,7 @@ def cmd_cheer(message):
     }
     if action == "start":
         payload["duration_sec"] = duration_sec
-        maybe_emit_videochat_effect_level_notice(profile, "cheer")
+        maybe_emit_videochat_effect_level_notice(profile, "cheer", message_debug_ref(message))
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(broadcast(payload), main_loop)
 
@@ -3259,12 +3701,15 @@ def cmd_cheer(message):
 def cmd_fire(message):
     if not _is_overlay_source(message):
         return
-    emit_text_overlay(message)
+    if not emit_text_overlay(message):
+        print(f"[LEVEL] duplicate fire command ignored: {message_debug_ref(message)}", flush=True)
+        return
     profile = enrich_profile_level(message_profile(message))
     maybe_emit_level_notice(profile)
     if not fire_cooldown_allowed(profile):
+        print(f"[LEVEL] fire ignored by cooldown: {message_debug_ref(message)}", flush=True)
         return
-    maybe_emit_videochat_effect_level_notice(profile, "fire")
+    maybe_emit_videochat_effect_level_notice(profile, "fire", message_debug_ref(message))
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
             broadcast({
@@ -3293,10 +3738,18 @@ def on_text(message):
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     text = message.text
     text, stt_label = split_stt_label_from_text(text, profile)
+    comment_thread = _matches_active_thread(message)
+    if comment_thread and should_skip_comment_thread_echo(profile, "text", text):
+        print(f"[SEND] main+here comment text echo skipped: {name}", flush=True)
+        return
     cache_custom_emoji_entities(getattr(message, "entities", None), text)
     if should_skip_overlay_duplicate(profile, "text", text):
         print(f"[SEND] duplicate overlay echo skipped: {name}", flush=True)
         return
+    profile = maybe_apply_dasarang_chicken_bonus(profile, text)
+    entities = text_entities_payload(getattr(message, "entities", None), text)
+    if comment_thread:
+        text, entities = comment_thread_text_payload(text, entities)
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     print(f"{name}: {text}", flush=True)
     if main_loop is not None:
@@ -3304,9 +3757,9 @@ def on_text(message):
                 "type": "text",
                 "name": name,
                 "text": text,
-                "entities": text_entities_payload(getattr(message, "entities", None), text),
+                "entities": entities,
                 "message": message_ref_payload(message),
-                "reply": reply_summary_payload(message),
+                "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -3359,11 +3812,17 @@ def on_photo(message):
         photo_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception:
         photo_hash = file_unique_id
+    comment_thread = _matches_active_thread(message)
+    if comment_thread and should_skip_comment_thread_echo(profile, "photo", photo_hash):
+        print(f"[SEND] main+here comment photo echo skipped: {name}", flush=True)
+        return
     if should_skip_overlay_duplicate(profile, "photo", photo_hash):
         print(f"[SEND] duplicate photo overlay echo skipped: {name}", flush=True)
         return
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     url = f"/photos/{file_unique_id}.jpg"
+    if comment_thread:
+        caption, caption_entities = comment_thread_text_payload(caption, caption_entities)
     print(f"{name}: [photo] {url}" + (f" {caption}" if caption else ""), flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
@@ -3374,7 +3833,7 @@ def on_photo(message):
                 "text": caption,
                 "entities": caption_entities,
                 "message": message_ref_payload(message),
-                "reply": reply_summary_payload(message),
+                "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -3456,6 +3915,11 @@ def on_sticker(message):
     identity_id = int(profile["speaker_id"]) if profile["speaker_id"].lstrip("-").isdigit() else 0
     color = color_for(identity_id) if identity_id else USER_COLOR_PALETTE[0]
     url = f"/stickers/{target.name}"
+    comment_thread = _matches_active_thread(message)
+    sticker_marker = str(getattr(sticker, "file_unique_id", "") or target.name)
+    if comment_thread and should_skip_comment_thread_echo(profile, "sticker", sticker_marker):
+        print(f"[SEND] main+here comment sticker echo skipped: {name}", flush=True)
+        return
     print(f"{name}: [sticker] {url}", flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
@@ -3466,7 +3930,7 @@ def on_sticker(message):
                 "media_type": media_type,
                 "text": "",
                 "message": message_ref_payload(message),
-                "reply": reply_summary_payload(message),
+                "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -3509,6 +3973,10 @@ def on_animation(message):
         media_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception:
         media_hash = getattr(animation, "file_unique_id", "") or target.name
+    comment_thread = _matches_active_thread(message)
+    if comment_thread and should_skip_comment_thread_echo(profile, "animation", media_hash):
+        print(f"[SEND] main+here comment animation echo skipped: {name}", flush=True)
+        return
     if should_skip_overlay_duplicate(profile, "animation", media_hash):
         print(f"[SEND] duplicate animation overlay echo skipped: {name}", flush=True)
         return
@@ -3516,6 +3984,8 @@ def on_animation(message):
     caption = str(getattr(message, "caption", None) or "").strip()
     caption_entities = text_entities_payload(getattr(message, "caption_entities", None), caption)
     url = f"/animations/{target.name}"
+    if comment_thread:
+        caption, caption_entities = comment_thread_text_payload(caption, caption_entities)
     print(f"{name}: [animation] {url}" + (f" {caption}" if caption else ""), flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
@@ -3527,7 +3997,7 @@ def on_animation(message):
                 "text": caption,
                 "entities": caption_entities,
                 "message": message_ref_payload(message),
-                "reply": reply_summary_payload(message),
+                "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -3570,6 +4040,10 @@ def on_video(message):
         media_hash = hashlib.sha256(target.read_bytes()).hexdigest()
     except Exception:
         media_hash = getattr(video, "file_unique_id", "") or target.name
+    comment_thread = _matches_active_thread(message)
+    if comment_thread and should_skip_comment_thread_echo(profile, "video", media_hash):
+        print(f"[SEND] main+here comment video echo skipped: {name}", flush=True)
+        return
     if should_skip_overlay_duplicate(profile, "animation", media_hash):
         print(f"[SEND] duplicate video overlay echo skipped: {name}", flush=True)
         return
@@ -3577,6 +4051,8 @@ def on_video(message):
     caption = str(getattr(message, "caption", None) or "").strip()
     caption_entities = text_entities_payload(getattr(message, "caption_entities", None), caption)
     url = f"/animations/{target.name}"
+    if comment_thread:
+        caption, caption_entities = comment_thread_text_payload(caption, caption_entities)
     print(f"{name}: [video] {url}" + (f" {caption}" if caption else ""), flush=True)
     if main_loop is not None:
         asyncio.run_coroutine_threadsafe(
@@ -3588,7 +4064,7 @@ def on_video(message):
                 "text": caption,
                 "entities": caption_entities,
                 "message": message_ref_payload(message),
-                "reply": reply_summary_payload(message),
+                "reply": comment_thread_reply_summary_payload(message) if comment_thread else reply_summary_payload(message),
                 "color": color,
                 "speaker_id": profile["speaker_id"],
                 "username": profile["username"],
@@ -3616,7 +4092,11 @@ def run_bot() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global main_loop, stt_manager, bot_user_id, bot_display_name, bot_username, stt_user_client
+    global send_queue, send_worker_task
     main_loop = asyncio.get_running_loop()
+    if TELEGRAM_USER_SEND_ENABLED and TELEGRAM_USER_SEND_ASYNC:
+        send_queue = asyncio.Queue(maxsize=TELEGRAM_USER_SEND_QUEUE_MAX)
+        send_worker_task = asyncio.create_task(run_send_worker(), name="telegram-send-worker")
     load_user_colors()
     load_level_store()
     load_level_reasons()
@@ -3670,6 +4150,17 @@ async def lifespan(app: FastAPI):
             update_state(stt_on=False, tts_on=False)
 
     yield
+
+    if send_worker_task is not None:
+        send_worker_task.cancel()
+        try:
+            await asyncio.wait_for(send_worker_task, timeout=3)
+        except asyncio.CancelledError:
+            pass
+        except asyncio.TimeoutError:
+            print("[SEND] async send worker did not stop within timeout", flush=True)
+        send_worker_task = None
+    send_queue = None
 
     try:
         if stt_manager and stt_manager.active:
@@ -3740,6 +4231,9 @@ async def api_send_status():
         raise HTTPException(status_code=404, detail="send disabled")
     return {
         "enabled": True,
+        "async": TELEGRAM_USER_SEND_ASYNC,
+        "queue_size": send_queue.qsize() if send_queue is not None else 0,
+        "queue_max": TELEGRAM_USER_SEND_QUEUE_MAX,
         "targets": {
             "main": True,
             "here": active_thread is not None,
@@ -3747,6 +4241,39 @@ async def api_send_status():
         "max_chars": TELEGRAM_USER_SEND_MAX_CHARS,
         "max_photo_mb": TELEGRAM_USER_SEND_MAX_PHOTO_MB,
         "max_media_mb": TELEGRAM_USER_SEND_MAX_MEDIA_MB,
+    }
+
+
+@app.get("/api/send/queue")
+async def api_send_queue_status(request: Request):
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    return {
+        "enabled": TELEGRAM_USER_SEND_ENABLED,
+        "async": TELEGRAM_USER_SEND_ASYNC,
+        "queue_size": send_queue.qsize() if send_queue is not None else 0,
+        "queue_max": TELEGRAM_USER_SEND_QUEUE_MAX,
+        "worker_running": send_worker_task is not None and not send_worker_task.done(),
+        "worker_started_at": send_queue_started_at,
+    }
+
+
+@app.get("/api/stt/remote/status")
+async def api_stt_remote_status(request: Request):
+    host = request.client.host if request.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="local requests only")
+    return {
+        "enabled": stt_manager is not None,
+        "active": bool(stt_manager and stt_manager.active),
+        "provider": STT_PROVIDER,
+        "sample_rate": stt_remote_sample_rate(),
+        "clients": len(remote_stt_clients),
+        "targets": {
+            "main": True,
+            "here": active_thread is not None,
+        },
     }
 
 
@@ -4526,6 +5053,18 @@ async def api_send_message(request: Request):
     if not targets and not reply_to:
         raise HTTPException(status_code=400, detail="no targets selected")
 
+    if TELEGRAM_USER_SEND_ASYNC:
+        return enqueue_overlay_send(
+            text,
+            targets,
+            media,
+            reply_to,
+            sticker=sticker,
+            custom_emoji=custom_emoji,
+            custom_entities=custom_entities,
+        )
+
+    started = time.monotonic()
     results = await dispatch_overlay_user_message(
         text,
         targets,
@@ -4536,6 +5075,10 @@ async def api_send_message(request: Request):
         custom_entities=custom_entities,
     )
     ok = [r for r in results if r.get("ok")]
+    print(
+        f"[SEND] sync_done sent={len(ok)} elapsed_ms={round((time.monotonic() - started) * 1000)}",
+        flush=True,
+    )
     if not ok:
         raise HTTPException(status_code=502, detail={"message": "send failed", "results": results})
     return {"ok": True, "sent": len(ok), "results": results}
@@ -4560,9 +5103,74 @@ async def api_delete_message(request: Request):
     if main_loop is not None:
         await broadcast({
             "type": "delete",
-            "message": {"chat_id": str(chat_id), "message_id": message_id},
-        })
+        "message": {"chat_id": str(chat_id), "message_id": message_id},
+    })
     return result
+
+
+@app.websocket("/api/stt/remote/ws")
+async def stt_remote_ws(ws: WebSocket):
+    global remote_stt_started_manager
+    await ws.accept()
+    host = ws.client.host if ws.client else ""
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        await ws.send_text(json.dumps({"type": "error", "message": "local requests only"}, ensure_ascii=False))
+        await ws.close(code=1008)
+        return
+    client_id = secrets.token_hex(6)
+    if stt_manager is None:
+        await ws.send_text(json.dumps({"type": "error", "message": "STT manager not ready"}, ensure_ascii=False))
+        await ws.close(code=1011)
+        return
+    target = str(ws.query_params.get("target") or "main")
+    targets = ["here"] if target == "here" and active_thread is not None else ["main"]
+    dests = add_remote_stt_destinations(targets)
+    if not stt_manager.active:
+        ok = await stt_manager.start_remote()
+        if not ok:
+            remove_remote_stt_destinations()
+            await ws.send_text(json.dumps({"type": "error", "message": "STT remote start failed"}, ensure_ascii=False))
+            await ws.close(code=1011)
+            return
+        remote_stt_started_manager = True
+    remote_stt_clients.add(client_id)
+    update_state(stt_on=True, tts_on=False)
+    await ws.send_text(json.dumps({
+        "type": "ready",
+        "sample_rate": stt_manager.sample_rate,
+        "target": targets[0],
+        "destinations": len(dests),
+    }, ensure_ascii=False))
+    print(f"[STT] remote client connected id={client_id} target={targets[0]} clients={len(remote_stt_clients)}", flush=True)
+    try:
+        while True:
+            message = await ws.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            chunk = message.get("bytes")
+            if chunk is not None:
+                stt_manager.feed_audio(chunk)
+                continue
+            text = message.get("text")
+            if text:
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "ping":
+                    await ws.send_text(json.dumps({"type": "pong"}, ensure_ascii=False))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        remote_stt_clients.discard(client_id)
+        print(f"[STT] remote client disconnected id={client_id} clients={len(remote_stt_clients)}", flush=True)
+        if not remote_stt_clients:
+            remove_remote_stt_destinations()
+            if remote_stt_started_manager:
+                remote_stt_started_manager = False
+                with suppress(Exception):
+                    await stt_manager.stop()
+                update_state(stt_on=False, tts_on=False)
 
 
 @app.websocket("/ws")

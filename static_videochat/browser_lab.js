@@ -16,6 +16,7 @@
     applyStreamBtn: $("applyStreamBtn"),
     copyBtn: $("copyBtn"),
     pasteBtn: $("pasteBtn"),
+    uploadInput: $("uploadInput"),
     clearLogBtn: $("clearLogBtn"),
     serverOrigin: $("serverOrigin"),
     connectionDot: $("connectionDot"),
@@ -60,6 +61,8 @@
   ]);
 
   const modifierKeys = new Set(["Alt", "AltGraph", "Control", "Meta", "Shift"]);
+  const maxUploadFileBytes = 10 * 1024 * 1024;
+  const maxUploadFiles = 8;
 
   const state = {
     ws: null,
@@ -75,6 +78,9 @@
     localFpsTimer: 0,
     composingText: false,
     lastStatusError: "",
+    touchId: 1,
+    touchActive: false,
+    suppressedKeyUps: new Set(),
   };
 
   const ctx = el.viewportCanvas.getContext("2d", { alpha: false });
@@ -251,6 +257,9 @@
           el.latencyText.textContent = `${Date.now() - Number(payload.client_ts)} ms rtt`;
         }
         break;
+      case "clipboard":
+        writeClipboardFromRemote(payload);
+        break;
       case "log":
         if (payload.message && payload.message === state.lastStatusError) {
           break;
@@ -263,6 +272,20 @@
       default:
         addLog("warn", `unknown server message: ${payload.type}`);
         break;
+    }
+  }
+
+  async function writeClipboardFromRemote(payload) {
+    const text = typeof payload.text === "string" ? payload.text : "";
+    if (!text) {
+      addLog("info", "copy returned no readable text");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      addLog("info", `copy received (${text.length} chars)`);
+    } catch (err) {
+      addLog("warn", `clipboard write failed: ${err.message}`);
     }
   }
 
@@ -408,13 +431,19 @@
     return "left";
   }
 
-  function viewportPoint(event) {
+  function viewportPointFromClient(clientX, clientY) {
     const rect = el.viewportCanvas.getBoundingClientRect();
     const scaleX = el.viewportCanvas.width / Math.max(1, rect.width);
     const scaleY = el.viewportCanvas.height / Math.max(1, rect.height);
-    const x = Math.max(0, Math.min(el.viewportCanvas.width, (event.clientX - rect.left) * scaleX));
-    const y = Math.max(0, Math.min(el.viewportCanvas.height, (event.clientY - rect.top) * scaleY));
+    const maxX = Math.max(0, el.viewportCanvas.width - 1);
+    const maxY = Math.max(0, el.viewportCanvas.height - 1);
+    const x = Math.max(0, Math.min(maxX, (clientX - rect.left) * scaleX));
+    const y = Math.max(0, Math.min(maxY, (clientY - rect.top) * scaleY));
     return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  function viewportPoint(event) {
+    return viewportPointFromClient(event.clientX, event.clientY);
   }
 
   function sendMouse(event, kind) {
@@ -440,6 +469,48 @@
     send(payload);
   }
 
+  function sendTouch(event, kind) {
+    event.preventDefault();
+    if (kind === "start") {
+      state.touchActive = true;
+    }
+    const sourceTouches = kind === "end" || kind === "cancel" ? event.changedTouches : event.touches;
+    const points = Array.from(sourceTouches || []).map((touch) => {
+      const point = viewportPointFromClient(touch.clientX, touch.clientY);
+      return {
+        id: Number(touch.identifier) || state.touchId,
+        x: point.x,
+        y: point.y,
+        radiusX: Math.max(1, Math.round(Number(touch.radiusX) || 1)),
+        radiusY: Math.max(1, Math.round(Number(touch.radiusY) || 1)),
+        force: Number.isFinite(touch.force) ? touch.force : 1,
+      };
+    });
+    if (points.length === 0 && event.changedTouches && event.changedTouches.length) {
+      const touch = event.changedTouches[0];
+      const point = viewportPointFromClient(touch.clientX, touch.clientY);
+      points.push({
+        id: Number(touch.identifier) || state.touchId,
+        x: point.x,
+        y: point.y,
+        radiusX: 1,
+        radiusY: 1,
+        force: 1,
+      });
+    }
+    send({ type: "touch", event: kind, points });
+    if (kind === "end" || kind === "cancel") {
+      state.touchActive = false;
+    }
+  }
+
+  function sendActiveTouch(event, kind) {
+    if (!state.touchActive) {
+      return;
+    }
+    sendTouch(event, kind);
+  }
+
   function normalizeKey(event) {
     if (event.key === " ") {
       return "Space";
@@ -458,13 +529,52 @@
     if (event.ctrlKey || event.metaKey || event.altKey) {
       return false;
     }
-    return event.isComposing || event.key.length === 1 || event.key === "Process" || event.key === "Dead";
+    return event.isComposing || (event.key.length === 1 && event.key !== " ") || event.key === "Process" || event.key === "Dead";
+  }
+
+  function isPasteShortcut(event) {
+    if (document.activeElement !== el.textSink || event.altKey) {
+      return false;
+    }
+    const key = String(event.key || "").toLowerCase();
+    return ((event.ctrlKey || event.metaKey) && key === "v") || (event.shiftKey && key === "insert");
+  }
+
+  function isCopyShortcut(event) {
+    if (document.activeElement !== el.textSink || event.altKey || event.shiftKey) {
+      return false;
+    }
+    const key = String(event.key || "").toLowerCase();
+    return ((event.ctrlKey || event.metaKey) && key === "c") || (event.ctrlKey && key === "insert");
+  }
+
+  function isCutShortcut(event) {
+    if (document.activeElement !== el.textSink || event.altKey || event.shiftKey) {
+      return false;
+    }
+    return (event.ctrlKey || event.metaKey) && String(event.key || "").toLowerCase() === "x";
   }
 
   function sendKey(event, kind) {
     send({
       type: "key",
       event: kind,
+      key: normalizeKey(event),
+      code: event.code,
+      repeat: event.repeat,
+      modifiers: {
+        alt: event.altKey,
+        ctrl: event.ctrlKey,
+        meta: event.metaKey,
+        shift: event.shiftKey,
+      },
+    });
+  }
+
+  function sendKeyPress(event) {
+    send({
+      type: "key",
+      event: "press",
       key: normalizeKey(event),
       code: event.code,
       repeat: event.repeat,
@@ -500,6 +610,28 @@
     if (shouldIgnoreRemoteKey(event)) {
       return;
     }
+    if (isPasteShortcut(event)) {
+      event.preventDefault();
+      pasteClipboard();
+      return;
+    }
+    if (isCopyShortcut(event)) {
+      event.preventDefault();
+      send({ type: "copy" });
+      focusRemoteInput();
+      return;
+    }
+    if (isCutShortcut(event)) {
+      event.preventDefault();
+      send({ type: "cut" });
+      return;
+    }
+    if (document.activeElement === el.textSink && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === " ") {
+      event.preventDefault();
+      state.suppressedKeyUps.add(event.code || event.key);
+      sendKeyPress(event);
+      return;
+    }
     if (shouldLetTextSinkHandle(event)) {
       return;
     }
@@ -509,6 +641,12 @@
 
   function handleRemoteKeyUp(event) {
     if (shouldIgnoreRemoteKey(event)) {
+      return;
+    }
+    const suppressKey = event.code || event.key;
+    if (state.suppressedKeyUps.has(suppressKey)) {
+      state.suppressedKeyUps.delete(suppressKey);
+      event.preventDefault();
       return;
     }
     if (
@@ -523,6 +661,11 @@
     }
     event.preventDefault();
     sendKey(event, "up");
+  }
+
+  function handleViewportWheel(event) {
+    event.preventDefault();
+    sendMouse(event, "wheel");
   }
 
   function startPing() {
@@ -576,6 +719,86 @@
     }
   }
 
+  function handleTextSinkPaste(event) {
+    const text = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
+    if (!text) {
+      window.setTimeout(flushTextSink, 0);
+      return;
+    }
+    event.preventDefault();
+    send({ type: "paste", text, mode: el.textMode ? el.textMode.value : "hybrid" });
+    addLog("info", `paste sent (${text.length} chars)`);
+    focusRemoteInput();
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = () => reject(reader.error || new Error("file read failed"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function filesPayloadFromList(fileList) {
+    const selected = Array.from(fileList || []).slice(0, maxUploadFiles);
+    const tooLarge = selected.find((file) => file.size > maxUploadFileBytes);
+    if (tooLarge) {
+      throw new Error(`file exceeds ${Math.round(maxUploadFileBytes / 1024 / 1024)} MB limit`);
+    }
+    const files = [];
+    for (const file of selected) {
+      files.push({
+        name: file.name || "upload.bin",
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        data: await readFileAsBase64(file),
+      });
+    }
+    return files;
+  }
+
+  async function uploadSelectedFiles() {
+    const input = el.uploadInput;
+    if (!input || !input.files || input.files.length === 0) {
+      return;
+    }
+    try {
+      const files = await filesPayloadFromList(input.files);
+      if (send({ type: "files", files })) {
+        addLog("info", `upload sent (${files.length} file${files.length === 1 ? "" : "s"})`);
+      }
+    } catch (err) {
+      addLog("error", `upload failed: ${err.message}`);
+    } finally {
+      input.value = "";
+      focusRemoteInput();
+    }
+  }
+
+  async function dropFilesIntoViewport(event) {
+    const fileList = event.dataTransfer && event.dataTransfer.files;
+    if (!fileList || fileList.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    const point = viewportPoint(event);
+    try {
+      const files = await filesPayloadFromList(fileList);
+      if (send({ type: "file_drop", x: point.x, y: point.y, files })) {
+        addLog("info", `file drop sent (${files.length} file${files.length === 1 ? "" : "s"})`);
+      }
+    } catch (err) {
+      addLog("error", `file drop failed: ${err.message}`);
+    } finally {
+      focusRemoteInput();
+    }
+  }
+
   function bindEvents() {
     el.addressForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -595,6 +818,9 @@
       focusRemoteInput();
     });
     el.pasteBtn.addEventListener("click", pasteClipboard);
+    if (el.uploadInput) {
+      el.uploadInput.addEventListener("change", uploadSelectedFiles);
+    }
     el.clearLogBtn.addEventListener("click", () => {
       el.debugLog.textContent = "";
     });
@@ -606,27 +832,47 @@
       focusRemoteInput();
       sendMouse(event, "down");
     });
-    window.addEventListener("mouseup", (event) => {
+    const handleMouseUp = (event) => {
       if (!state.mouseDown) {
         return;
       }
       event.preventDefault();
       state.mouseDown = false;
       sendMouse(event, "up");
-    });
-    el.viewportCanvas.addEventListener("mousemove", (event) => {
+    };
+    const handleMouseMove = (event) => {
+      if (!state.mouseDown && event.target !== el.viewportCanvas) {
+        return;
+      }
       const now = performance.now();
       if (now - state.lastMouseMoveAt < 25 && !state.mouseDown) {
         return;
       }
       state.lastMouseMoveAt = now;
       sendMouse(event, "move");
-    });
+    };
+    document.addEventListener("mousemove", handleMouseMove, true);
+    document.addEventListener("mouseup", handleMouseUp, true);
+    window.addEventListener("mouseup", handleMouseUp);
     el.viewportCanvas.addEventListener(
       "wheel",
+      handleViewportWheel,
+      { passive: false },
+    );
+    el.viewportCanvas.addEventListener("dragover", (event) => event.preventDefault());
+    el.viewportCanvas.addEventListener("drop", dropFilesIntoViewport);
+    el.viewportCanvas.addEventListener("touchstart", (event) => sendTouch(event, "start"), { passive: false });
+    el.viewportCanvas.addEventListener("touchmove", (event) => sendTouch(event, "move"), { passive: false });
+    window.addEventListener("touchmove", (event) => sendActiveTouch(event, "move"), { passive: false });
+    window.addEventListener("touchend", (event) => sendActiveTouch(event, "end"), { passive: false });
+    window.addEventListener("touchcancel", (event) => sendActiveTouch(event, "cancel"), { passive: false });
+    el.viewportShell.addEventListener(
+      "wheel",
       (event) => {
-        event.preventDefault();
-        sendMouse(event, "wheel");
+        if (event.target === el.viewportCanvas) {
+          return;
+        }
+        handleViewportWheel(event);
       },
       { passive: false },
     );
@@ -654,9 +900,7 @@
         }
         flushTextSink();
       });
-      el.textSink.addEventListener("paste", () => {
-        window.setTimeout(flushTextSink, 0);
-      });
+      el.textSink.addEventListener("paste", handleTextSinkPaste);
     }
 
     window.addEventListener("resize", applyScale);

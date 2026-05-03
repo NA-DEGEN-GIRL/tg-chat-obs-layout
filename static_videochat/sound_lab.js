@@ -72,6 +72,7 @@
     babbleTimers: [],
     logLines: [],
   };
+  const BABBLE_OUTPUT_GAIN = 10;
 
   function log(message) {
     const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -1147,9 +1148,9 @@
         if (voice.quantize) freq = Math.round(freq / voice.quantize) * voice.quantize;
         const pan = ((index % 5) - 2) * 0.06;
         const blipDur = Math.min(0.052, duration * 0.82);
-        tone(freq, blipDur, index % 2 ? voice.waveA : voice.waveB, voice.gain, at, bus);
-        tone(freq * voice.formant, Math.max(0.018, blipDur * 0.72), voice.waveB, voice.gain * 0.32, at + 0.006 / Math.max(0.1, speed), bus);
-        noiseBurst({ duration: 0.016, filterType: "bandpass", frequency: freq * 2.25, q: 2.2, gainValue: voice.noise, startAt: at, pan, target: bus });
+        tone(freq, blipDur, index % 2 ? voice.waveA : voice.waveB, voice.gain * BABBLE_OUTPUT_GAIN, at, bus);
+        tone(freq * voice.formant, Math.max(0.018, blipDur * 0.72), voice.waveB, voice.gain * 0.32 * BABBLE_OUTPUT_GAIN, at + 0.006 / Math.max(0.1, speed), bus);
+        noiseBurst({ duration: 0.016, filterType: "bandpass", frequency: freq * 2.25, q: 2.2, gainValue: voice.noise * BABBLE_OUTPUT_GAIN, startAt: at, pan, target: bus });
       }
       cursor += duration;
     });

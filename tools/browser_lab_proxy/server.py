@@ -45,6 +45,9 @@ MIN_VIEWPORT_WIDTH = 320
 MIN_VIEWPORT_HEIGHT = 240
 MAX_VIEWPORT_WIDTH = 3840
 MAX_VIEWPORT_HEIGHT = 2160
+MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_TOTAL_BYTES = 25 * 1024 * 1024
+MAX_UPLOAD_FILES = 8
 
 PRIVATE_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 BLOCKED_SCHEMES = {
@@ -78,6 +81,61 @@ KEY_ALIASES = {
     "OS": "Meta",
 }
 ASCII_KEYBOARD_TEXT_RE = re.compile(r"^[\x09\x0a\x0d\x20-\x7e]+$")
+HISTORY_STATUS_BRIDGE_SCRIPT = """
+(() => {
+  if (window.__browserLabHistoryStatusBridgeInstalled) return;
+  window.__browserLabHistoryStatusBridgeInstalled = true;
+
+  const notify = (navState) => {
+    try {
+      if (typeof window.__browserLabStatusChanged !== 'function') return;
+      window.__browserLabStatusChanged({
+        url: window.location.href,
+        title: document.title || '',
+        nav_state: navState,
+      });
+    } catch (_err) {}
+  };
+
+  const wrapHistory = (name) => {
+    const original = history[name];
+    if (typeof original !== 'function' || original.__browserLabWrapped) return;
+    const wrapped = function browserLabHistoryWrapper(...args) {
+      const result = original.apply(this, args);
+      queueMicrotask(() => notify(name));
+      return result;
+    };
+    try {
+      Object.defineProperty(wrapped, '__browserLabWrapped', { value: true });
+      history[name] = wrapped;
+    } catch (_err) {}
+  };
+
+  wrapHistory('pushState');
+  wrapHistory('replaceState');
+  window.addEventListener('popstate', () => notify('popstate'), true);
+  window.addEventListener('hashchange', () => notify('hashchange'), true);
+  window.addEventListener('pageshow', () => notify('pageshow'), true);
+
+  const watchTitle = () => {
+    const title = document.querySelector('title');
+    if (!title || title.__browserLabObserved) return;
+    try {
+      title.__browserLabObserved = true;
+      new MutationObserver(() => notify('title')).observe(title, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    } catch (_err) {}
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watchTitle, { once: true });
+  } else {
+    watchTitle();
+  }
+})();
+"""
 
 
 def _parse_bool(value: Optional[str], default: bool) -> bool:
@@ -304,7 +362,14 @@ class BrowserLab:
         self.page_lock = asyncio.Lock()
         self.log_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue(maxsize=200)
         self.attached_pages: set[int] = set()
+        self.status_bridge_installed = False
         self.mouse_buttons = 0
+        self.last_mouse_x = 0.0
+        self.last_mouse_y = 0.0
+        self.last_touch_points: list[Dict[str, Any]] = []
+        self.dom_drag_candidate: Optional[Dict[str, float]] = None
+        self.range_drag_candidate = False
+        self.text_selection_drag_candidate: Optional[Dict[str, float]] = None
         self.frame_seq = 0
         self.state = LabState(
             profile_dir=str(self.profile_dir),
@@ -330,6 +395,7 @@ class BrowserLab:
             if self.cdp_url:
                 self.browser = await self.playwright.chromium.connect_over_cdp(self.cdp_url)
                 self.context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
+                await self._install_status_bridge()
                 self.context.on("page", lambda page: asyncio.create_task(self._adopt_page(page, "new-page")))
                 pages = [page for page in self.context.pages if not page.is_closed()]
                 self.page = pages[-1] if pages else await self.context.new_page()
@@ -372,6 +438,7 @@ class BrowserLab:
             )
             self.context.set_default_timeout(15_000)
             self.context.set_default_navigation_timeout(45_000)
+            await self._install_status_bridge()
             self.context.on("page", lambda page: asyncio.create_task(self._adopt_page(page, "new-page")))
 
             pages = [page for page in self.context.pages if not page.is_closed()]
@@ -399,6 +466,7 @@ class BrowserLab:
             self.browser = None
             self.playwright = None
             self.attached_pages.clear()
+            self.status_bridge_installed = False
             self.state.browser_started = False
             self.state.loading = False
             self.state.nav_state = "stopped"
@@ -430,6 +498,39 @@ class BrowserLab:
         page.on("framenavigated", lambda frame: self._on_frame_navigated(page, frame))
         page.on("load", lambda: self._on_load(page))
         page.on("close", lambda: self._on_page_close(page))
+        asyncio.create_task(self._inject_status_bridge(page))
+
+    async def _install_status_bridge(self) -> None:
+        if not self.context or self.status_bridge_installed:
+            return
+        try:
+            await self.context.expose_function("__browserLabStatusChanged", self._handle_status_bridge_payload)
+        except PlaywrightError as exc:
+            if "already registered" not in str(exc):
+                raise
+        await self.context.add_init_script(HISTORY_STATUS_BRIDGE_SCRIPT)
+        self.status_bridge_installed = True
+
+    async def _inject_status_bridge(self, page: Page) -> None:
+        if page.is_closed():
+            return
+        try:
+            await page.evaluate(HISTORY_STATUS_BRIDGE_SCRIPT)
+        except PlaywrightError:
+            pass
+
+    async def _handle_status_bridge_payload(self, payload: Any) -> None:
+        if not self.page or self.page.is_closed() or not isinstance(payload, dict):
+            return
+        url = str(payload.get("url") or "")
+        if url:
+            self.state.url = url
+        self.state.title = str(payload.get("title") or self.state.title)
+        nav_state = str(payload.get("nav_state") or "spa")
+        if nav_state == "title":
+            return
+        self.state.nav_state = f"spa {nav_state}"
+        self.state.loading = False
 
     def _queue_log(self, level: str, message: str) -> None:
         payload = {
@@ -569,6 +670,8 @@ class BrowserLab:
 
     def _on_frame_navigated(self, page: Page, frame: Any) -> None:
         if page is self.page and frame == page.main_frame:
+            if frame.url == self.state.url and self.state.nav_state.startswith("spa "):
+                return
             self.state.url = frame.url
             self.state.nav_state = "navigated"
 
@@ -718,19 +821,45 @@ class BrowserLab:
     async def mouse(self, message: Dict[str, Any]) -> None:
         page = self._active_page()
         event = message.get("event")
-        x = _clamp_float(message.get("x"), 0, self.state.viewport_width, 0)
-        y = _clamp_float(message.get("y"), 0, self.state.viewport_height, 0)
+        max_x = max(0, self.state.viewport_width - 1)
+        max_y = max(0, self.state.viewport_height - 1)
+        x = _clamp_float(message.get("x"), 0, max_x, 0)
+        y = _clamp_float(message.get("y"), 0, max_y, 0)
+        self.last_mouse_x = x
+        self.last_mouse_y = y
         button = message.get("button") if message.get("button") in {"left", "right", "middle"} else "left"
         click_count = _clamp_int(message.get("clickCount"), 1, 3, 1)
         modifiers = _mouse_modifier_bitmask(message.get("modifiers"))
         if event == "move":
             await self._dispatch_mouse_event(page, "mouseMoved", x, y, "none", self.mouse_buttons, 0, modifiers)
+            if self.range_drag_candidate and self.mouse_buttons & _mouse_button_bit("left"):
+                await self._dom_range_drag_update(page, x, y)
+            if self.text_selection_drag_candidate and self.mouse_buttons & _mouse_button_bit("left"):
+                await self._dom_text_selection_drag_update(page, x, y, finish=False)
+            if self.dom_drag_candidate and self.mouse_buttons & _mouse_button_bit("left"):
+                await self._dom_drag_move(page, x, y)
         elif event == "down":
             self.mouse_buttons |= _mouse_button_bit(button)
             await self._dispatch_mouse_event(page, "mousePressed", x, y, button, self.mouse_buttons, click_count, modifiers)
+            if button == "left":
+                self.range_drag_candidate = await self._prepare_dom_range_drag_candidate(page, x, y)
+                self.text_selection_drag_candidate = await self._prepare_dom_text_selection_drag_candidate(page, x, y)
+                await self._prepare_dom_drag_candidate(page, x, y)
         elif event == "up":
+            dom_drag_candidate = self.dom_drag_candidate
+            range_drag_candidate = self.range_drag_candidate
+            text_selection_drag_candidate = self.text_selection_drag_candidate
             self.mouse_buttons &= ~_mouse_button_bit(button)
             await self._dispatch_mouse_event(page, "mouseReleased", x, y, button, self.mouse_buttons, click_count, modifiers)
+            if button == "left" and range_drag_candidate:
+                await self._dom_range_drag_update(page, x, y)
+                self.range_drag_candidate = False
+            if button == "left" and text_selection_drag_candidate:
+                await self._dom_text_selection_drag_update(page, x, y, finish=True)
+                self.text_selection_drag_candidate = None
+            if button == "left" and dom_drag_candidate:
+                await self._dom_drag_drop(page, x, y)
+                self.dom_drag_candidate = None
         elif event == "wheel":
             delta_x = _clamp_float(message.get("deltaX"), -3000, 3000, 0)
             delta_y = _clamp_float(message.get("deltaY"), -3000, 3000, 0)
@@ -746,6 +875,7 @@ class BrowserLab:
                 delta_x=delta_x,
                 delta_y=delta_y,
             )
+            await self._dispatch_dom_wheel_if_non_scrollable(page, x, y, delta_x, delta_y, message.get("modifiers"))
         else:
             raise ValueError(f"Unsupported mouse event: {event}")
 
@@ -794,6 +924,535 @@ class BrowserLab:
                 await page.mouse.move(x, y)
                 await page.mouse.wheel(delta_x, delta_y)
 
+    async def touch(self, message: Dict[str, Any]) -> None:
+        page = self._active_page()
+        event = str(message.get("event") or "")
+        event_type = {
+            "start": "touchStart",
+            "move": "touchMove",
+            "end": "touchEnd",
+            "cancel": "touchCancel",
+        }.get(event)
+        if not event_type:
+            raise ValueError(f"Unsupported touch event: {event}")
+        incoming_points = []
+        raw_points = message.get("points") if isinstance(message.get("points"), list) else []
+        max_x = max(0, self.state.viewport_width - 1)
+        max_y = max(0, self.state.viewport_height - 1)
+        for raw_point in raw_points[:10]:
+            if not isinstance(raw_point, dict):
+                continue
+            x = _clamp_float(raw_point.get("x"), 0, max_x, self.last_mouse_x)
+            y = _clamp_float(raw_point.get("y"), 0, max_y, self.last_mouse_y)
+            incoming_points.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "id": _clamp_int(raw_point.get("id"), 1, 2_147_483_647, 1),
+                    "radiusX": _clamp_float(raw_point.get("radiusX"), 1, 200, 1),
+                    "radiusY": _clamp_float(raw_point.get("radiusY"), 1, 200, 1),
+                    "force": _clamp_float(raw_point.get("force"), 0, 1, 1),
+                }
+            )
+        points = [] if event_type in {"touchEnd", "touchCancel"} else incoming_points
+        if points:
+            self.last_touch_points = points
+        dom_points = incoming_points if incoming_points else self.last_touch_points
+        cdp_error: Optional[Exception] = None
+        try:
+            cdp = await self.context.new_cdp_session(page) if self.context else None
+            if not cdp:
+                raise RuntimeError("CDP session is not available")
+            await cdp.send("Emulation.setTouchEmulationEnabled", {"enabled": True, "maxTouchPoints": 10})
+            await cdp.send("Input.dispatchTouchEvent", {"type": event_type, "touchPoints": points})
+            await cdp.detach()
+        except Exception as exc:  # noqa: BLE001 - DOM fallback is more important than CDP diagnostics here.
+            cdp_error = exc
+        await self._dispatch_dom_touch_event(page, event, dom_points)
+        if event_type in {"touchEnd", "touchCancel"}:
+            self.last_touch_points = []
+        if cdp_error and not dom_points:
+            raise cdp_error
+
+    async def _dispatch_dom_touch_event(self, page: Page, event: str, raw_points: Any) -> None:
+        await page.evaluate(
+            """
+            ({ event, points }) => {
+              const first = points && points[0] || { x: 0, y: 0, id: 1 };
+              const target = document.elementFromPoint(first.x || 0, first.y || 0);
+              if (!target) return false;
+              const type = event === 'start'
+                ? 'touchstart'
+                : event === 'move'
+                  ? 'touchmove'
+                  : event === 'cancel'
+                    ? 'touchcancel'
+                    : 'touchend';
+              const makeTouch = (point) => ({
+                identifier: point.id || 1,
+                target,
+                clientX: point.x || 0,
+                clientY: point.y || 0,
+                pageX: point.x || 0,
+                pageY: point.y || 0,
+                screenX: point.x || 0,
+                screenY: point.y || 0,
+                radiusX: point.radiusX || 1,
+                radiusY: point.radiusY || 1,
+                force: point.force == null ? 1 : point.force,
+              });
+              const active = Array.isArray(points) ? points.map(makeTouch) : [];
+              const init = {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                touches: type === 'touchend' || type === 'touchcancel' ? [] : active,
+                targetTouches: type === 'touchend' || type === 'touchcancel' ? [] : active,
+                changedTouches: active.length ? active : [makeTouch(first)],
+              };
+              try {
+                target.dispatchEvent(new TouchEvent(type, init));
+              } catch (_err) {
+                const ev = new Event(type, { bubbles: true, cancelable: true, composed: true });
+                Object.defineProperty(ev, 'touches', { value: init.touches });
+                Object.defineProperty(ev, 'targetTouches', { value: init.targetTouches });
+                Object.defineProperty(ev, 'changedTouches', { value: init.changedTouches });
+                target.dispatchEvent(ev);
+              }
+              return true;
+            }
+            """,
+            {"event": event, "points": raw_points if isinstance(raw_points, list) else []},
+        )
+
+    async def _dispatch_dom_wheel_if_non_scrollable(
+        self,
+        page: Page,
+        x: float,
+        y: float,
+        delta_x: float,
+        delta_y: float,
+        modifiers: Any,
+    ) -> None:
+        modifier_map = modifiers if isinstance(modifiers, dict) else {}
+        try:
+            await page.evaluate(
+                """
+                ({ x, y, deltaX, deltaY, modifiers }) => {
+                  const target = document.elementFromPoint(x, y);
+                  if (!target) return false;
+
+                  const canScroll = (el) => {
+                    if (!el) return false;
+                    const maxY = Math.max(0, el.scrollHeight - el.clientHeight);
+                    const maxX = Math.max(0, el.scrollWidth - el.clientWidth);
+                    const yScroll = maxY > 1 && (
+                      (deltaY > 0 && el.scrollTop < maxY - 1) ||
+                      (deltaY < 0 && el.scrollTop > 1)
+                    );
+                    const xScroll = maxX > 1 && (
+                      (deltaX > 0 && el.scrollLeft < maxX - 1) ||
+                      (deltaX < 0 && el.scrollLeft > 1)
+                    );
+                    return yScroll || xScroll;
+                  };
+
+                  let el = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+                  while (el && el !== document.documentElement) {
+                    if (canScroll(el)) return false;
+                    el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+                  }
+
+                  const event = new WheelEvent('wheel', {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: true,
+                    clientX: x,
+                    clientY: y,
+                    deltaX,
+                    deltaY,
+                    deltaMode: 0,
+                    altKey: Boolean(modifiers && modifiers.alt),
+                    ctrlKey: Boolean(modifiers && modifiers.ctrl),
+                    metaKey: Boolean(modifiers && modifiers.meta),
+                    shiftKey: Boolean(modifiers && modifiers.shift),
+                  });
+                  target.dispatchEvent(event);
+                  return true;
+                }
+                """,
+                {
+                    "x": x,
+                    "y": y,
+                    "deltaX": delta_x,
+                    "deltaY": delta_y,
+                    "modifiers": modifier_map,
+                },
+            )
+        except PlaywrightError:
+            pass
+
+    async def _prepare_dom_range_drag_candidate(self, page: Page, x: float, y: float) -> bool:
+        try:
+            return bool(
+                await page.evaluate(
+                    """
+                    ({ x, y }) => {
+                      const node = document.elementFromPoint(x, y);
+                      const el = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+                      if (!el || el.tagName !== 'INPUT' || String(el.type || '').toLowerCase() !== 'range') {
+                        window.__browserLabRangeDrag = null;
+                        return false;
+                      }
+                      window.__browserLabRangeDrag = { el };
+                      return true;
+                    }
+                    """,
+                    {"x": x, "y": y},
+                )
+            )
+        except PlaywrightError:
+            return False
+
+    async def _dom_range_drag_update(self, page: Page, x: float, y: float) -> None:
+        try:
+            await page.evaluate(
+                """
+                ({ x }) => {
+                  const session = window.__browserLabRangeDrag;
+                  const el = session && session.el;
+                  if (!el || el.tagName !== 'INPUT' || String(el.type || '').toLowerCase() !== 'range') return false;
+                  const rect = el.getBoundingClientRect();
+                  if (!rect.width) return false;
+                  const min = Number.isFinite(Number(el.min)) ? Number(el.min) : 0;
+                  const max = Number.isFinite(Number(el.max)) ? Number(el.max) : 100;
+                  const stepAttr = String(el.step || '');
+                  const step = stepAttr && stepAttr !== 'any' && Number.isFinite(Number(stepAttr)) ? Number(stepAttr) : 1;
+                  const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+                  let value = min + ratio * (max - min);
+                  if (step > 0) value = min + Math.round((value - min) / step) * step;
+                  value = Math.max(min, Math.min(max, value));
+                  const before = String(el.value);
+                  const proto = HTMLInputElement.prototype;
+                  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+                  descriptor.set.call(el, String(value));
+                  if (String(el.value) === before) return true;
+                  try {
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertReplacementText', data: null }));
+                  } catch (_err) {
+                    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                  }
+                  el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+                  return true;
+                }
+                """,
+                {"x": x, "y": y},
+            )
+        except PlaywrightError:
+            self.range_drag_candidate = False
+
+    async def _prepare_dom_text_selection_drag_candidate(
+        self,
+        page: Page,
+        x: float,
+        y: float,
+    ) -> Optional[Dict[str, float]]:
+        try:
+            found = await page.evaluate(
+                """
+                ({ x, y }) => {
+                  const textInputTypes = new Set([
+                    '', 'text', 'search', 'url', 'tel', 'email', 'password', 'number'
+                  ]);
+                  const node = document.elementFromPoint(x, y);
+                  const el = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+                  const contentEditableAncestor = (candidate) => {
+                    let current = candidate;
+                    while (current && current !== document.documentElement) {
+                      if (current.isContentEditable) return current;
+                      current = current.parentElement || (current.getRootNode && current.getRootNode().host) || null;
+                    }
+                    return null;
+                  };
+                  const isTextControl = (candidate) => {
+                    if (!candidate) return false;
+                    if (candidate.tagName === 'TEXTAREA') return true;
+                    if (candidate.tagName !== 'INPUT') return false;
+                    return textInputTypes.has(String(candidate.type || '').toLowerCase());
+                  };
+                  if (isTextControl(el)) {
+                    window.__browserLabTextSelectDrag = { el, startX: x, startY: y, mode: 'control' };
+                    return true;
+                  }
+                  const rich = contentEditableAncestor(el);
+                  if (rich) {
+                    const doc = rich.ownerDocument || document;
+                    const pointRange = (clientX, clientY) => {
+                      if (doc.caretRangeFromPoint) return doc.caretRangeFromPoint(clientX, clientY);
+                      if (doc.caretPositionFromPoint) {
+                        const pos = doc.caretPositionFromPoint(clientX, clientY);
+                        if (!pos) return null;
+                        const range = doc.createRange();
+                        range.setStart(pos.offsetNode, pos.offset);
+                        range.collapse(true);
+                        return range;
+                      }
+                      return null;
+                    };
+                    const range = pointRange(x, y);
+                    window.__browserLabTextSelectDrag = {
+                      el: rich,
+                      startX: x,
+                      startY: y,
+                      mode: 'contenteditable',
+                      startNode: range ? range.startContainer : null,
+                      startOffset: range ? range.startOffset : 0
+                    };
+                    return true;
+                  }
+                  if (!isTextControl(el)) {
+                    window.__browserLabTextSelectDrag = null;
+                    return false;
+                  }
+                }
+                """,
+                {"x": x, "y": y},
+            )
+            return {"start_x": x, "start_y": y, "active": 0.0} if found else None
+        except PlaywrightError:
+            return None
+
+    async def _dom_text_selection_drag_update(self, page: Page, x: float, y: float, finish: bool) -> None:
+        if not self.text_selection_drag_candidate:
+            return
+        distance = abs(x - self.text_selection_drag_candidate["start_x"]) + abs(
+            y - self.text_selection_drag_candidate["start_y"]
+        )
+        if not self.text_selection_drag_candidate["active"] and distance < 6:
+            return
+        self.text_selection_drag_candidate["active"] = 1.0
+        try:
+            await page.evaluate(
+                """
+                ({ x, y, finish }) => {
+                  const session = window.__browserLabTextSelectDrag;
+                  const el = session && session.el;
+                  if (!el) return false;
+                  if (document.activeElement !== el) {
+                    try { el.focus({ preventScroll: true }); } catch (_err) { el.focus(); }
+                  }
+                  if (el.isContentEditable || session.mode === 'contenteditable') {
+                    const doc = el.ownerDocument || document;
+                    const selection = doc.getSelection && doc.getSelection();
+                    if (!selection || !session.startNode) return false;
+                    const pointRange = (clientX, clientY) => {
+                      if (doc.caretRangeFromPoint) return doc.caretRangeFromPoint(clientX, clientY);
+                      if (doc.caretPositionFromPoint) {
+                        const pos = doc.caretPositionFromPoint(clientX, clientY);
+                        if (!pos) return null;
+                        const range = doc.createRange();
+                        range.setStart(pos.offsetNode, pos.offset);
+                        range.collapse(true);
+                        return range;
+                      }
+                      return null;
+                    };
+                    const endRange = pointRange(x, y);
+                    if (!endRange) return false;
+                    const range = doc.createRange();
+                    try {
+                      range.setStart(session.startNode, session.startOffset);
+                      range.setEnd(endRange.startContainer, endRange.startOffset);
+                    } catch (_err) {
+                      return false;
+                    }
+                    if (range.collapsed && !finish) return true;
+                    const forward = range.startContainer === session.startNode && range.startOffset === session.startOffset;
+                    if (!forward) {
+                      try {
+                        range.setStart(endRange.startContainer, endRange.startOffset);
+                        range.setEnd(session.startNode, session.startOffset);
+                      } catch (_err) {
+                        return false;
+                      }
+                    }
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    return true;
+                  }
+                  if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return false;
+                  const value = String(el.value || '');
+                  const rect = el.getBoundingClientRect();
+                  if (!rect.width || value.length === 0) return false;
+                  const style = window.getComputedStyle(el);
+                  const borderLeft = parseFloat(style.borderLeftWidth || '0') || 0;
+                  const borderRight = parseFloat(style.borderRightWidth || '0') || 0;
+                  const paddingLeft = parseFloat(style.paddingLeft || '0') || 0;
+                  const paddingRight = parseFloat(style.paddingRight || '0') || 0;
+                  const innerLeft = rect.left + borderLeft + paddingLeft;
+                  const innerWidth = Math.max(1, rect.width - borderLeft - borderRight - paddingLeft - paddingRight);
+                  const indexAt = (clientX) => {
+                    const ratio = Math.max(0, Math.min(1, (clientX - innerLeft) / innerWidth));
+                    return Math.max(0, Math.min(value.length, Math.round(ratio * value.length)));
+                  };
+                  const start = indexAt(session.startX);
+                  const end = indexAt(x);
+                  if (start === end && !finish) return true;
+                  try {
+                    el.setSelectionRange(Math.min(start, end), Math.max(start, end), start <= end ? 'forward' : 'backward');
+                  } catch (_err) {
+                    return false;
+                  }
+                  return true;
+                }
+                """,
+                {"x": x, "y": y, "finish": finish},
+            )
+        except PlaywrightError:
+            self.text_selection_drag_candidate = None
+
+    async def _prepare_dom_drag_candidate(self, page: Page, x: float, y: float) -> None:
+        try:
+            found = await page.evaluate(
+                """
+                ({ x, y }) => {
+                  const draggableAncestor = (node) => {
+                    let el = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+                    while (el && el !== document.documentElement) {
+                      if (el.draggable || el.getAttribute('draggable') === 'true') return el;
+                      el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+                    }
+                    return null;
+                  };
+                  const source = draggableAncestor(document.elementFromPoint(x, y));
+                  if (!source) {
+                    window.__browserLabDomDrag = null;
+                    return false;
+                  }
+                  let dataTransfer = null;
+                  try {
+                    dataTransfer = new DataTransfer();
+                  } catch (_err) {}
+                  window.__browserLabDomDrag = {
+                    source,
+                    dataTransfer,
+                    started: false,
+                    lastTarget: null,
+                  };
+                  return true;
+                }
+                """,
+                {"x": x, "y": y},
+            )
+            self.dom_drag_candidate = {"start_x": x, "start_y": y, "active": 0.0} if found else None
+        except PlaywrightError:
+            self.dom_drag_candidate = None
+
+    async def _dom_drag_move(self, page: Page, x: float, y: float) -> None:
+        if not self.dom_drag_candidate:
+            return
+        distance = abs(x - self.dom_drag_candidate["start_x"]) + abs(y - self.dom_drag_candidate["start_y"])
+        if not self.dom_drag_candidate["active"] and distance < 8:
+            return
+        try:
+            active = await page.evaluate(
+                """
+                ({ x, y }) => {
+                  const session = window.__browserLabDomDrag;
+                  if (!session || !session.source) return false;
+                  const makeEvent = (type, target) => {
+                    const init = {
+                      bubbles: true,
+                      cancelable: true,
+                      composed: true,
+                      clientX: x,
+                      clientY: y,
+                      dataTransfer: session.dataTransfer,
+                    };
+                    try {
+                      return new DragEvent(type, init);
+                    } catch (_err) {
+                      const ev = new Event(type, init);
+                      for (const [key, value] of Object.entries(init)) {
+                        try { Object.defineProperty(ev, key, { value }); } catch (_inner) {}
+                      }
+                      return ev;
+                    }
+                  };
+                  const dispatch = (target, type) => {
+                    if (!target) return true;
+                    return target.dispatchEvent(makeEvent(type, target));
+                  };
+                  if (!session.started) {
+                    const allowed = dispatch(session.source, 'dragstart');
+                    if (!allowed) {
+                      window.__browserLabDomDrag = null;
+                      return false;
+                    }
+                    session.started = true;
+                  }
+                  const target = document.elementFromPoint(x, y);
+                  if (target && target !== session.lastTarget) {
+                    if (session.lastTarget) dispatch(session.lastTarget, 'dragleave');
+                    dispatch(target, 'dragenter');
+                    session.lastTarget = target;
+                  }
+                  dispatch(target, 'dragover');
+                  return true;
+                }
+                """,
+                {"x": x, "y": y},
+            )
+            self.dom_drag_candidate["active"] = 1.0 if active else 0.0
+            if not active:
+                self.dom_drag_candidate = None
+        except PlaywrightError:
+            self.dom_drag_candidate = None
+
+    async def _dom_drag_drop(self, page: Page, x: float, y: float) -> None:
+        try:
+            await page.evaluate(
+                """
+                ({ x, y }) => {
+                  const session = window.__browserLabDomDrag;
+                  if (!session || !session.source) return false;
+                  const makeEvent = (type, target) => {
+                    const init = {
+                      bubbles: true,
+                      cancelable: true,
+                      composed: true,
+                      clientX: x,
+                      clientY: y,
+                      dataTransfer: session.dataTransfer,
+                    };
+                    try {
+                      return new DragEvent(type, init);
+                    } catch (_err) {
+                      const ev = new Event(type, init);
+                      for (const [key, value] of Object.entries(init)) {
+                        try { Object.defineProperty(ev, key, { value }); } catch (_inner) {}
+                      }
+                      return ev;
+                    }
+                  };
+                  const dispatch = (target, type) => {
+                    if (!target) return true;
+                    return target.dispatchEvent(makeEvent(type, target));
+                  };
+                  const target = document.elementFromPoint(x, y);
+                  if (session.started) {
+                    if (target) dispatch(target, 'drop');
+                    dispatch(session.source, 'dragend');
+                  }
+                  window.__browserLabDomDrag = null;
+                  return true;
+                }
+                """,
+                {"x": x, "y": y},
+            )
+        except PlaywrightError:
+            pass
+
     async def key(self, message: Dict[str, Any]) -> None:
         page = self._active_page()
         event = message.get("event")
@@ -802,8 +1461,13 @@ class BrowserLab:
             text = str(message.get("text") or "")
             if text:
                 text = text[:20_000]
+                await self._release_text_modifiers(page)
                 mode = str(message.get("mode") or "hybrid")
                 if mode == "dom":
+                    await self._dom_insert_text(text)
+                elif mode == "hybrid" and await self._active_element_is_inside_shadow_root():
+                    await self._dom_insert_text(text)
+                elif mode == "hybrid" and await self._active_element_requires_dom_value_set():
                     await self._dom_insert_text(text)
                 elif _is_keyboard_typable_text(text):
                     await page.keyboard.type(text, delay=8)
@@ -831,6 +1495,13 @@ class BrowserLab:
             if "Unknown key" in str(exc):
                 return
             raise
+
+    async def _release_text_modifiers(self, page: Page) -> None:
+        for modifier in ("Alt", "Control", "Meta", "Shift"):
+            try:
+                await page.keyboard.up(modifier)
+            except PlaywrightError:
+                pass
 
     async def composition(self, message: Dict[str, Any]) -> None:
         frame = await self._active_element_frame()
@@ -896,6 +1567,55 @@ class BrowserLab:
     async def _dom_insert_text(self, text: str) -> None:
         await self._insert_text_with_dom_events(text, "insertText", dispatch_beforeinput=True)
 
+    async def _active_element_is_inside_shadow_root(self) -> bool:
+        frame = await self._active_element_frame()
+        try:
+            return bool(
+                await frame.evaluate(
+                    """
+                    () => {
+                      const active = document.activeElement;
+                      return Boolean(active && active.shadowRoot && active.shadowRoot.activeElement);
+                    }
+                    """
+                )
+            )
+        except PlaywrightError:
+            return False
+
+    async def _active_element_requires_dom_value_set(self) -> bool:
+        frame = await self._active_element_frame()
+        try:
+            return bool(
+                await frame.evaluate(
+                    """
+                    ({ x, y }) => {
+                      const deepActiveElement = () => {
+                        let el = document.activeElement;
+                        while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+                          el = el.shadowRoot.activeElement;
+                        }
+                        return el;
+                      };
+                      const needsDomValueSet = (el) => {
+                        if (!el || el.tagName !== 'INPUT') return false;
+                        const type = String(el.type || '').toLowerCase();
+                        return ['date', 'time', 'datetime-local', 'month', 'week', 'color'].includes(type);
+                      };
+                      const active = deepActiveElement();
+                      if (needsDomValueSet(active)) return true;
+                      if (Number.isFinite(x) && Number.isFinite(y)) {
+                        return needsDomValueSet(document.elementFromPoint(x, y));
+                      }
+                      return false;
+                    }
+                    """,
+                    {"x": self.last_mouse_x, "y": self.last_mouse_y},
+                )
+            )
+        except PlaywrightError:
+            return False
+
     async def paste(self, message: Dict[str, Any]) -> None:
         text = str(message.get("text") or "")[:20_000]
         if not text:
@@ -936,11 +1656,131 @@ class BrowserLab:
         if allowed:
             await self._insert_text_with_dom_events(text, "insertFromPaste", dispatch_beforeinput=True)
 
-    async def _insert_text_with_dom_events(self, text: str, input_type: str, dispatch_beforeinput: bool) -> None:
-        frame = await self._active_element_frame()
-        await frame.evaluate(
+    async def upload_files(self, message: Dict[str, Any]) -> int:
+        payloads = self._decode_file_payloads(message.get("files"))
+        element = await self._file_input_element_for_upload()
+        if not element:
+            raise ValueError("No focused or recently clicked file input found")
+        await element.set_input_files(payloads)
+        return len(payloads)
+
+    def _decode_file_payloads(self, raw_files: Any) -> list[Dict[str, Any]]:
+        if not isinstance(raw_files, list) or not raw_files:
+            raise ValueError("No files provided")
+        if len(raw_files) > MAX_UPLOAD_FILES:
+            raise ValueError(f"Too many files; max {MAX_UPLOAD_FILES}")
+
+        payloads = []
+        total_bytes = 0
+        for item in raw_files:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid file payload")
+            raw_name = str(item.get("name") or "upload.bin")
+            safe_name = Path(raw_name).name.replace("\x00", "")[:255] or "upload.bin"
+            mime = str(item.get("mime") or "application/octet-stream")[:200] or "application/octet-stream"
+            data_text = str(item.get("data") or "")
+            try:
+                data = base64.b64decode(data_text, validate=True)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError("Invalid file encoding") from exc
+            if len(data) > MAX_UPLOAD_FILE_BYTES:
+                raise ValueError(f"File exceeds {MAX_UPLOAD_FILE_BYTES // 1024 // 1024} MB limit")
+            total_bytes += len(data)
+            if total_bytes > MAX_UPLOAD_TOTAL_BYTES:
+                raise ValueError(f"Upload exceeds {MAX_UPLOAD_TOTAL_BYTES // 1024 // 1024} MB total limit")
+            payloads.append({"name": safe_name, "mimeType": mime, "buffer": data})
+        return payloads
+
+    async def drop_files(self, message: Dict[str, Any]) -> int:
+        page = self._active_page()
+        payloads = self._decode_file_payloads(message.get("files"))
+        max_x = max(0, self.state.viewport_width - 1)
+        max_y = max(0, self.state.viewport_height - 1)
+        x = _clamp_float(message.get("x"), 0, max_x, self.last_mouse_x)
+        y = _clamp_float(message.get("y"), 0, max_y, self.last_mouse_y)
+        serializable_files = [
+            {
+                "name": item["name"],
+                "mimeType": item["mimeType"],
+                "data": base64.b64encode(item["buffer"]).decode("ascii"),
+            }
+            for item in payloads
+        ]
+        dropped = await page.evaluate(
             """
-            ({ text, inputType, dispatchBeforeinput }) => {
+            ({ x, y, files }) => {
+              const target = document.elementFromPoint(x, y);
+              if (!target) return false;
+              let dataTransfer = null;
+              try {
+                dataTransfer = new DataTransfer();
+                for (const file of files) {
+                  const binary = atob(file.data);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let i = 0; i < binary.length; i += 1) {
+                    bytes[i] = binary.charCodeAt(i);
+                  }
+                  dataTransfer.items.add(new File([bytes], file.name, {
+                    type: file.mimeType || 'application/octet-stream',
+                    lastModified: Date.now(),
+                  }));
+                }
+              } catch (_err) {
+                return false;
+              }
+              const makeEvent = (type) => {
+                const init = {
+                  bubbles: true,
+                  cancelable: true,
+                  composed: true,
+                  clientX: x,
+                  clientY: y,
+                  dataTransfer,
+                };
+                try {
+                  return new DragEvent(type, init);
+                } catch (_err) {
+                  const ev = new Event(type, init);
+                  for (const [key, value] of Object.entries(init)) {
+                    try { Object.defineProperty(ev, key, { value }); } catch (_inner) {}
+                  }
+                  return ev;
+                }
+              };
+              target.dispatchEvent(makeEvent('dragenter'));
+              target.dispatchEvent(makeEvent('dragover'));
+              target.dispatchEvent(makeEvent('drop'));
+              return true;
+            }
+            """,
+            {"x": x, "y": y, "files": serializable_files},
+        )
+        if not dropped:
+            raise ValueError("No drop target accepted the file payload")
+        return len(payloads)
+
+    async def _file_input_element_for_upload(self) -> Any:
+        frame = await self._active_element_frame()
+        handle = await frame.evaluate_handle(
+            """
+            ({ x, y }) => {
+              const fileInputFrom = (node) => {
+                let el = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+                if (!el) return null;
+                if (el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'file') return el;
+                if (el.tagName === 'LABEL') {
+                  if (el.control && String(el.control.type || '').toLowerCase() === 'file') return el.control;
+                  const nested = el.querySelector && el.querySelector('input[type="file"]');
+                  if (nested) return nested;
+                }
+                const label = el.closest && el.closest('label');
+                if (label) {
+                  if (label.control && String(label.control.type || '').toLowerCase() === 'file') return label.control;
+                  const nested = label.querySelector && label.querySelector('input[type="file"]');
+                  if (nested) return nested;
+                }
+                return null;
+              };
               const deepActiveElement = () => {
                 let el = document.activeElement;
                 while (el && el.shadowRoot && el.shadowRoot.activeElement) {
@@ -948,7 +1788,49 @@ class BrowserLab:
                 }
                 return el;
               };
-              const el = deepActiveElement();
+              const activeInput = fileInputFrom(deepActiveElement());
+              if (activeInput) return activeInput;
+              if (Number.isFinite(x) && Number.isFinite(y)) {
+                const pointedInput = fileInputFrom(document.elementFromPoint(x, y));
+                if (pointedInput) return pointedInput;
+              }
+              const visibleInputs = Array.from(document.querySelectorAll('input[type="file"]')).filter((input) => {
+                const style = window.getComputedStyle(input);
+                return !input.disabled && style.display !== 'none' && style.visibility !== 'hidden';
+              });
+              return visibleInputs.length === 1 ? visibleInputs[0] : null;
+            }
+            """,
+            {"x": self.last_mouse_x, "y": self.last_mouse_y},
+        )
+        element = handle.as_element()
+        if not element:
+            await handle.dispose()
+            return None
+        return element
+
+    async def _insert_text_with_dom_events(self, text: str, input_type: str, dispatch_beforeinput: bool) -> None:
+        frame = await self._active_element_frame()
+        await frame.evaluate(
+            """
+            ({ text, inputType, dispatchBeforeinput, payloadX, payloadY }) => {
+              const replaceValueTypes = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+              const needsDomValueSet = (node) => {
+                const el = node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+                if (!el || el.tagName !== 'INPUT') return false;
+                return replaceValueTypes.includes(String(el.type || '').toLowerCase()) ? el : null;
+              };
+              const deepActiveElement = () => {
+                let el = document.activeElement;
+                while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+                  el = el.shadowRoot.activeElement;
+                }
+                return el;
+              };
+              let el = deepActiveElement();
+              if (!el || el === document.body || el === document.documentElement) {
+                el = needsDomValueSet(document.elementFromPoint(payloadX, payloadY));
+              }
               if (!el || el === document.body || el === document.documentElement) return false;
               const opts = { bubbles: true, composed: true, cancelable: true };
               if (dispatchBeforeinput) {
@@ -967,6 +1849,78 @@ class BrowserLab:
               if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
               const proto = tag === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
               const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+              const dispatchValueEvents = () => {
+                try {
+                  el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType, data: text }));
+                } catch (_err) {
+                  el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+                }
+                el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+              };
+              const controlType = tag === 'INPUT' ? String(el.type || '').toLowerCase() : '';
+              if (!replaceValueTypes.includes(controlType)) {
+                const pointed = needsDomValueSet(document.elementFromPoint(payloadX, payloadY));
+                if (pointed) el = pointed;
+              }
+              const effectiveTag = el.tagName;
+              const effectiveType = effectiveTag === 'INPUT' ? String(el.type || '').toLowerCase() : '';
+              if (replaceValueTypes.includes(effectiveType)) {
+                window.__browserLabPendingSpecialInput = window.__browserLabPendingSpecialInput || new WeakMap();
+                const pendingMap = window.__browserLabPendingSpecialInput;
+                const pending = pendingMap.get(el) || String(el.value || '');
+                const incoming = String(text || '');
+                const candidate = incoming.length > 1 ? incoming : pending + incoming;
+                const normalizeSpecialValue = (type, value) => {
+                  const clean = String(value || '').trim();
+                  const digits = clean.replace(/\\D+/g, '');
+                  if (type === 'date') {
+                    if (/^\\d{4}-\\d{2}-\\d{2}$/.test(clean)) return clean;
+                    if (/^\\d{8}$/.test(digits)) {
+                      return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+                    }
+                    return '';
+                  }
+                  if (type === 'time') {
+                    const timeMatch = clean.match(/^(\\d{2}:\\d{2})(?::\\d{2})?/);
+                    if (timeMatch) return timeMatch[1];
+                    if (/^\\d{4}$/.test(digits)) return `${digits.slice(0, 2)}:${digits.slice(2, 4)}`;
+                    return '';
+                  }
+                  if (type === 'datetime-local') {
+                    const datetimeMatch = clean.match(/^(\\d{4}-\\d{2}-\\d{2})[T\\s](\\d{2}:\\d{2})/);
+                    if (datetimeMatch) return `${datetimeMatch[1]}T${datetimeMatch[2]}`;
+                    if (/^\\d{12}$/.test(digits)) {
+                      return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}T${digits.slice(8, 10)}:${digits.slice(10, 12)}`;
+                    }
+                    return '';
+                  }
+                  if (type === 'month') {
+                    if (/^\\d{4}-\\d{2}$/.test(clean)) return clean;
+                    if (/^\\d{6}$/.test(digits)) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}`;
+                    return '';
+                  }
+                  if (type === 'week') {
+                    const weekMatch = clean.match(/^(\\d{4}-W\\d{2})$/i);
+                    if (weekMatch) return weekMatch[1].toUpperCase();
+                    if (/^\\d{6}$/.test(digits)) return `${digits.slice(0, 4)}-W${digits.slice(4, 6)}`;
+                    return '';
+                  }
+                  if (type === 'color') {
+                    const colorMatch = clean.match(/^#[0-9a-f]{6}$/i);
+                    if (colorMatch) return colorMatch[0].toLowerCase();
+                    const hexMatch = clean.match(/^[0-9a-f]{6}$/i);
+                    return hexMatch ? `#${hexMatch[0].toLowerCase()}` : '';
+                  }
+                  return clean;
+                };
+                pendingMap.set(el, candidate.slice(-64));
+                const nextValue = normalizeSpecialValue(effectiveType, candidate);
+                if (!nextValue) return true;
+                descriptor.set.call(el, nextValue);
+                pendingMap.delete(el);
+                dispatchValueEvents();
+                return true;
+              }
               const oldValue = String(el.value || '');
               const start = typeof el.selectionStart === 'number' ? el.selectionStart : oldValue.length;
               const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
@@ -976,21 +1930,76 @@ class BrowserLab:
               try {
                 el.setSelectionRange(cursor, cursor);
               } catch (_err) {}
-              try {
-                el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType, data: text }));
-              } catch (_err) {
-                el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-              }
-              el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+              dispatchValueEvents();
               return true;
             }
             """,
-            {"text": text, "inputType": input_type, "dispatchBeforeinput": dispatch_beforeinput},
+            {
+                "text": text,
+                "inputType": input_type,
+                "dispatchBeforeinput": dispatch_beforeinput,
+                "payloadX": self.last_mouse_x,
+                "payloadY": self.last_mouse_y,
+            },
         )
 
-    async def copy(self) -> None:
+    async def copy(self) -> Optional[str]:
         page = self._active_page()
+        text = await self._selected_text_for_copy()
         await page.keyboard.press("Control+C")
+        return text
+
+    async def cut(self) -> Optional[str]:
+        page = self._active_page()
+        text = await self._selected_text_for_copy()
+        await page.keyboard.press("Control+X")
+        return text
+
+    async def _selected_text_for_copy(self) -> Optional[str]:
+        frame = await self._active_element_frame()
+        try:
+            text = await frame.evaluate(
+                """
+                () => {
+                  const deepActiveElement = () => {
+                    let el = document.activeElement;
+                    while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+                      el = el.shadowRoot.activeElement;
+                    }
+                    return el;
+                  };
+                  const el = deepActiveElement();
+                  const isInput = el && el.tagName === 'INPUT';
+                  const isTextArea = el && el.tagName === 'TEXTAREA';
+                  if (isInput || isTextArea) {
+                    const type = String(el.type || '').toLowerCase();
+                    const autocomplete = String(el.autocomplete || '').toLowerCase();
+                    if (type === 'password' || autocomplete.includes('password')) return null;
+                    if (type === 'file' || type === 'hidden') return null;
+                    const start = typeof el.selectionStart === 'number' ? el.selectionStart : null;
+                    const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : null;
+                    if (start === null || end === null || end <= start) return '';
+                    return String(el.value || '').slice(start, end);
+                  }
+
+                  const selection = window.getSelection && window.getSelection();
+                  if (!selection || selection.rangeCount === 0) return '';
+                  const selected = selection.toString();
+                  if (!selected) return '';
+                  if (el && el.isContentEditable) {
+                    const range = selection.getRangeAt(0);
+                    if (!el.contains(range.commonAncestorContainer)) return '';
+                  }
+                  return selected;
+                }
+                """
+            )
+        except PlaywrightError:
+            return None
+        if not isinstance(text, str):
+            return None
+        text = text[:100_000]
+        return text if text else None
 
     async def _active_element_frame(self) -> Any:
         page = self._active_page()
@@ -1182,15 +2191,34 @@ async def _handle_command(
             await _send_log(ws, send_lock, "info", f"stream settings applied: {settings['fps']} fps, JPEG {settings['quality']}")
         elif msg_type == "mouse":
             await controller.mouse(message)
+        elif msg_type == "touch":
+            await controller.touch(message)
         elif msg_type == "key":
             await controller.key(message)
         elif msg_type == "composition":
             await controller.composition(message)
         elif msg_type == "paste":
             await controller.paste(message)
+        elif msg_type == "files":
+            file_count = await controller.upload_files(message)
+            await _send_log(ws, send_lock, "info", f"uploaded {file_count} file(s) to remote file input")
+        elif msg_type == "file_drop":
+            file_count = await controller.drop_files(message)
+            await _send_log(ws, send_lock, "info", f"dropped {file_count} file(s) into remote page")
         elif msg_type == "copy":
-            await controller.copy()
-            await _send_log(ws, send_lock, "info", "copy shortcut sent to remote browser")
+            copied_text = await controller.copy()
+            if copied_text:
+                await _send_json(ws, send_lock, {"type": "clipboard", "text": copied_text})
+                await _send_log(ws, send_lock, "info", f"copy sent {len(copied_text)} chars to host clipboard")
+            else:
+                await _send_log(ws, send_lock, "info", "copy shortcut sent; no readable non-sensitive selection")
+        elif msg_type == "cut":
+            cut_text = await controller.cut()
+            if cut_text:
+                await _send_json(ws, send_lock, {"type": "clipboard", "text": cut_text})
+                await _send_log(ws, send_lock, "info", f"cut sent {len(cut_text)} chars to host clipboard")
+            else:
+                await _send_log(ws, send_lock, "info", "cut shortcut sent; no readable non-sensitive selection")
         else:
             await _send_log(ws, send_lock, "warn", f"unknown command: {msg_type}")
     except Exception as exc:  # noqa: BLE001

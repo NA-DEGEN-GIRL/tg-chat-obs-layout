@@ -71,6 +71,52 @@ class STTManager:
             )
         raise RuntimeError(f"알 수 없는 STT_PROVIDER: {provider}")
 
+    async def start_remote(self) -> bool:
+        async with self._lock:
+            if self.active:
+                return True
+            try:
+                self._backend = self._make_backend()
+                await self._backend.connect()
+                self._consumer_task = asyncio.create_task(
+                    self._audio_consumer(), name="stt-audio-consumer"
+                )
+                self.active = True
+                print(
+                    f"[STT] remote input started provider={self.cfg.get('provider')} "
+                    f"model={self._backend.__class__.__name__} sample_rate={self._backend.sample_rate}",
+                    flush=True,
+                )
+                return True
+            except Exception as e:
+                print(f"[STT] remote start failed: {e}", flush=True)
+                await self._cleanup_locked()
+                return False
+
+    @property
+    def sample_rate(self) -> int:
+        if self._backend is not None:
+            return int(getattr(self._backend, "sample_rate", 24000) or 24000)
+        backend = self._make_backend()
+        return int(getattr(backend, "sample_rate", 24000) or 24000)
+
+    def feed_audio(self, pcm16: bytes) -> bool:
+        if not self.active or not pcm16:
+            return False
+        try:
+            self._audio_queue.put_nowait(bytes(pcm16))
+            return True
+        except asyncio.QueueFull:
+            try:
+                self._audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self._audio_queue.put_nowait(bytes(pcm16))
+                return True
+            except asyncio.QueueFull:
+                return False
+
     async def start(self) -> bool:
         async with self._lock:
             if self.active:

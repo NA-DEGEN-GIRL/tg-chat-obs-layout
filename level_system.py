@@ -381,6 +381,56 @@ class LevelStore:
         self.save()
         return record, old, new
 
+    def apply_once_bonus(
+        self,
+        profile: dict,
+        marker: str,
+        *,
+        delta: int = 1,
+        minimum_level: int = 0,
+    ) -> tuple[dict[str, Any], int, int, bool]:
+        profile = dict(profile)
+        role_list = merge_roles(profile.get("roles"))
+        if profile.get("is_host") or "king" in role_list:
+            role_list = ["king"] + [role for role in role_list if role != "king"]
+        if profile.get("is_bot") and "bot" not in role_list:
+            role_list.append("bot")
+        profile["roles"] = role_list
+        key = self.key_for_profile(profile)
+        now = time.time()
+        field = str(marker or "").strip()
+        if not field:
+            field = "once_bonus_at"
+        with self.lock:
+            if key not in self.users and profile.get("speaker_id") and profile.get("username"):
+                old_key = level_key("", str(profile.get("username") or "").lstrip("@"), str(profile.get("name") or ""))
+                if old_key in self.users:
+                    self.users[key] = self.users.pop(old_key)
+            if key not in self.users or not isinstance(self.users.get(key), dict):
+                self.users[key] = {
+                    **self.profile_record(profile, role_list),
+                    "level": self._initial_level(profile, "chat"),
+                    "first_seen_at": now,
+                }
+            target = self.users[key]
+            for update_field, value in self.profile_record(profile, merge_roles(target.get("roles"), role_list)).items():
+                target[update_field] = value
+            old = clamp_level(target.get("level", self.minimum), minimum=self.minimum, maximum=self.maximum)
+            if target.get(field):
+                return dict(target), old, old, False
+            if old < int(minimum_level):
+                return dict(target), old, old, False
+            roles = normalize_roles(target.get("roles"))
+            if "king" in roles:
+                return dict(target), old, old, False
+            new = clamp_level(old + int(delta), minimum=self.minimum, maximum=self.maximum)
+            target[field] = now
+            target["level"] = new
+            target["updated_at"] = now
+            record = dict(target)
+        self.save()
+        return record, old, new, new != old
+
     def mark_notified_level(self, key: str, level: int) -> None:
         with self.lock:
             record = self.users.get(key)

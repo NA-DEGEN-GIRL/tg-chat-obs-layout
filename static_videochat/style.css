@@ -50,9 +50,7 @@ body.viewer-mode .widget-resize {
 
 body.tg-app-ui-hidden #topic-controls,
 body.tg-app-ui-hidden #avatar-controls,
-body.tg-app-ui-hidden #app-settings-toggle,
 body.tg-app-ui-hidden #chat-controls,
-body.tg-app-ui-hidden .effect-control,
 body.tg-app-ui-hidden .topic-resize-handle,
 body.tg-app-ui-hidden .toast-resize-handle {
   display: none !important;
@@ -71,6 +69,18 @@ body.tg-app-ui-hidden #chat-panel:not(.chat-hidden) #chat-send-panel:not([hidden
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+}
+
+body.tg-app-ui-hidden.app-settings-open #avatar-controls {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 0.96 !important;
+  pointer-events: auto !important;
+  transform: translateY(0) !important;
+}
+
+body.tg-app-ui-hidden.app-settings-open #avatar-controls * {
+  pointer-events: auto !important;
 }
 
 body.viewer-mode #stream-preview-panel.empty {
@@ -327,10 +337,29 @@ body::after {
   overflow: auto;
 }
 
-body.control-mode.app-settings-open #avatar-controls {
+body.app-settings-open #avatar-controls {
   opacity: 0.96;
   pointer-events: auto;
   transform: translateY(0);
+}
+
+body.tg-app-ui-hidden.app-settings-open #avatar-controls {
+  opacity: 0.96;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+#avatar-controls[hidden],
+body:not(.app-settings-open) #avatar-controls {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+#avatar-controls[hidden] *,
+body:not(.app-settings-open) #avatar-controls * {
+  pointer-events: none !important;
 }
 
 #app-settings-toggle {
@@ -355,12 +384,8 @@ body.control-mode.app-settings-open #avatar-controls {
   transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
 
-body.control-mode #app-settings-toggle {
+#app-settings-toggle {
   display: inline-flex;
-}
-
-body.control-mode.tg-app-ui-hidden #app-settings-toggle {
-  display: none;
 }
 
 #app-settings-toggle:hover,
@@ -679,6 +704,7 @@ body.control-mode.tg-app-ui-hidden #app-settings-toggle {
     inset 0 0 0 1px rgba(255,255,255,0.035);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  box-sizing: border-box;
 }
 
 #stream-preview-panel.empty {
@@ -698,15 +724,23 @@ body.control-mode.tg-app-ui-hidden #app-settings-toggle {
   -webkit-backdrop-filter: none;
 }
 
-body.control-mode #stream-preview-panel.preview-hidden {
-  width: 58px !important;
+#stream-preview-panel.preview-hidden {
+  width: 176px !important;
   height: 36px !important;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  opacity: 1 !important;
   border-color: rgba(255,255,255,0.16);
   border-radius: 999px;
-  background: rgba(7, 12, 18, 0.72);
-  box-shadow: 0 10px 26px rgba(0,0,0,0.34);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background:
+    linear-gradient(180deg, rgba(12,18,27,0.86), rgba(5,9,15,0.84)),
+    radial-gradient(circle at 22% 0%, rgba(99, 216, 169, 0.18), transparent 38%);
+  box-shadow:
+    0 14px 34px rgba(0,0,0,0.36),
+    inset 0 0 0 1px rgba(255,255,255,0.035);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 #stream-preview-panel.preview-hidden #stream-preview-list,
@@ -714,25 +748,46 @@ body.control-mode #stream-preview-panel.preview-hidden {
   display: none;
 }
 
-body.control-mode #stream-preview-panel.preview-hidden #stream-preview-controls {
+#stream-preview-panel.preview-hidden #stream-preview-controls {
   inset: 4px;
-  right: auto;
-  top: auto;
-  opacity: 0.94;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+  opacity: 0.96;
+  pointer-events: auto;
 }
 
-body.control-mode #stream-preview-panel.preview-hidden #stream-preview-drag {
+#stream-preview-panel.preview-hidden #stream-preview-drag {
   display: none;
 }
 
-body.control-mode #stream-preview-panel.preview-hidden #stream-preview-refresh {
+#stream-preview-panel.preview-hidden #stream-preview-refresh {
   display: none;
 }
 
-body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
-  min-width: 50px;
+#stream-preview-panel.preview-hidden #stream-preview-quality {
+  display: none;
+}
+
+#stream-preview-panel.preview-hidden #stream-preview-toggle {
+  min-width: 122px;
   height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
+  cursor: grab;
+}
+
+#stream-preview-panel.preview-hidden #stream-preview-close {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#stream-preview-panel.preview-hidden.dragging #stream-preview-toggle {
+  cursor: grabbing;
 }
 
 #stream-preview-controls,
@@ -757,6 +812,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 
 #stream-preview-controls button,
 #stream-viewer-bar button {
+  pointer-events: auto;
   min-width: 34px;
   height: 28px;
   padding: 0 8px;
@@ -788,6 +844,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
   -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
 }
 
 #stream-preview-list::-webkit-scrollbar {
@@ -804,6 +861,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 }
 
 .stream-preview-item {
+  position: relative;
   width: 100%;
   flex: 0 0 auto;
   min-height: 112px;
@@ -821,6 +879,35 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   cursor: pointer;
   pointer-events: auto;
   text-align: left;
+  box-sizing: border-box;
+}
+
+.stream-preview-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--stream-color, #ffffff) 72%, #ffffff);
+  outline-offset: 2px;
+}
+
+.stream-preview-rotate {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 6;
+  min-width: 34px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  background: rgba(4, 7, 12, 0.74);
+  color: rgba(255,255,255,0.88);
+  font: 950 11px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  opacity: 0.72;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.32);
+}
+
+.stream-preview-item:hover .stream-preview-rotate,
+.stream-preview-rotate:focus-visible {
+  opacity: 1;
 }
 
 .stream-preview-item:hover,
@@ -836,6 +923,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   aspect-ratio: 16 / 9;
   border-radius: 9px;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .stream-preview-name {
@@ -871,6 +959,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
     radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--stream-color, #ffffff) 24%, transparent), transparent 34%),
     linear-gradient(135deg, rgba(12, 21, 31, 0.96), rgba(5, 9, 15, 0.98));
   border: 1px solid color-mix(in srgb, var(--stream-color, #ffffff) 28%, rgba(255,255,255,0.08));
+  box-sizing: border-box;
 }
 
 .stream-preview-surface.screen {
@@ -898,7 +987,13 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   opacity: 0;
   background: #050910;
   transition: opacity 180ms ease;
+  transform: rotate(var(--stream-rotation, 0deg)) scale(var(--stream-rotation-scale, 1));
+  transform-origin: 50% 50%;
   z-index: 1;
+}
+
+.stream-preview-surface.rotated-sideways .stream-preview-media {
+  object-fit: contain;
 }
 
 .stream-preview-media.raw {
@@ -909,7 +1004,24 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
   object-fit: contain;
 }
 
+.stream-preview-media.thumb-quality {
+  z-index: 1;
+}
+
+.stream-preview-media.high-quality {
+  z-index: 2;
+  opacity: 0;
+}
+
 .stream-preview-surface.has-real-stream .stream-preview-media {
+  opacity: 1;
+}
+
+.stream-preview-surface.has-real-stream .stream-preview-media.high-quality {
+  opacity: 0;
+}
+
+.stream-preview-surface.has-real-stream .stream-preview-media.high-quality.stream-media-ready {
   opacity: 1;
 }
 
@@ -1263,7 +1375,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 }
 
 .overlay-widget.hidden-widget {
-  width: 128px !important;
+  width: 176px !important;
   height: 36px !important;
   min-width: 0;
   min-height: 0;
@@ -1271,7 +1383,7 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 }
 
 .overlay-widget.dragging {
-  z-index: 24750;
+  z-index: 24750 !important;
 }
 
 .widget-header {
@@ -1326,7 +1438,6 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 .overlay-widget.hidden-widget .widget-refresh,
 .overlay-widget.hidden-widget .price-font-down,
 .overlay-widget.hidden-widget .price-font-up,
-.overlay-widget.hidden-widget .widget-delete,
 .overlay-widget.hidden-widget .widget-body,
 .overlay-widget.hidden-widget .widget-drag-strip,
 .overlay-widget.hidden-widget .browser-widget-body,
@@ -1343,7 +1454,6 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 .overlay-widget.hidden-widget .electron-browser-open,
 .overlay-widget.hidden-widget .electron-browser-devtools,
 .overlay-widget.hidden-widget .electron-browser-debug-toggle,
-.overlay-widget.hidden-widget .electron-browser-stop,
 .overlay-widget.hidden-widget .game-widget-select,
 .overlay-widget.hidden-widget .game-widget-group,
 .overlay-widget.hidden-widget .game-widget-debug,
@@ -1356,17 +1466,16 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 .overlay-widget.hidden-widget .game-widget-load,
 .overlay-widget.hidden-widget .game-widget-new,
 .overlay-widget.hidden-widget .game-widget-save,
+.overlay-widget.hidden-widget .game-widget-pause,
 .overlay-widget.hidden-widget .game-widget-layout-debug,
-.overlay-widget.hidden-widget .game-widget-stop,
 .overlay-widget.hidden-widget .game-widget-body,
 .overlay-widget.hidden-widget .game-widget-guide,
 .overlay-widget.hidden-widget .youtube-widget-body,
 .overlay-widget.hidden-widget .youtube-widget-query,
 .overlay-widget.hidden-widget .youtube-widget-search,
 .overlay-widget.hidden-widget .youtube-widget-open,
-.overlay-widget.hidden-widget .youtube-widget-stop,
+.overlay-widget.hidden-widget .youtube-widget-fullscreen-toggle,
 .overlay-widget.hidden-widget .prison-scale-control,
-.overlay-widget.hidden-widget .prison-widget-close,
 .overlay-widget.hidden-widget .prison-widget-body,
 .overlay-widget.hidden-widget .memo-widget-text,
 .overlay-widget.hidden-widget .widget-resize {
@@ -1376,11 +1485,52 @@ body.control-mode #stream-preview-panel.preview-hidden #stream-preview-toggle {
 .overlay-widget.hidden-widget .widget-header {
   inset: 4px;
   opacity: 0.96;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .overlay-widget.hidden-widget .widget-hide {
-  min-width: 120px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 122px;
   height: 28px;
+  padding: 0 12px;
+  line-height: 1;
+}
+
+.overlay-widget.hidden-widget .widget-delete,
+.overlay-widget.hidden-widget .character-move-close,
+.overlay-widget.hidden-widget .prison-widget-close,
+.overlay-widget.hidden-widget .electron-browser-stop,
+.overlay-widget.hidden-widget .game-widget-stop,
+.overlay-widget.hidden-widget .youtube-widget-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+}
+
+.game-widget.hidden-widget .game-widget-header {
+  inset: 4px;
+  min-height: 0;
+  height: 28px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.game-widget.hidden-widget .widget-hide {
+  height: 28px;
+  margin: 0;
+  transform: none;
 }
 
 .overlay-widget.hidden-widget .widget-hide {
@@ -1973,6 +2123,12 @@ body.character-drive-mode {
   border-color: rgba(255, 210, 101, 0.5);
   background: rgba(255, 210, 101, 0.24);
   color: #fff0a4;
+}
+
+.game-widget-pause.active {
+  border-color: rgba(255, 210, 101, 0.52);
+  background: rgba(92, 48, 32, 0.46);
+  color: #ffd9b8;
 }
 
 .game-widget-stepper,
@@ -2865,6 +3021,55 @@ body.widget-drag-active .game-widget-frame {
   cursor: default;
 }
 
+.youtube-widget-fullscreen {
+  left: 8px !important;
+  top: 8px !important;
+  width: calc(100vw - 16px) !important;
+  height: calc(100vh - 16px) !important;
+  min-width: 320px !important;
+  min-height: 220px !important;
+  z-index: 28000 !important;
+  border-radius: 10px;
+  background: #000;
+}
+
+.youtube-widget-fullscreen .widget-drag-strip,
+.youtube-widget-fullscreen .youtube-widget-header,
+.youtube-widget-fullscreen .widget-resize {
+  display: none;
+}
+
+.youtube-widget-fullscreen .youtube-widget-body {
+  inset: 0;
+  border: 0;
+  border-radius: 10px;
+}
+
+.youtube-widget-fullscreen-exit {
+  display: none;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 8;
+  height: 34px;
+  min-width: 58px;
+  padding: 0 14px;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  background: rgba(8, 11, 16, 0.78);
+  color: rgba(255,255,255,0.9);
+  font: 950 13px/1 'Pretendard', 'Noto Sans KR', 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.youtube-widget-fullscreen .youtube-widget-fullscreen-exit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .youtube-player {
   display: block;
   width: 100%;
@@ -3193,6 +3398,12 @@ body.widget-drag-active .game-widget-frame {
   text-align: left;
 }
 
+#chat-message-menu button.active-danger {
+  background: rgba(255, 66, 86, 0.24);
+  color: #ff9aaa;
+  box-shadow: inset 0 0 0 1px rgba(255, 92, 112, 0.38);
+}
+
 .mention-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3238,6 +3449,60 @@ body.widget-drag-active .game-widget-frame {
   display: none;
 }
 
+body.electron-native-chat-active:not(.game-widget-local-chat-active) #chat-log,
+body.electron-native-chat-active:not(.game-widget-local-chat-active) #chat-send-panel,
+body.electron-native-chat-active:not(.game-widget-local-chat-active) #chat-message-menu,
+body.electron-native-chat-active:not(.game-widget-local-chat-active) #chat-mention-menu {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body.game-widget-local-chat-active #chat-panel {
+  z-index: 26020;
+}
+
+body.game-widget-local-chat-active #chat-log {
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+body.game-widget-local-chat-active .chat-line {
+  font-size: max(var(--videochat-chat-font-size, 22px), 22px);
+  padding: 8px 14px;
+  border-color: transparent;
+  background: rgba(15, 18, 24, 0.62);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+body.game-widget-local-chat-active .chat-line.incall {
+  border-color: transparent;
+  background: rgba(15, 18, 24, 0.62);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+body.game-widget-local-chat-active .chat-header {
+  gap: 0.28em;
+}
+
+body.game-widget-local-chat-active .chat-level {
+  display: none;
+}
+
+body.game-widget-local-chat-active .chat-crown {
+  margin-right: 0.1em;
+}
+
+body.game-widget-local-chat-active .chat-name {
+  max-width: min(16ch, 56vw);
+  font-weight: 800;
+}
+
+body.game-widget-local-chat-active .chat-separator {
+  margin-left: 0.05em;
+  color: rgba(245, 247, 251, 0.92);
+  font-weight: 600;
+}
+
 #chat-controls {
   position: absolute;
   right: 6px;
@@ -3253,7 +3518,8 @@ body.widget-drag-active .game-widget-frame {
 }
 
 #chat-panel:hover #chat-controls,
-#chat-controls.dragging {
+#chat-controls.dragging,
+body.electron-native-chat-active #chat-controls {
   opacity: 0.86;
 }
 
@@ -3435,6 +3701,7 @@ body.widget-drag-active .game-widget-frame {
 
 .chat-header,
 .chat-separator,
+.comment-prefix,
 .stt-label {
   user-select: none;
   -webkit-user-select: none;
@@ -3508,6 +3775,14 @@ body.widget-drag-active .game-widget-frame {
   color: rgba(255,255,255,0.92);
 }
 
+.comment-prefix {
+  display: inline-block;
+  margin-right: 0.36em;
+  color: rgba(255,255,255,0.45);
+  font-size: 0.88em;
+  font-weight: 750;
+}
+
 .chat-separator {
   color: rgba(255,255,255,0.62);
 }
@@ -3544,6 +3819,13 @@ body.widget-drag-active .game-widget-frame {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#chat-log .reply-name {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .reply-text {
@@ -3554,6 +3836,22 @@ body.widget-drag-active .game-widget-frame {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reply-quote.deleted-reply {
+  border-left-color: rgba(255,255,255,0.26);
+  background: rgba(255,255,255,0.045);
+  box-shadow: none;
+}
+
+.reply-quote.deleted-reply .reply-name {
+  display: none;
+}
+
+.reply-quote.deleted-reply .reply-text {
+  color: rgba(255,255,255,0.58);
+  font-weight: 500;
+  font-style: normal;
 }
 
 .chat-line.photo {

@@ -12,9 +12,13 @@
   const previewClear = document.getElementById("send-preview-clear");
   const fontDown = document.getElementById("font-down");
   const fontUp = document.getElementById("font-up");
+  const sttMicButton = document.getElementById("stt-mic");
   const messageMenu = document.getElementById("message-menu");
   const menuReply = document.getElementById("menu-reply");
   const menuQuote = document.getElementById("menu-quote");
+  const menuMiniJail = document.getElementById("menu-mini-jail");
+  const menuRealJail = document.getElementById("menu-real-jail");
+  const menuTmute = document.getElementById("menu-tmute");
   const menuDelete = document.getElementById("menu-delete");
   const mentionMenu = document.createElement("div");
   mentionMenu.id = "mention-menu";
@@ -30,6 +34,8 @@
   const MAX_MESSAGES = 50;
   const FONT_SIZE_KEY = "tg-chat-overlay.fontSize.v1";
   const EMOJI_PICKER_POS_KEY = "tg-chat-overlay.emojiPicker.v1";
+  const COMMENT_THREAD_PREFIX = "(댓) ";
+  const TMUTE_DURATION_MS = 60 * 1000;
   let fadeAfterSec = 30;
   let chatFontSize = null;
   let userSendEnabled = false;
@@ -39,6 +45,7 @@
   let customEmojiEntities = [];
   let replyTo = null;
   let menuTarget = null;
+  let menuTmuteRefreshTimer = 0;
   let mentionTimer = null;
   let mentionToken = null;
   let mentionSelected = 0;
@@ -50,6 +57,10 @@
   let emojiPicker = null;
   let emojiCache = { stickers: [], custom_emoji: [] };
   let emojiCacheLoadedAt = 0;
+  let remoteStt = null;
+  const deletedMessageKeys = new Set();
+  let nativeActionState = { users: [] };
+  const localTmuteUntilByKey = new Map();
   const stickerPreviewQueue = [];
   let stickerPreviewActive = 0;
   let emojiPickerDragging = false;
@@ -82,6 +93,149 @@
     return selection.toString().trim().slice(0, 500).trim();
   }
 
+  function messageKeyFromRef(ref) {
+    if (!ref?.chat_id || !ref?.message_id) return "";
+    return `${ref.chat_id}:${ref.message_id}`;
+  }
+
+  function splitCommentThreadText(text, entities = []) {
+    const raw = String(text || "");
+    if (!raw.startsWith(COMMENT_THREAD_PREFIX)) {
+      return { prefix: "", text: raw, entities: entities || [] };
+    }
+    const offset = COMMENT_THREAD_PREFIX.length;
+    return {
+      prefix: COMMENT_THREAD_PREFIX.trim(),
+      text: raw.slice(offset),
+      entities: (entities || [])
+        .filter((item) => Number(item?.offset) >= offset)
+        .map((item) => ({ ...item, offset: Number(item.offset) - offset })),
+    };
+  }
+
+  function appendMessageText(target, text, options = {}) {
+    const split = splitCommentThreadText(text, options.entities || []);
+    if (split.prefix) {
+      const prefix = document.createElement("span");
+      prefix.className = "comment-prefix";
+      prefix.dataset.noQuote = "1";
+      prefix.textContent = split.prefix;
+      target.appendChild(prefix);
+    }
+    appendRichText(target, split.text, { ...options, entities: split.entities });
+  }
+
+  function nativeChatActionUser(data) {
+    return {
+      name: data?.name || data?.username || "Unknown",
+      username: data?.username || "",
+      speaker_id: data?.speaker_id || "",
+      is_host: !!data?.is_host,
+      is_bot: !!data?.is_bot,
+      message: data?.message || null,
+    };
+  }
+
+  function sendNativeChatAction(action, data) {
+    try {
+      window.tgNativeChatHost?.sendAction?.({
+        action,
+        user: nativeChatActionUser(data),
+      });
+    } catch (_) {}
+  }
+
+  function actionIdentityCandidates(data) {
+    const values = [];
+    const add = (prefix, value) => {
+      const text = String(value || "").replace(/^@/, "").trim();
+      if (text) values.push(`${prefix}:${text.toLowerCase()}`);
+    };
+    add("id", data?.speaker_id || data?.id);
+    add("speaker", data?.speaker_id || data?.id);
+    add("username", data?.username);
+    add("name", data?.name);
+    return [...new Set(values)];
+  }
+
+  function nativeUserStateForData(data) {
+    const candidates = new Set(actionIdentityCandidates(data));
+    for (const user of nativeActionState?.users || []) {
+      const userCandidates = actionIdentityCandidates(user);
+      userCandidates.push(`key:${String(user.key || "").toLowerCase()}`);
+      if (userCandidates.some((candidate) => candidates.has(candidate))) return user;
+    }
+    return null;
+  }
+
+  function localTmuteKey(data) {
+    return actionIdentityCandidates(data)[0] || String(data?.name || data?.username || "unknown").toLowerCase();
+  }
+
+  function pruneLocalTmuteState(now = Date.now()) {
+    for (const [key, until] of localTmuteUntilByKey) {
+      if (!Number.isFinite(Number(until)) || Number(until) <= now) localTmuteUntilByKey.delete(key);
+    }
+  }
+
+  function tmuteUntilForData(data) {
+    pruneLocalTmuteState();
+    const localUntil = Number(localTmuteUntilByKey.get(localTmuteKey(data))) || 0;
+    const remoteUntil = Number(nativeUserStateForData(data)?.tmute_until) || 0;
+    return Math.max(localUntil, remoteUntil);
+  }
+
+  function setLocalTmuteState(data, active) {
+    const key = localTmuteKey(data);
+    if (!key) return;
+    if (active) localTmuteUntilByKey.set(key, Date.now() + TMUTE_DURATION_MS);
+    else localTmuteUntilByKey.delete(key);
+    updateMessageMenuButtons();
+  }
+
+  function scheduleMessageMenuTmuteRefresh() {
+    if (menuTmuteRefreshTimer) {
+      clearTimeout(menuTmuteRefreshTimer);
+      menuTmuteRefreshTimer = 0;
+    }
+    const until = tmuteUntilForData(menuTarget?.data);
+    if (!until) return;
+    menuTmuteRefreshTimer = setTimeout(() => {
+      menuTmuteRefreshTimer = 0;
+      updateMessageMenuButtons();
+    }, Math.max(80, until - Date.now() + 80));
+  }
+
+  function setMenuButtonActive(button, active, activeText, inactiveText) {
+    if (!button) return;
+    button.classList.toggle("active-danger", !!active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    if (activeText && inactiveText) button.textContent = active ? activeText : inactiveText;
+  }
+
+  function updateMessageMenuButtons() {
+    if (!messageMenu || messageMenu.hidden || !menuTarget) return;
+    const userState = nativeUserStateForData(menuTarget.data);
+    setMenuButtonActive(menuMiniJail, !!userState?.mini, "난쟁이 해제", "난쟁이");
+    setMenuButtonActive(menuRealJail, !!userState?.real, "케이지 해제", "케이지");
+    setMenuButtonActive(menuTmute, tmuteUntilForData(menuTarget.data) > Date.now(), "아가리 해제", "아가리");
+    scheduleMessageMenuTmuteRefresh();
+  }
+
+  window.tgNativeChatHost?.onActionState?.((payload) => {
+    nativeActionState = payload && typeof payload === "object" ? payload : { users: [] };
+    const chatSettings = nativeActionState.chat;
+    if (chatSettings && typeof chatSettings === "object") {
+      if (Number.isFinite(Number(chatSettings.fontSize))) {
+        applyFontSize(Number(chatSettings.fontSize));
+      }
+      if (Number.isFinite(Number(chatSettings.fadeSec))) {
+        fadeAfterSec = Number(chatSettings.fadeSec);
+      }
+    }
+    updateMessageMenuButtons();
+  });
+
   function selectedTargets() {
     return sendTargets
       .filter((btn) => btn.classList.contains("active") && !btn.disabled)
@@ -91,7 +245,127 @@
   function updateSendButton() {
     if (!sendButton || !sendText) return;
     const hasBody = !!sendText.value.trim() || !!selectedPhoto || !!selectedSticker || !!selectedCustomEmoji;
+    document.body.classList.toggle("send-panel-has-draft", !!(hasBody || replyTo));
     sendButton.disabled = sendInFlight || !userSendEnabled || !hasBody || (!replyTo && selectedTargets().length === 0);
+  }
+
+  function remoteSttTarget() {
+    const targets = selectedTargets();
+    return targets.includes("here") ? "here" : "main";
+  }
+
+  function updateRemoteSttButton(state = "") {
+    if (!sttMicButton) return;
+    const active = !!remoteStt;
+    sttMicButton.classList.toggle("active", active);
+    sttMicButton.classList.toggle("connecting", state === "connecting");
+    sttMicButton.textContent = active ? "mic on" : (state === "connecting" ? "mic..." : "mic");
+  }
+
+  function downsamplePcm16(input, sourceRate, targetRate) {
+    if (!input?.length || !sourceRate || !targetRate) return new ArrayBuffer(0);
+    const ratio = sourceRate / targetRate;
+    const length = Math.max(1, Math.floor(input.length / ratio));
+    const output = new Int16Array(length);
+    for (let i = 0; i < length; i += 1) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(input.length, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      let count = 0;
+      for (let j = start; j < end; j += 1) {
+        sum += input[j];
+        count += 1;
+      }
+      const sample = Math.max(-1, Math.min(1, count ? sum / count : input[start] || 0));
+      output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+    }
+    return output.buffer;
+  }
+
+  function stopRemoteStt() {
+    const current = remoteStt;
+    remoteStt = null;
+    updateRemoteSttButton();
+    try { current?.processor?.disconnect(); } catch (_) {}
+    try { current?.source?.disconnect(); } catch (_) {}
+    try { current?.silence?.disconnect(); } catch (_) {}
+    try { current?.stream?.getTracks?.().forEach((track) => track.stop()); } catch (_) {}
+    try { current?.ws?.close(); } catch (_) {}
+    try { current?.ctx?.close(); } catch (_) {}
+  }
+
+  function waitForRemoteSttReady(ws) {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error("remote STT timeout")), 12000);
+      ws.addEventListener("message", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === "ready") {
+            window.clearTimeout(timer);
+            resolve(data);
+          } else if (data.type === "error") {
+            window.clearTimeout(timer);
+            reject(new Error(data.message || "remote STT failed"));
+          }
+        } catch (_) {}
+      });
+      ws.addEventListener("close", () => {
+        window.clearTimeout(timer);
+        reject(new Error("remote STT closed"));
+      }, { once: true });
+      ws.addEventListener("error", () => {
+        window.clearTimeout(timer);
+        reject(new Error("remote STT websocket error"));
+      }, { once: true });
+    });
+  }
+
+  async function startRemoteStt() {
+    if (remoteStt || !sttMicButton) return;
+    updateRemoteSttButton("connecting");
+    let ws = null;
+    let stream = null;
+    let ctx = null;
+    try {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}/api/stt/remote/ws?target=${encodeURIComponent(remoteSttTarget())}`);
+      ws.binaryType = "arraybuffer";
+      const readyPromise = waitForRemoteSttReady(ws);
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
+      });
+      const ready = await readyPromise;
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === "suspended") await ctx.resume();
+      const targetRate = Number(ready.sample_rate) || 24000;
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const silence = ctx.createGain();
+      silence.gain.value = 0;
+      processor.onaudioprocess = (ev) => {
+        if (!remoteStt || ws.readyState !== WebSocket.OPEN) return;
+        const pcm = downsamplePcm16(ev.inputBuffer.getChannelData(0), ctx.sampleRate, targetRate);
+        if (pcm.byteLength) ws.send(pcm);
+      };
+      source.connect(processor);
+      processor.connect(silence);
+      silence.connect(ctx.destination);
+      remoteStt = { ws, stream, ctx, source, processor, silence };
+      ws.addEventListener("close", stopRemoteStt, { once: true });
+      updateRemoteSttButton();
+    } catch (err) {
+      try { ws?.close(); } catch (_) {}
+      try { stream?.getTracks?.().forEach((track) => track.stop()); } catch (_) {}
+      try { ctx?.close(); } catch (_) {}
+      remoteStt = null;
+      updateRemoteSttButton();
+      sttMicButton.title = err?.message || "remote STT failed";
+    }
   }
 
   function clamp(value, min, max) {
@@ -785,16 +1059,19 @@
     if (!reply || (!reply.name && !reply.text)) return null;
     const quote = document.createElement("div");
     quote.className = "reply-quote";
+    const targetKey = messageKeyFromRef(reply.message);
     if (reply.message?.chat_id && reply.message?.message_id) {
-      quote.dataset.replyTargetKey = `${reply.message.chat_id}:${reply.message.message_id}`;
+      quote.dataset.replyTargetKey = targetKey;
       quote.title = "인용 메시지로 이동";
     }
+    const deleted = targetKey && deletedMessageKeys.has(targetKey);
+    if (deleted) quote.classList.add("deleted-reply");
     const name = document.createElement("span");
     name.className = "reply-name";
-    name.textContent = reply.name || "Unknown";
+    name.textContent = deleted ? "" : (reply.name || "Unknown");
     const text = document.createElement("span");
     text.className = "reply-text";
-    text.textContent = reply.quote_text || reply.text || "메시지";
+    text.textContent = deleted ? "삭제된 메시지" : (reply.quote_text || reply.text || "메시지");
     quote.append(name, text);
     quote.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -803,9 +1080,24 @@
     return quote;
   }
 
+  function markReplyQuotesDeleted(key) {
+    if (!key) return;
+    for (const quote of Array.from(document.querySelectorAll(`.reply-quote[data-reply-target-key="${CSS.escape(key)}"]`))) {
+      quote.classList.add("deleted-reply");
+      const name = quote.querySelector(".reply-name");
+      const text = quote.querySelector(".reply-text");
+      if (name) name.textContent = "";
+      if (text) text.textContent = "삭제된 메시지";
+    }
+  }
+
   function hideMessageMenu() {
     if (messageMenu) messageMenu.hidden = true;
     if (menuQuote) menuQuote.hidden = true;
+    if (menuTmuteRefreshTimer) {
+      clearTimeout(menuTmuteRefreshTimer);
+      menuTmuteRefreshTimer = 0;
+    }
     menuTarget = null;
   }
 
@@ -926,10 +1218,12 @@
   function showMessageMenu(ev, data, el) {
     if (!messageMenu || !data?.message?.chat_id || !data?.message?.message_id) return;
     ev.preventDefault();
+    ev.stopPropagation();
     const quoteText = selectedTextWithin(el);
     menuTarget = { data, el, quoteText };
     if (menuQuote) menuQuote.hidden = !quoteText;
     messageMenu.hidden = false;
+    updateMessageMenuButtons();
     const w = messageMenu.offsetWidth || 120;
     const h = messageMenu.offsetHeight || 80;
     messageMenu.style.left = clamp(ev.clientX, 6, window.innerWidth - w - 6) + "px";
@@ -937,8 +1231,10 @@
   }
 
   function removeMessageByRef(ref) {
-    if (!ref?.chat_id || !ref?.message_id) return;
-    const key = `${ref.chat_id}:${ref.message_id}`;
+    const key = messageKeyFromRef(ref);
+    if (!key) return;
+    deletedMessageKeys.add(key);
+    markReplyQuotesDeleted(key);
     for (const el of Array.from(document.querySelectorAll(".msg[data-message-key]"))) {
       if (el.dataset.messageKey === key) removeMessageElement(el);
     }
@@ -989,27 +1285,84 @@
   });
   fontDown?.addEventListener("click", () => applyFontSize((chatFontSize || 22) - 2));
   fontUp?.addEventListener("click", () => applyFontSize((chatFontSize || 22) + 2));
-  menuReply?.addEventListener("click", () => {
+  sttMicButton?.addEventListener("click", () => {
+    if (remoteStt) stopRemoteStt();
+    else startRemoteStt();
+  });
+  const bindMessageMenuAction = (button, handler) => {
+    if (!button) return;
+    let handledAt = 0;
+    const run = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (button.disabled) return;
+      const now = Date.now();
+      if (now - handledAt < 220) return;
+      handledAt = now;
+      handler(ev);
+    };
+    button.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, true);
+    button.addEventListener("pointerup", run, true);
+    button.addEventListener("click", run, true);
+    button.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") run(ev);
+    });
+  };
+  messageMenu?.addEventListener("pointerdown", (ev) => {
+    ev.stopPropagation();
+  }, true);
+  messageMenu?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+  }, true);
+  bindMessageMenuAction(menuReply, () => {
     if (menuTarget) setReply(menuTarget.data);
     hideMessageMenu();
   });
-  menuQuote?.addEventListener("click", () => {
+  bindMessageMenuAction(menuQuote, () => {
     if (menuTarget?.quoteText) setReply(menuTarget.data, menuTarget.quoteText);
     hideMessageMenu();
   });
-  menuDelete?.addEventListener("click", async () => {
+  bindMessageMenuAction(menuMiniJail, () => {
+    if (menuTarget) sendNativeChatAction("mini_jail", menuTarget.data);
+    hideMessageMenu();
+  });
+  bindMessageMenuAction(menuRealJail, () => {
+    if (menuTarget) sendNativeChatAction("real_jail", menuTarget.data);
+    hideMessageMenu();
+  });
+  bindMessageMenuAction(menuTmute, async () => {
+    const target = menuTarget;
+    const active = tmuteUntilForData(target?.data) > Date.now();
+    hideMessageMenu();
+    if (!target) return;
+    try {
+      await sendMessage(active ? "/unmute" : "/tmute 1m", [], null, target.data.message);
+      setLocalTmuteState(target.data, !active);
+      sendNativeChatAction(active ? "tmute_clear" : "tmute", target.data);
+    } catch (err) {
+      sendPanel?.classList.add("send-error");
+      if (sendText) sendText.title = err?.message || "tmute failed";
+    }
+  });
+  bindMessageMenuAction(menuDelete, async () => {
     const target = menuTarget;
     hideMessageMenu();
     if (!target) return;
     try {
       await deleteMessage(target.data.message);
-      removeMessageElement(target.el);
+      removeMessageByRef(target.data.message);
     } catch (err) {
       sendPanel?.classList.add("send-error");
       if (sendText) sendText.title = err?.message || "delete failed";
     }
   });
-  document.addEventListener("click", hideMessageMenu);
+  document.addEventListener("click", (ev) => {
+    if (messageMenu && !messageMenu.hidden && ev.target instanceof Node && messageMenu.contains(ev.target)) return;
+    hideMessageMenu();
+  });
   document.addEventListener("click", hideEmojiPicker);
   window.addEventListener("resize", positionMentionMenu);
   window.addEventListener("resize", positionEmojiPicker);
@@ -1069,7 +1422,11 @@
     } finally {
       sendInFlight = false;
       updateSendButton();
-      sendText.focus();
+      if (window.tgNativeChatHost?.setMouseInteractive) {
+        sendText.blur();
+      } else {
+        sendText.focus();
+      }
     }
   });
 
@@ -1118,6 +1475,7 @@
 
     const name = document.createElement("span");
     name.className = "name" + (data.is_host ? " host" : "");
+    name.dataset.noQuote = "1";
     name.textContent = `${data.is_host ? "♛ " : ""}${data.name || "Unknown"}`;
     if (data.color) name.style.color = data.color;
     el.appendChild(name);
@@ -1129,14 +1487,14 @@
       if (typeof data.text === "string" && data.text.trim()) {
         const text = document.createElement("span");
         text.className = "text photo-caption";
-        appendRichText(text, data.text, { entities: data.entities || [] });
+        appendMessageText(text, data.text, { entities: data.entities || [] });
         el.appendChild(text);
       }
     } else {
       if (typeof data.text !== "string") return;
       const text = document.createElement("span");
       text.className = "text";
-      appendRichText(text, data.text, { entities: data.entities || [] });
+      appendMessageText(text, data.text, { entities: data.entities || [] });
       el.appendChild(text);
       if (data.stt_label) {
         const label = document.createElement("span");

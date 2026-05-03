@@ -92,6 +92,17 @@ body.send-panel-visible #chat {
   height: 28px;
 }
 
+#stt-mic.active {
+  background: rgba(76, 220, 156, 0.34);
+  color: #c8ffe6;
+  box-shadow: 0 0 12px rgba(76, 220, 156, 0.18);
+}
+
+#stt-mic.connecting {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 #send-panel[hidden] {
   display: none;
 }
@@ -391,6 +402,8 @@ body.send-panel-visible #chat {
 .msg .name {
   margin-right: 0.45em;
   font-weight: 800;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .msg .name.host {
@@ -404,6 +417,18 @@ body.send-panel-visible #chat {
   color: #f5f7fb;
   margin-left: 0.05em;
   font-weight: 600;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.comment-prefix {
+  display: inline-block;
+  margin-right: 0.36em;
+  color: rgba(245, 247, 251, 0.48);
+  font-size: 0.88em;
+  font-weight: 750;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .stt-label {
@@ -412,6 +437,8 @@ body.send-panel-visible #chat {
   font-size: 0.84em;
   font-style: italic;
   font-weight: 650;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .reply-quote {
@@ -436,6 +463,8 @@ body.send-panel-visible #chat {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .reply-text {
@@ -446,6 +475,22 @@ body.send-panel-visible #chat {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reply-quote.deleted-reply {
+  border-left-color: rgba(245, 247, 251, 0.28);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: none;
+}
+
+.reply-quote.deleted-reply .reply-name {
+  display: none;
+}
+
+.reply-quote.deleted-reply .reply-text {
+  color: rgba(245, 247, 251, 0.58);
+  font-weight: 500;
+  font-style: normal;
 }
 
 .msg-media {
@@ -554,6 +599,12 @@ body.send-panel-visible #chat {
   height: 30px;
   padding: 0 10px;
   text-align: left;
+}
+
+#message-menu button.active-danger {
+  background: rgba(255, 66, 86, 0.24);
+  color: #ff9aaa;
+  box-shadow: inset 0 0 0 1px rgba(255, 92, 112, 0.38);
 }
 
 #menu-delete {

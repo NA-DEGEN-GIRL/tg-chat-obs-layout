@@ -33,8 +33,20 @@
     const selection = window.getSelection?.();
     if (!selection || selection.isCollapsed || !root) return "";
     if (!nodeInside(root, selection.anchorNode) || !nodeInside(root, selection.focusNode)) return "";
-    const text = normalizeQuoteText(selection.toString(), maxLength);
-    return text.trim() ? text : "";
+    let text = "";
+    try {
+      const range = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+      const fragment = range ? range.cloneContents() : null;
+      if (fragment) {
+        for (const el of Array.from(fragment.querySelectorAll("[data-no-quote], .name, .chat-header, .chat-separator, .comment-prefix, .reply-name, .stt-label"))) {
+          el.remove();
+        }
+        text = fragment.textContent || "";
+      }
+    } catch (_) {}
+    if (!text) text = selection.toString();
+    const normalized = normalizeQuoteText(text, maxLength);
+    return normalized.trim() ? normalized : "";
   }
 
   async function loadTgsSticker(container, url) {

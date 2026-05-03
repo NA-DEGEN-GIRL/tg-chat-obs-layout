@@ -80,6 +80,13 @@
     .ejs_controls,
     .ejs_bottom_bar,
     .ejs_menu_bar,
+    .ejs_virtualGamepad_parent,
+    .ejs_virtualGamepad_top,
+    .ejs_virtualGamepad_bottom,
+    .ejs_virtualGamepad_left,
+    .ejs_virtualGamepad_right,
+    .ejs_virtualGamepad_button,
+    .ejs_virtualGamepad_open,
     .ejs_volume,
     .ejs_volume_bar,
     .ejs_fast_forward,
@@ -89,6 +96,8 @@
     [class*="ejs_notification"],
     [class*="ejs_message"],
     [class*="ejs_toast"],
+    [class*="ejs_virtualGamepad"],
+    [class*="virtualGamepad"],
     [class*="fast-forward"],
     [class*="fastForward"],
     [class*="notification"],
@@ -155,6 +164,29 @@
       pointer-events: none;
       transition: opacity 180ms ease;
       z-index: 20;
+    }
+
+    #game-shell::after {
+      content: "PAUSED";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 220, 122, 0.58);
+      background: rgba(6, 9, 12, 0.68);
+      color: rgba(255, 233, 160, 0.94);
+      font: 950 18px/1 "Cascadia Mono", "Consolas", monospace;
+      letter-spacing: 0;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 24;
+      transition: opacity 140ms ease;
+    }
+
+    body.game-paused #game-shell::after {
+      opacity: 1;
     }
 
     #cover {
@@ -384,8 +416,10 @@
       let currentSpeed = normalizeSpeed(params.get("speed") || 1);
       let currentVolume = normalizeVolume(params.get("volume") || 75);
       let fastForwardActive = false;
+      let gamePaused = params.get("paused") === "1";
       body.classList.toggle("debug-status", debugStatus);
       body.classList.toggle("layout-debug", layoutDebug);
+      body.classList.toggle("game-paused", gamePaused);
       const displayTitle = rom.toLowerCase() === "pk_gold.gb" ? "포켓몬 골드" : (rom.replace(/\.[^.]+$/, "") || "게임");
       if (cover) {
         cover.querySelector(".cover-title").textContent = displayTitle;
@@ -687,6 +721,8 @@
           "[class*='ejs_notification']",
           "[class*='ejs_message']",
           "[class*='ejs_toast']",
+          "[class*='ejs_virtualGamepad']",
+          "[class*='virtualGamepad']",
           "[class*='control']",
           "[class*='toolbar']",
           "[class*='menu_bar']",
@@ -924,6 +960,28 @@
         }
       }
 
+      function commandForKeyEvent(ev) {
+        const key = String(ev?.key || "");
+        const code = String(ev?.code || "");
+        const lower = key.toLowerCase();
+        if (key === "ArrowUp") return "up";
+        if (key === "ArrowDown") return "down";
+        if (key === "ArrowLeft") return "left";
+        if (key === "ArrowRight") return "right";
+        if (lower === "z" || code === "KeyZ") return "a";
+        if (lower === "x" || code === "KeyX") return "b";
+        if (lower === "v" || code === "KeyV") return "select";
+        if (key === "Enter" || code === "Enter") return "start";
+        return "";
+      }
+
+      function notifyPhysicalKeyVisual(ev, down) {
+        if (!ev?.isTrusted) return;
+        const command = commandForKeyEvent(ev);
+        if (!command) return;
+        sendParent("tg-game-key-visual", { command, down: !!down });
+      }
+
       async function tapCommand(command) {
         const spec = keySpecs[command];
         if (!spec) return;
@@ -934,6 +992,10 @@
       }
 
       function queueCommands(commands) {
+        if (gamePaused) {
+          sendGameStatus("paused-input-ignored", "game paused");
+          return;
+        }
         const filtered = Array.isArray(commands) ? commands.filter((command) => keySpecs[command]) : [];
         if (!filtered.length) return;
         inputQueue = inputQueue.then(async () => {
@@ -1127,6 +1189,62 @@
         }
       }
 
+      async function setGamePaused(paused) {
+        gamePaused = !!paused;
+        body.classList.toggle("game-paused", gamePaused);
+        if (!gameStarted) {
+          setStatus(gamePaused ? "게임 일시 정지 예약" : `${rom} 준비됨`);
+          sendGameStatus(gamePaused ? "paused" : "resumed", gamePaused ? "pending start" : "not started", { applied: false });
+          return false;
+        }
+
+        let applied = false;
+        const methods = [];
+        const methodNames = gamePaused
+          ? ["pause", "pauseGame", "pauseEmulation", "pauseMainLoop"]
+          : ["play", "resume", "unpause", "resumeGame", "resumeEmulation", "resumeMainLoop"];
+        for (const target of managerCandidates()) {
+          try {
+            if (typeof target?.setPaused === "function") {
+              target.setPaused(gamePaused);
+              methods.push("setPaused");
+              applied = true;
+            }
+            for (const method of methodNames) {
+              if (typeof target?.[method] !== "function") continue;
+              target[method]();
+              methods.push(method);
+              applied = true;
+              break;
+            }
+            const module = target?.Module || target?.module;
+            const moduleMethod = gamePaused ? "pauseMainLoop" : "resumeMainLoop";
+            if (typeof module?.[moduleMethod] === "function") {
+              module[moduleMethod]();
+              methods.push(`Module.${moduleMethod}`);
+              applied = true;
+            }
+          } catch (_) {}
+        }
+        const globalModuleMethod = gamePaused ? "pauseMainLoop" : "resumeMainLoop";
+        try {
+          if (typeof window.Module?.[globalModuleMethod] === "function") {
+            window.Module[globalModuleMethod]();
+            methods.push(`window.Module.${globalModuleMethod}`);
+            applied = true;
+          }
+        } catch (_) {}
+        setStatus(gamePaused ? "게임 일시 정지" : "게임 재개");
+        sendGameStatus(gamePaused ? "paused" : "resumed", methods.join(",") || "no api", { applied });
+        if (!gamePaused) {
+          hideEmulatorToolbarSoon();
+          fitGameViewportSoon();
+          window.setTimeout(() => applyGameSpeed(currentSpeed), 180);
+          window.setTimeout(() => applyGameVolume(currentVolume), 220);
+        }
+        return applied;
+      }
+
       window.addEventListener("message", (event) => {
         if (event.origin !== location.origin) return;
         const payload = event.data || {};
@@ -1134,6 +1252,7 @@
           queueCommands(payload.commands);
           if (debugStatus) setStatus(`${payload.name || "chat"}: ${(payload.commands || []).join(" ")}`);
         } else if (payload.type === "tg-game-key") {
+          if (gamePaused) return;
           const spec = Object.values(keySpecs).find((item) => item.key === payload.key && item.code === payload.code);
           if (spec) dispatchKey(payload.down ? "keydown" : "keyup", spec);
         } else if (payload.type === "tg-game-save") {
@@ -1151,10 +1270,14 @@
           layoutDebug = !!payload.enabled;
           body.classList.toggle("layout-debug", layoutDebug);
           reportLayoutDebug(layoutDebug ? "debug-on" : "debug-off");
+        } else if (payload.type === "tg-game-pause") {
+          setGamePaused(!!payload.paused);
         } else if (payload.type === "tg-game-resize") {
           fitGameViewportSoon();
         }
       });
+      window.addEventListener("keydown", (ev) => notifyPhysicalKeyVisual(ev, true), true);
+      window.addEventListener("keyup", (ev) => notifyPhysicalKeyVisual(ev, false), true);
 
       window.addEventListener("pointerdown", () => body.focus({ preventScroll: true }));
       window.addEventListener("beforeunload", () => {
@@ -1240,6 +1363,7 @@
         sendGameStatus("started", rom);
         window.setTimeout(() => applyGameSpeed(currentSpeed), 700);
         window.setTimeout(() => applyGameVolume(currentVolume), 760);
+        if (gamePaused) window.setTimeout(() => setGamePaused(true), 820);
         if (autoLoadState || pendingStateLoad) {
           pendingStateLoad = false;
           window.setTimeout(loadGame, 900);

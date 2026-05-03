@@ -11,8 +11,13 @@ Works in the first version:
 
 - Real Chromium navigation and rendering.
 - JavaScript, SPA routing, redirects, cookies, and persistent profile state.
+- React/SPA `pushState`, `replaceState`, `popstate`, `hashchange`, and title
+  changes are observed through a small injected status bridge so the lab URL and
+  navigation state do not depend only on polling.
 - Link clicks, form input, submit, Back, Forward, Reload, Stop.
 - Mouse move, click, drag, wheel.
+- React-style custom `onWheel` handlers on non-scroll elements and normal
+  overflow-container scrolling are covered by the static client smoke test.
 - Keyboard down/up/press through Playwright.
 - Modifier keys when the canvas has focus.
 - Basic paste by reading the local clipboard from the static page and inserting
@@ -37,9 +42,20 @@ Works in the first version:
   A `DOM fallback` mode is available for fields where the value is visible but
   the app state does not update. This improves React/SPA compatibility, but it
   cannot bypass server-side login risk checks or bot detection.
-- Clipboard copy is only sent as `Control+C`; reading the remote Chromium
-  clipboard back into the host page is not implemented.
-- Drag-and-drop file upload is not implemented.
+- Printable text insertion releases stale remote modifier keys first so a
+  shortcut such as `Ctrl+Enter` cannot poison later typing if Chromium misses a
+  modifier keyup.
+- React-controlled range drags use a DOM value/event fallback when native CDP
+  mouse drag does not move the Chromium slider thumb in headless mode.
+- Clipboard copy/cut sends `Control+C`/`Control+X` to the remote browser and also bridges
+  full and partial selected non-sensitive text back to the host page clipboard.
+  Password, file, and hidden inputs are intentionally not bridged.
+- File upload through focused or recently clicked `input[type=file]` is
+  implemented by forwarding files selected in the Browser Lab side panel to
+  Playwright `set_input_files`. The proxy does not read arbitrary local paths.
+  File drop onto the streamed canvas is also implemented for React dropzones by
+  recreating `DataTransfer.files` in the remote page. Directory drops are not
+  implemented.
 - Browser permission prompts are not surfaced as first-class UI.
 - Multiple tabs are not modeled in the client UI. New pages are adopted into the
   same viewport.
@@ -140,20 +156,48 @@ Additional X login retest:
   This can reduce Playwright-managed browser differences, but it still cannot
   guarantee that X or any other site will accept a login attempt from a fresh
   temporary browser profile.
+- On the current WSL environment, Windows Chrome was detected at
+  `C:\Program Files\Google\Chrome\Application\chrome.exe`, but direct WSL
+  execution was unavailable (`cmd.exe`/`powershell.exe` were not on PATH and
+  launching the `.exe` returned `Exec format error`). Use
+  `run_real_chrome.py --print-windows-command` and start Chrome from Windows
+  Terminal, then attach with `--no-launch --cdp-url http://127.0.0.1:9222`.
 
 React interaction retest:
 
 - A local React 18 controlled-input page was served from `/tmp` and exercised
   through the WebSocket/canvas path.
-- Verified controlled text input, React `onBeforeInput`, Backspace editing,
+- Verified controlled text input, React `onBeforeInput`,
+  `beforeinput.preventDefault()` masking, Backspace editing,
   controlled textarea with Enter/newline, non-ASCII text insertion, `Ctrl+A`
-  replacement, Delete editing, paste event handling, checkbox state, select
-  state, radio state, contenteditable input, React button `onClick`, input
-  `onKeyDown`/`onBlur`, React composition events, React pointer drag events,
-  modifier mouse events, double-click, context menu/right-click, Tab focus
-  traversal, keyboard button activation by Enter, hover enter/move/leave,
-  controlled range slider updates, and form submit by Enter through React state. Portal-rendered
-  controlled inputs and buttons are covered as well.
+  replacement, Delete editing, paste event handling through both the Paste
+  button and `Ctrl+V`, React `clipboardData` payload reads in `onPaste`,
+  checkbox state, select state, radio state,
+  password/number/search/email/tel/url/date/time/datetime-local/month/week/color input types,
+  label-driven focus, contenteditable input, React button `onClick`, input
+  `onKeyDown`/`onKeyUp`/`onInput`/`onBlur`, `InputEvent.inputType`
+  for insert/delete/paste, trusted native key/input/pointer/click events,
+  pointer/mouse/focus/click event ordering,
+  React capture-phase synthetic
+  key/pointer/click events, React composition events, React pointer drag events
+  with exact `PointerEvent.button`/`buttons` state and stable
+  `pointerId`/`pointerType`/`isPrimary` metadata,
+  React touch events including `touchend.changedTouches`, modifier mouse events, double-click, context menu/right-click,
+  middle-click `onAuxClick`, Tab focus
+  traversal, keyboard button activation by Enter and Space, Space insertion in
+  text inputs, Space activation for custom switch-style controls,
+  hover enter/move/leave, controlled range slider updates, custom combobox option selection through
+  `onMouseDown.preventDefault()` with focus retention, keyboard-driven `aria-activedescendant` combobox selection,
+  roving tabindex ARIA menu focus movement and item selection,
+  and form submit by Enter through React state. Portal-rendered controlled
+  inputs/buttons and menu/dialog-style portal controls with focus transfer,
+  Escape close, outside pointer-down close, and portal dialog Tab/Shift+Tab
+  focus trapping are covered as well.
+- Copy and Cut now bridge selected non-sensitive text from the remote page to
+  the host browser clipboard; the end-to-end client smoke verifies this through
+  the Copy button, keyboard `Ctrl+C`, keyboard `Ctrl+X`, selected
+  React-controlled text inputs, and contenteditable fields. Password, file, and
+  hidden inputs are intentionally excluded from that bridge.
 - Final visual result was
   `ok:react:\uD55C\uAE00:b:fast:96:multi|line:done:del:clip:notes:portal:pointer:keyboard:1:1`,
   confirming that the default `React-safe` mode updates React state for common
@@ -170,12 +214,101 @@ React interaction retest:
 - A second end-to-end smoke test opens `browser_lab.html` in a host browser,
   selects the proxy through `?proxy=...`, applies viewport resize through the UI,
   clicks the streamed canvas, types through the hidden text sink, and verifies
-  remote React state, checkbox/select/radio/contenteditable controls, pointer
-  drag, wheel handling, hover enter/move/leave, React SPA `pushState` URL/status
-  updates, Browser Lab Back to React `popstate`, and Shift-click modifier
-  handling. That client-path result was
-  `ok:react:\uD55C\uAE00:composition:multi|line:clip:controls:b:fast:notes:spa:range:100:portal:pointer:modifier:gestures:keyboard:1`
-  and is captured as `tools/browser_lab_proxy/react_client_smoke_test.py`.
+  remote React state, Backspace, `Ctrl+A` replacement, Shift+Arrow partial
+  selection replacement, Shift+Arrow selected-range Backspace deletion,
+  mouse-drag selection replacement in controlled inputs, double-click word
+  selection replacement in controlled inputs, caret move plus Delete,
+  native `Ctrl+Z` undo and `Ctrl+Y` redo reflected through React state,
+  input-field Enter form submit, focus/blur validation, React
+  `onBlur.relatedTarget` focus-transfer tracking, debounced async state,
+  native required-field constraint validation with React `onInvalid`, valid
+  resubmit through React `onSubmit`, password/number/search/email/tel/url input
+  types, date/time/datetime-local/month/week native input values in default
+  `React-safe` mode, color native input value through the Paste command,
+  label-driven focus, React
+  `onInput`, text `onKeyUp`, React `InputEvent.inputType` values for insert
+  text, backward delete, and paste, React `nativeEvent.isTrusted` for
+  key/input/pointer/click, pointer/mouse/focus/click event ordering, custom combobox `onMouseDown.preventDefault()` option
+  selection with focus retention, `beforeinput.preventDefault()` masking, React form `onReset`
+  controlled state reset, selected text copy/cut back to the host clipboard
+  through button and keyboard shortcut paths,
+  keyboard-driven
+  `aria-activedescendant` combobox selection,
+  roving tabindex ARIA menu keyboard focus movement and item selection,
+  keyboard Space checkbox toggling and Arrow-key radio selection,
+  keyboard `End` updates for React-controlled range inputs, React-controlled
+  range drag fallback,
+  capture-phase React synthetic key/pointer/click events, Paste button,
+  `Ctrl+V` React `onPaste`, `clipboardData.getData('text/plain')` payload
+  reads, selected-range `Ctrl+V` paste replacement,
+  checkbox/select/radio/contenteditable controls, contenteditable IME
+  composition, contenteditable selected-range replacement, contenteditable
+  mouse-drag partial-selection replacement, contenteditable `Ctrl+V`/`Ctrl+X`
+  clipboard events including contenteditable `clipboardData` payload reads,
+  selected-file upload,
+  selected-file drop into a React dropzone,
+  pointer drag, pointer capture, wheel handling, hover enter/move/leave,
+  React `onPointerEnter`/`onPointerMove`/`onPointerLeave`, React SPA `pushState`/`replaceState` URL/status
+  updates, Browser Lab Back to React `popstate`, HashRouter-style `hashchange`,
+  global `Ctrl+K`/`Escape` shortcuts, `event.code` plus legacy `keyCode`/`which`
+  shortcuts with multiple modifiers, HTML5 `dragstart`/`dragenter`/`dragover`/`drop`/`dragend`, 75% scaled canvas
+  coordinate mapping, custom React `onWheel`, overflow-container `onScroll`,
+  virtualized-list wheel scrolling with React-rerendered row click handling,
+  remote React `<canvas>` and SVG pointer coordinate mapping, remote React
+  CSS-transformed button click coordinates,
+  custom `role=slider` pointer drag and keyboard Home/End updates,
+  pointer-driven React reorder/sort state changes,
+  remote page wheel scrolling followed by a visible React button click without
+  Playwright scroll correction, cross-origin iframe text/composition/paste, open Shadow DOM
+  focus/composition/paste, touch drag with `touchend.changedTouches`,
+  two-finger touch payloads, drag continuation after the host pointer leaves
+  the Browser Lab canvas,
+  textarea `Ctrl+Enter` shortcut handling,
+  textarea `Shift+Enter` soft newline handling, Enter and Space keyboard button activation,
+  custom `role=button` click/Enter/Space activation, portal menu/dialog-style focus transfer, Escape
+  close, outside pointer-down close, portal dialog Tab/Shift+Tab focus trapping,
+  middle-click `onAuxClick`, Shift-click modifier handling, Shift+Arrow
+  partial-selection copy, Shift+Arrow partial-selection replacement, Shift+Arrow selected-range deletion,
+  mouse-drag text-control selection replacement, and mouse-drag contenteditable
+  partial-selection replacement, double-click text-control word replacement, and
+  double-click contenteditable word replacement. That
+  client-path result was
+  `ok:react:\uD55C\uAE00:composition:multi|line:space:hello world:1:edit:keep:done:del:partialreplace:abcXYZ:partialdelete:abc:mousereplace:mouse:doublereplace:hello there:enter:enter:ctrlenter:1:send:shiftenter:1:soft|line:focusblur:focus:related:relatedSecond:debounce:query:validation:1:1:special:6:42:1:label:contact:1:5550100:https://example.test:datetime:2026-05-02:13:45:2026-05-02T13:45:2026-05:2026-W18:#336699:file:react_upload_fixture.txt:filedrop:react_drop_fixture.txt:input:input:keyup:25:inputtype:1:trusted:1:mask:MASK:undo:undo:reset:1:copy:2:partialcopy:1:cut:1:combo:Beta:keyboardcombo:Beta:rovingmenu:Export:capture:3:clip:pastekey:abcXYZ:pastedata:clipdata:controls:b:fast:notes:nativekeys:1:right:100:richclip:1:1:richclip:richime:\uD55C\uAE00:richreplace:abcXYZ:richmousereplace:1:richdoublereplace:hello there:spa:shortcut:1:dragdrop:scroll:virtual:Row 42:customslider:100:pagescroll:shadow:scaled:transform:range:92:dragrange:95:pointerreorder:BAC:rolebutton:3:portal:portalmenu:Save:portaltrap:1:canvasdraw:1:svgpointer:1:pointer:pointerbuttons:1:pointermeta:1:touchend:1:multitouch:1:edgedrag:1:capture:pointerhover:modifier:gestures:keyboard:1`
+  with iframe result `ok:frame:frame\uD55C\uAE00clip`, and is captured as
+  `tools/browser_lab_proxy/react_client_smoke_test.py`.
+- A focused hydration-path smoke test now covers SSR markup that later hydrates
+  through `ReactDOM.hydrateRoot` under `React.StrictMode`. It verifies a
+  hydrated controlled input, composition events, checkbox, select, button
+  click, and form submit through the static canvas client. The expected result
+  is `ok:hydrate:hydrated\uD55C\uAE00:b:1:submitted`, captured as
+  `tools/browser_lab_proxy/react_hydration_smoke_test.py`.
+- A React 19 ESM smoke test now covers modern ESM/CDN-style React pages through
+  the static canvas client path. It imports from `https://esm.sh/react@19`,
+  verifies a controlled input, composition events, checkbox, select, button
+  click, transition/deferred state, and form submit. The expected result is
+  `ok:react19:react19\uD55C\uAE00:b:1:submitted`, captured as
+  `tools/browser_lab_proxy/react19_smoke_test.py`.
+- A React Suspense/lazy smoke test now covers delayed rendering after a
+  fallback. It verifies that React's delegated event handling still works for a
+  controlled form that appears after the initial page render. The expected
+  result is `ok:suspense:suspense\uD55C\uAE00:b:1:submitted`, captured as
+  `tools/browser_lab_proxy/react_suspense_smoke_test.py`.
+- A React 19 `useActionState` smoke test now covers function-valued form
+  actions. It verifies that Browser Lab input and submit events deliver
+  `FormData` into a React action, that `useFormStatus().pending` becomes
+  observable during the async submit, that `useOptimistic` receives the
+  submitted value, and that action state updates after the async step. The
+  expected result is
+  `ok:actionstate:action\uD55C\uAE00:b:agree:pending:optimistic`, captured as
+  `tools/browser_lab_proxy/react_action_state_smoke_test.py`.
+- The React coverage can be rerun as one gate with
+  `tools/browser_lab_proxy/run_react_smoke_suite.py`. That suite compiles the
+  Browser Lab Python files, checks `browser_lab.js`, then runs the direct
+  WebSocket smoke, full static-client smoke, hydration smoke, React 19 ESM
+  smoke, Suspense/lazy smoke, and React 19 action-state smoke.
+- `tools/browser_lab_proxy/REACT_COMPATIBILITY.md` maps each React
+  compatibility area to the specific smoke file that covers it and calls out
+  the cases that still require a real failing URL or workflow.
 
 ## Recommended Next Steps
 
